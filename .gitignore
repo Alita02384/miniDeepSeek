@@ -1,0 +1,18 @@
+# 数据 / 权重 / 日志（AGENTS.md §7）
+data/
+checkpoints/
+logs/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# 缓存 / 虚拟环境
+__pycache__/
+*.pyc
+.venv/
+.ruff_cache/
+.pytest_cache/
+
+# 系统
+.DS_Store
