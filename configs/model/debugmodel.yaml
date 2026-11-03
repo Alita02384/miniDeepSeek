@@ -1,0 +1,10 @@
+# DeepSeek-V4 debug model (torchtitan parity): 256 dim, 4 layers, 4 experts.
+flavor: debugmodel
+seq_len: 2048
+n_mtp_layers: 0
+tie_word_embeddings: false
+swiglu_limit: 10.0
+indexer_loss_coeff: 0.01
+device: auto
+dtype: float32
+seed: 1234

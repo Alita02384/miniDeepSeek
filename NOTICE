@@ -1,0 +1,9 @@
+miniDeepSeek includes code copied from third-party projects. The original
+copyright headers are retained in the copied files.
+
+- torchtitan (BSD-3-Clause), Copyright (c) Meta Platforms, Inc. and affiliates:
+  src/minideepseek/model/flavors.py is derived from
+  torchtitan/models/deepseek_v4/flavors.py. See doc/sources.md.
+
+- MiniMind (Apache-2.0): tokenizer/tokenizer.json and
+  tokenizer/tokenizer_config.json are copied unmodified. See doc/sources.md.

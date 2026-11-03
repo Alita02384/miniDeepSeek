@@ -1,0 +1,35 @@
+# Full 6B-token pretraining run: 12000 steps * 0.5M tokens.
+model:
+  flavor: mini_60m
+  seq_len: 4096
+  n_mtp_layers: 1
+  swiglu_limit: 10.0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+optim:
+  kind: hybrid
+  lr: 0.0006
+  muon_lr: 0.0006
+  adamw_lr: 0.0006
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 500
+  decay: cosine
+  min_lr_ratio: 0.1
+data:
+  tokenized_path: data/tokenized/pretrain_6b.npz
+  batch_tokens: 65536
+  shuffle: true
+  seed: 1234
+train:
+  steps: 12000
+  grad_accum: 8
+  log_every: 10
+  ckpt_every: 500
+  out_dir: checkpoints/pretrain_full
+  mtp_weight: 0.3
+  mtp_weight_final: 0.1
+  mtp_decay_ratio: 0.8
+  balance_loss_coeff: 0.0001

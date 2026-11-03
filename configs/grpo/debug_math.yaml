@@ -1,0 +1,34 @@
+model:
+  flavor: debugmodel
+  seq_len: 128
+  n_mtp_layers: 0
+  swiglu_limit: 10.0
+  device: cpu
+  dtype: float32
+  seed: 1234
+  vocab_limit: 2048
+optim:
+  kind: hybrid
+  lr: 0.0001
+schedule:
+  warmup_steps: 0
+  decay: constant
+  min_lr_ratio: 1.0
+data:
+  path: data/processed/grpo/debug_math.jsonl
+  domain: math
+train:
+  steps: 1
+  log_every: 1
+  out_dir: checkpoints/debug_grpo
+rl:
+  method: grpo
+  group_size: 2
+  prompts_per_step: 2
+  max_new_tokens: 8
+  temperature: 1.0
+  clip: 0.2
+reward:
+  kind: math
+  format_bonus: 0.1
+  parse_bonus: 0.1

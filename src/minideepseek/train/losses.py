@@ -1,0 +1,138 @@
+"""Auxiliary losses and load-balancing updates.
+
+* sequence-wise balance loss (V4 report section 2.4 / roadmap section 3.1):
+  computed from the router gate scores and the hard routing map, per document;
+* auxiliary-loss-free expert-bias update (DeepSeek-V3/V4): applied before every
+  optimizer step, exactly as torchtitan does.
+"""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Iterator
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+
+from .._compat import ensure_torchtitan
+
+ensure_torchtitan()
+
+from torchtitan.models.common.moe import MoE  # noqa: E402
+
+from ..model.routing import RoutingRecord, iter_routers  # noqa: E402
+
+
+@contextlib.contextmanager
+def capture_gate_scores(model) -> Iterator[dict[str, Tensor]]:
+    """Capture each router's gate projection output during one forward."""
+    scores: dict[str, Tensor] = {}
+    handles = []
+    for name, router in iter_routers(model):
+        def hook(module, inputs, output, *, _name=name):
+            scores[_name] = output
+
+        handles.append(router.gate.register_forward_hook(hook))
+    try:
+        yield scores
+    finally:
+        for handle in handles:
+            handle.remove()
+
+
+def sequence_balance_loss(
+    gate_scores: dict[str, Tensor],
+    routing: RoutingRecord,
+    *,
+    num_documents: int,
+    cu_seqlens: Tensor,
+    top_k: int,
+    num_experts: int,
+    coeff: float,
+) -> Tensor:
+    """Sequence-wise load balance loss averaged over layers and documents.
+
+    ``L = coeff * E / k * (1/D) * sum_d sum_i f_{d,i} * P_{d,i}``
+
+    ``f`` is the fraction of tokens in document ``d`` routed to expert ``i`` and
+    ``P`` is the mean gate score.  This is the V3/V4 sequence-wise form, which
+    discourages a layer from concentrating an individual sequence on a few
+    experts (unlike the batch-wise auxiliary loss).
+    """
+    if coeff <= 0 or not gate_scores or not routing:
+        reference = next(iter(gate_scores.values()), None)
+        if reference is None:
+            return torch.zeros(())
+        return reference.new_zeros(())
+    total = None
+    layer_count = 0
+    boundaries = cu_seqlens
+    for name, gate in gate_scores.items():
+        if name not in routing.layers:
+            continue
+        layer = routing.layers[name]
+        scores = F.softplus(gate.float()).sqrt()
+        routing_map = layer.routing_map.to(gate.device).float()
+        if scores.shape[0] != routing_map.shape[0]:
+            raise RuntimeError(
+                f"gate/routing token mismatch for {name}: "
+                f"{scores.shape[0]} vs {routing_map.shape[0]}"
+            )
+        layer_loss = scores.new_zeros(())
+        for index in range(boundaries.numel() - 1):
+            start = int(boundaries[index])
+            end = int(boundaries[index + 1])
+            if end <= start:
+                continue
+            # Drop padding positions (they are not routed).
+            mask = torch.ones(end - start, dtype=torch.bool, device=gate.device)
+            pair = scores[start:end][mask]
+            load = routing_map[start:end][mask]
+            if pair.numel() == 0:
+                continue
+            p_i = pair.mean(dim=0)
+            f_i = load.mean(dim=0)
+            layer_loss = layer_loss + (f_i * p_i).sum()
+        layer_loss = layer_loss / max(1, int(boundaries.numel()) - 1)
+        layer_loss = layer_loss * (float(num_experts) / max(int(top_k), 1))
+        total = layer_loss if total is None else total + layer_loss
+        layer_count += 1
+    if total is None or layer_count == 0:
+        reference = next(iter(gate_scores.values()))
+        return reference.new_zeros(())
+    return total / layer_count * float(coeff)
+
+
+def iter_moe_layers(model):
+    """Yield ``(name, MoE)`` for main and MTP MoE layers."""
+    for name, module in model.named_modules():
+        if isinstance(module, MoE):
+            yield name, module
+
+
+@torch.no_grad()
+def update_expert_biases(model) -> int:
+    """Auxiliary-loss-free bias update; call once before every optimizer step."""
+    moe_layers = list(iter_moe_layers(model))
+    updated = 0
+    for _name, moe in moe_layers:
+        if moe.load_balance_coeff is None or moe.expert_bias_E is None:
+            continue
+        counts = moe.router.tokens_per_expert_E
+        if counts.numel() == 0:
+            continue
+        counts = counts.float()
+        bias = moe.expert_bias_E
+        delta = moe.load_balance_coeff * torch.sign(counts.mean() - counts)
+        delta = delta - delta.mean()
+        bias.add_(delta)
+        moe.router.tokens_per_expert_E.zero_()
+        updated += 1
+    return updated
+
+
+@torch.no_grad()
+def reset_expert_usage(model) -> None:
+    for _name, moe in iter_moe_layers(model):
+        moe.router.tokens_per_expert_E.zero_()

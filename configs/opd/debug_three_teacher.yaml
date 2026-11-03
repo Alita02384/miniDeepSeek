@@ -1,0 +1,44 @@
+model:
+  flavor: debugmodel
+  seq_len: 128
+  n_mtp_layers: 0
+  swiglu_limit: 10.0
+  device: cpu
+  dtype: float32
+  seed: 1234
+  vocab_limit: 2048
+optim:
+  kind: hybrid
+  lr: 0.0001
+schedule:
+  warmup_steps: 0
+  decay: constant
+  min_lr_ratio: 1.0
+data:
+  path: data/processed/opd/debug_prompts.jsonl
+  domain: mixed
+train:
+  steps: 1
+  log_every: 1
+  out_dir: checkpoints/debug_opd
+rl:
+  method: opd
+  prompts_per_step: 2
+  max_new_tokens: 8
+  temperature: 1.0
+  teacher_weights:
+    math: 0.5
+    code: 0.5
+teachers:
+  - name: math_teacher
+    key: math
+    checkpoint: checkpoints/debug_sft/final
+    flavor: debugmodel
+    seq_len: 128
+    weight: 0.5
+  - name: code_teacher
+    key: code
+    checkpoint: checkpoints/debug_sft/final
+    flavor: debugmodel
+    seq_len: 128
+    weight: 0.5

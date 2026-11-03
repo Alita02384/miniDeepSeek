@@ -1,18 +1,29 @@
 # 数据 / 权重 / 日志（AGENTS.md §7）
-data/
+data/*
+!data/manifests/
+!data/manifests/*.yaml
 checkpoints/
 logs/
+reports/*
+!reports/.gitkeep
 *.pt
 *.pth
 *.safetensors
 *.ckpt
+*.bin
+*.npz
+*.npy
 
 # 缓存 / 虚拟环境
 __pycache__/
 *.pyc
 .venv/
+.cache/
 .ruff_cache/
 .pytest_cache/
+*.egg-info/
+build/
+dist/
 
 # 系统
 .DS_Store

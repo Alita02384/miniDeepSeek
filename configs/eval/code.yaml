@@ -1,0 +1,17 @@
+model:
+  flavor: mini_60m
+  seq_len: 4096
+  n_mtp_layers: 0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+checkpoint: checkpoints/grpo_code/final
+data_path: data/processed/eval/code.jsonl
+domain: code
+max_new_tokens: 1024
+temperature: 0.0
+limit: 200
+out_path: reports/eval_code.json
+reward:
+  kind: code
+  length_penalty: 0.0

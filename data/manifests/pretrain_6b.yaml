@@ -1,0 +1,63 @@
+# 6B-token pretraining mix (roadmap section 4.2.2).
+# available_tokens are planning estimates; replace with measured counts after
+# downloading each corpus. validate_manifest checks weights and epoch caps.
+name: pretrain_6b
+seq_len: 4096
+total_tokens: 6000000000
+sources:
+  - name: minimind_general
+    path: ../minimind/dataset/pretrain_t2t_mini.jsonl
+    domain: general
+    license: CC-BY-NC-4.0
+    weight: 0.15
+    available_tokens: 300000000
+    max_epochs: 3
+  - name: fineweb_edu
+    path: data/raw/fineweb_edu
+    domain: world
+    license: ODC-By
+    weight: 0.20
+    available_tokens: 10000000000
+    max_epochs: 1
+  - name: wikipedia
+    path: data/raw/wikipedia
+    domain: world
+    license: CC-BY-SA
+    weight: 0.15
+    available_tokens: 6000000000
+    max_epochs: 1
+  - name: skypile_zh
+    path: data/raw/skypile
+    domain: general
+    license: research
+    weight: 0.10
+    available_tokens: 3000000000
+    max_epochs: 1
+  - name: the_stack_v2
+    path: data/raw/the_stack_v2
+    domain: code
+    license: per-repo
+    weight: 0.14
+    available_tokens: 20000000000
+    max_epochs: 1
+  - name: stack_exchange
+    path: data/raw/stack_exchange
+    domain: code
+    license: CC-BY-SA
+    weight: 0.08
+    available_tokens: 3000000000
+    max_epochs: 1
+  - name: openwebmath
+    path: data/raw/openwebmath
+    domain: math
+    license: ODC-By
+    weight: 0.10
+    available_tokens: 14700000000
+    max_epochs: 1
+  - name: proof_pile_2
+    path: data/raw/proof_pile_2
+    domain: math
+    license: mixed
+    weight: 0.08
+    available_tokens: 55000000000
+    max_epochs: 1

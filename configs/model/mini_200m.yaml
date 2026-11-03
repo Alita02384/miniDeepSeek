@@ -1,0 +1,10 @@
+# Scaling slot: 1024 dim, 16 layers, 16 heads. Measured: 218.21M.
+flavor: mini_200m
+seq_len: 4096
+n_mtp_layers: 1
+tie_word_embeddings: true
+swiglu_limit: 10.0
+indexer_loss_coeff: 0.01
+device: auto
+dtype: bfloat16
+seed: 1234

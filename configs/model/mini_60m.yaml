@@ -1,0 +1,11 @@
+# mini-60M target model: 6 routed + 1 shared expert, top-2, CSA(4)+HCA(32)+SWA.
+# Measured parameter count: 65.26M (includes MTP depth 1 and tied embeddings).
+flavor: mini_60m
+seq_len: 4096
+n_mtp_layers: 1
+tie_word_embeddings: true
+swiglu_limit: 10.0
+indexer_loss_coeff: 0.01
+device: auto
+dtype: bfloat16
+seed: 1234

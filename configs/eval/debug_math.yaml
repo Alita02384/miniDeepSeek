@@ -1,0 +1,17 @@
+model:
+  flavor: debugmodel
+  seq_len: 128
+  n_mtp_layers: 0
+  device: cpu
+  dtype: float32
+  seed: 1234
+  vocab_limit: 2048
+checkpoint: checkpoints/debug_sft/final
+data_path: data/processed/eval/debug_math.jsonl
+domain: math
+max_new_tokens: 8
+temperature: 0.0
+limit: 2
+out_path: reports/eval_debug_math.json
+reward:
+  kind: math

@@ -1,0 +1,31 @@
+# CPU smoke: two optimizer steps on the V4 debug model, no real training.
+model:
+  flavor: debugmodel
+  seq_len: 128
+  n_mtp_layers: 1
+  swiglu_limit: 10.0
+  device: cpu
+  dtype: float32
+  seed: 1234
+  vocab_limit: 2048
+optim:
+  kind: hybrid
+  lr: 0.001
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 1
+  decay: cosine
+  min_lr_ratio: 0.1
+data:
+  tokenized_path: data/tokenized/debug_pretrain.npz
+  batch_tokens: 256
+  shuffle: true
+  seed: 1234
+train:
+  steps: 2
+  grad_accum: 1
+  log_every: 1
+  out_dir: checkpoints/debug_smoke
+  mtp_weight: 0.3
+  balance_loss_coeff: 0.0001
