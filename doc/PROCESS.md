@@ -77,7 +77,7 @@
 
 ## 2026-11-04 自包含模型重构（移除 torchtitan 运行时依赖）
 
-- **commit**: `a25e893` refactor: 将 DeepSeek-V4 模型重构进项目，移除 torchtitan 运行时依赖
+- **commit**: `8390daa` refactor: 将 DeepSeek-V4 模型重构进项目，移除 torchtitan 运行时依赖
 - **做了什么**:
   - 将 V4 模型数学（config / nn / rope / mHC / MoE / compressor / attention / decoder / MTP）
     重构进 `src/minideepseek/model/`，去掉 torchtitan 的 config/SPMD/sharding/remat 框架；
