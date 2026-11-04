@@ -295,3 +295,17 @@
   评测结论等 GPU/API 环境。
 - **影响**：默认 math/code/world 自写评估可用；lm-eval 与 HTTP judge 未在 CI
   实跑，不能把占位分数当质量结论。
+
+### D29. batch-token 线性 warmup 与 val_path
+
+- **原方案**：roadmap 阶段 2 要求前 10% steps 将 batch 从较小值线性升到最大。
+- **实际**：`DataSettings.batch_tokens_final` + `batch_warmup_ratio`；
+  `data.pretrain.iter_batches` / `data.sft.iter_batches` 用
+  `token_schedule` 按 micro-batch 序号线性升温；`TrainSettings.val_path`
+  现在会构建独立验证集并传给 `Trainer`。
+- **依据**：不需要改模型/优化器，属于数据迭代器；预热步数按
+  `steps * grad_accum` 计。
+- **影响**：`full_6b`/`pilot_0.6b`/`dense_control_1b` 从 16K 升到 64K
+  tokens/micro-batch（最终 global batch 仍 0.5M）；debug 配置不受影响。
+  sequence-length curriculum（2K→4K→8K）仍是数据分阶段 recipe，尚未做成
+  单次训练的自动调度。

@@ -160,6 +160,10 @@ class DataSettings(BaseConfig):
     max_records: int | None = None
     max_tokens: int | None = None
     batch_tokens: int = 4096
+    # Linear batch-token warmup: start at ``batch_tokens`` and reach
+    # ``batch_tokens_final`` after ``batch_warmup_ratio`` of optimizer steps.
+    batch_tokens_final: int | None = None
+    batch_warmup_ratio: float = 0.0
     shuffle: bool = True
     seed: int = 1234
     domain: str = "general"

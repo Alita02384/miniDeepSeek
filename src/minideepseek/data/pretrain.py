@@ -252,6 +252,23 @@ def build_pretrain_dataset(
     return meta
 
 
+def token_schedule(
+    base: int,
+    final: int | None,
+    warmup_ratio: float,
+    total_steps: int,
+    batch_index: int,
+) -> int:
+    """Linear batch-token warmup over the first ``warmup_ratio`` of steps."""
+    if final is None or final <= 0 or warmup_ratio <= 0:
+        return max(int(base), 1)
+    if final < base:
+        raise ValueError("batch_tokens_final must be >= batch_tokens")
+    warmup_steps = max(int(round(total_steps * warmup_ratio)), 1)
+    progress = min(max(batch_index / warmup_steps, 0.0), 1.0)
+    return max(int(round(base + (final - base) * progress)), 1)
+
+
 def iter_batches(
     dataset: PackedPretrainDataset,
     *,
@@ -260,8 +277,17 @@ def iter_batches(
     seed: int = 1234,
     shard_rank: int = 0,
     shard_world_size: int = 1,
+    batch_tokens: int | None = None,
+    batch_tokens_final: int | None = None,
+    batch_warmup_ratio: float = 0.0,
+    total_steps: int = 1,
+    seq_len: int = 1,
 ):
-    """Yield ``batch_size`` packs (each pack is already a multi-document batch)."""
+    """Yield packs (each pack is already a multi-document batch).
+
+    When ``batch_tokens`` is given, the pack size is derived per batch from
+    :func:`token_schedule` instead of the fixed ``batch_size``.
+    """
     from ..model.batch import concat_batches
 
     indices = list(range(len(dataset)))
@@ -270,6 +296,21 @@ def iter_batches(
         rng.shuffle(indices)
     if shard_world_size > 1:
         indices = indices[shard_rank::shard_world_size]
-    for start in range(0, len(indices), batch_size):
-        chunk = indices[start : start + batch_size]
-        yield concat_batches([dataset[index] for index in chunk])
+    index = 0
+    batch_index = 0
+    while index < len(indices):
+        if batch_tokens is None:
+            current = max(int(batch_size), 1) * max(int(seq_len), 1)
+        else:
+            current = token_schedule(
+                batch_tokens,
+                batch_tokens_final,
+                batch_warmup_ratio,
+                total_steps,
+                batch_index,
+            )
+        size = max(1, current // max(int(seq_len), 1))
+        chunk = indices[index : index + size]
+        index += size
+        batch_index += 1
+        yield concat_batches([dataset[item] for item in chunk])

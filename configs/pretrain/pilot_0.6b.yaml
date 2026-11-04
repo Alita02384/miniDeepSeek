@@ -1,4 +1,4 @@
-# 0.6B-token pilot. step = batch_tokens * grad_accum = 0.5M tokens.
+# 0.6B-token pilot. Batch warms from 16K to 64K tokens/micro-batch; final global step = 0.5M tokens.
 model:
   flavor: mini_60m
   seq_len: 4096
@@ -21,7 +21,9 @@ schedule:
   min_lr_ratio: 0.1
 data:
   tokenized_path: data/tokenized/pretrain_6b.npz
-  batch_tokens: 65536
+  batch_tokens: 16384
+  batch_tokens_final: 65536
+  batch_warmup_ratio: 0.1
   shuffle: true
   seed: 1234
 train:

@@ -163,8 +163,13 @@ def iter_batches(
     seed: int = 1234,
     shard_rank: int = 0,
     shard_world_size: int = 1,
+    batch_tokens_final: int | None = None,
+    batch_warmup_ratio: float = 0.0,
+    total_steps: int = 1,
 ):
-    """Yield multi-document batches greedily filled up to ``batch_tokens``."""
+    """Yield multi-document batches greedily filled up to the current budget."""
+    from .pretrain import token_schedule
+
     order = list(range(len(dataset)))
     rng = np.random.default_rng(seed)
     if shuffle:
@@ -173,11 +178,20 @@ def iter_batches(
         order = order[shard_rank::shard_world_size]
     group: list[PackedBatch] = []
     total = 0
+    batch_index = 0
     for index in order:
+        limit = token_schedule(
+            batch_tokens,
+            batch_tokens_final,
+            batch_warmup_ratio,
+            total_steps,
+            batch_index,
+        )
         sample = dataset[index]
-        if group and total + sample.num_tokens > batch_tokens:
+        if group and total + sample.num_tokens > limit:
             yield concat_batches(group)
             group, total = [], 0
+            batch_index += 1
         group.append(sample)
         total += sample.num_tokens
     if group:

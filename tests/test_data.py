@@ -187,3 +187,12 @@ def test_code_license_filter(tmp_path):
         [source], output, seq_len=128, min_chars=16, domain="code", quality_filter=False
     )
     assert meta["dropped_license"] >= 1
+
+
+def test_batch_token_warmup_schedule():
+    from minideepseek.data.pretrain import token_schedule
+
+    assert token_schedule(100, None, 0.0, 10, 0) == 100
+    assert token_schedule(100, 400, 0.5, 10, 0) == 100
+    assert token_schedule(100, 400, 0.5, 10, 5) == 400
+    assert token_schedule(100, 400, 0.5, 10, 3) == 280

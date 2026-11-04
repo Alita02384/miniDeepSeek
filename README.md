@@ -24,14 +24,14 @@
 | Muon + AdamW 混合优化器 | `train/optimizer.py` | 参数分组、NS 正交化、单步更新 |
 | loss-free bias + sequence balance loss | `train/losses.py` | bias 更新、balance loss 有限值 |
 | Anticipatory Routing | `model/anticipatory.py` | stale gate probe → replay 一致性 |
-| 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致 |
+| 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token 线性 warmup；val_path 接验证集 |
 | GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
 | 数据管线 | `data/` | 打包、mask、MinHash、13-gram、fertility、manifest、license |
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`113 passed`（CPU，debug model，约 25 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`114 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 

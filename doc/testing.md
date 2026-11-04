@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 113 passed, ~27s on CPU；无 transformers 时 HF 的 6 个测试跳过
+.venv/bin/python -m pytest -q   # 114 passed, ~28s on CPU；无 transformers 时 HF 的 6 个测试跳过
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -28,7 +28,7 @@
 | `test_checkpoint.py` | torch / safetensors / DCP 三种存取、logits 位级一致、RNG 状态、指纹 |
 | `test_optimizer.py` | Newton-Schulz、Muon 单步、混合参数分组、warmup/cosine |
 | `test_trainer.py` | 2 步预训练、梯度累积、SFT、expert bias、AR 训练、checkpoint |
-| `test_data.py` | pretrain 打包、MinHash 去重、13-gram 污染、质量过滤、fertility、manifest、GRPO/OPD 转换 |
+| `test_data.py` | pretrain 打包、MinHash 去重、13-gram 污染、质量过滤、fertility、manifest、GRPO/OPD 转换、batch-token warmup |
 | `test_grpo.py` | math/code/world/medical reward、advantage、1 步 GRPO、ratio↔logprob 一致性、SFT checkpoint 初始化 |
 | `test_opd.py` | 1 步单/多教师 OPD、teacher 不更新、teacher/base checkpoint 加载 |
 | `test_consistency.py` | logprob / routing / checkpoint 三道门禁 |

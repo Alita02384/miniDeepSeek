@@ -25,8 +25,9 @@ def load_dataset(
     *,
     shard_rank: int = 0,
     shard_world_size: int = 1,
+    path: str | None = None,
 ):
-    path = config.data.tokenized_path
+    path = path or config.data.tokenized_path
     if not path:
         raise SystemExit(
             "data.tokenized_path is required; run `python -m minideepseek.data.prepare` first"
@@ -38,6 +39,9 @@ def load_dataset(
         batches = iter_batches(
             dataset,
             batch_tokens=config.data.batch_tokens,
+            batch_tokens_final=config.data.batch_tokens_final,
+            batch_warmup_ratio=config.data.batch_warmup_ratio,
+            total_steps=max(config.train.steps * max(config.train.grad_accum, 1), 1),
             shuffle=config.data.shuffle,
             seed=config.data.seed,
             shard_rank=shard_rank,
@@ -47,10 +51,13 @@ def load_dataset(
         dataset = PackedPretrainDataset(path)
         from ..data.pretrain import iter_batches
 
-        batch_size = max(1, int(config.data.batch_tokens) // max(int(config.model.seq_len), 1))
         batches = iter_batches(
             dataset,
-            batch_size=batch_size,
+            batch_tokens=config.data.batch_tokens,
+            batch_tokens_final=config.data.batch_tokens_final,
+            batch_warmup_ratio=config.data.batch_warmup_ratio,
+            total_steps=max(config.train.steps * max(config.train.grad_accum, 1), 1),
+            seq_len=config.model.seq_len,
             shuffle=config.data.shuffle,
             seed=config.data.seed,
             shard_rank=shard_rank,
@@ -68,9 +75,19 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
         shard_rank=context.rank,
         shard_world_size=context.world_size,
     )
+    val_batches = None
+    if config.train.val_path:
+        _, val_batches = load_dataset(
+            config,
+            mode,
+            path=config.train.val_path,
+            shard_rank=0,
+            shard_world_size=1,
+        )
     trainer, model = build_trainer(
         config,
         batches,
+        val_batches=val_batches,
         tokenizer_hash=tokenizer.sha256,
         distributed=context,
     )
