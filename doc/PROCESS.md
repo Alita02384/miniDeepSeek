@@ -248,3 +248,34 @@
   - 官方报告的 EP/CP/tensor-level activation checkpointing、FP4 QAT、
     batch-invariant kernels、GRM、teacher hidden-state cache、preemptible
     rollout 等仍未实现；见审计文档的分类。
+
+## 2026-11-04 补齐 AR/rollback/长度课程/数据与门禁
+
+- **commit**: `53eb7f6`, `bfdf6f9` feat: 补齐 AR 预取、分布式 rollback、长度课程与数据/指标/同步门禁
+- **做了什么**:
+  - AR：trainer 预取下一 optimizer step 的 batch，用当前 gate 计算并缓存
+    routing；下一步 replay；queue 空回退 stale-gate probe；probe 包含 MTP router；
+  - rollback：FSDP2 下全 rank gather 快照、rank0 broadcast spike 决策；显式
+    DTensor shard 拷贝修复 resume/rollback（含空 shard 边界）；
+  - sequence curriculum：`train/curriculum.py`、`scripts/train_curriculum.sh`、
+    `data.prepare curriculum`、2K/4K/8K 配置；全局 `schedule_steps` 保持
+    LR/MTP/index 调度连续；
+  - data：`WeightedBatchMixer`（data.sources）、`ParagraphDeduper`、
+    语言/script、vendored、binary、math formula/answer 过滤；
+  - metrics：`domain_routing_metrics` 并接入 GRPO 可选日志；
+  - vLLM：weight version + 可选 actor/rollout logprob 门禁。
+- **实现了什么**:
+  - 上述缺口从审计中的 ❌/⚠️ 变为有代码 + CPU 测试；
+  - FSDP2/DDP world=1 与 world=2 一步更新 sha256 一致；
+  - 2 进程 resume/rollback 通过；
+  - pytest 125 passed。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **125 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0
+  - `scripts/test_distributed.py --world-size 1|2 --mode fsdp2|ddp` → PASS
+- **未完成 / 风险**:
+  - AR probe 仍是同步执行，未做官方 EP 通信 overlap；
+  - EP/CP/激活重计算按用户要求不做；GRM/world 专家按用户要求暂缓；
+  - FIM/token-splitting、长文档/多语言语料、teacher hidden-state cache、
+    vLLM/verl GPU 实跑仍未完成。
