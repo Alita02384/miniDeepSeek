@@ -136,3 +136,31 @@
   - vLLM 需要目标版本支持 auto_map；权重同步是重建 engine；
   - verl HF rollout + FSDP actor 未实跑；OPD 的 full-vocab reverse KL canonical
     实现仍是本项目 `rl/opd.py`，verl 模板用 forward_kl_topk。
+
+## 2026-11-04 FSDP2 一致性修复与可选评测/裁判
+
+- **commit**: `ad9647a` feat: FSDP2 一致性修复、HF tied 导出、lm-eval/HTTP judge 可选路径
+- **做了什么**:
+  - `clip_grad_norm` 改为先对各 DTensor shard 平方和 all-reduce，再统一计算
+    global norm；修复 DP 尺寸改变 clip 系数导致多卡与单卡不一致。
+  - FSDP2/DDP 包装后 rank0 broadcast 所有 buffer（hash 表/expert bias/RoPE cache）；
+    indexer aux loss 除以 world size 抵消 FSDP 梯度平均。
+  - HF 导出强制 untied（展开 `lm_head.weight`），修复 safetensors shared-storage
+    报错；新增 tied embedding 导出测试。
+  - 新增 `eval/lm_eval.py` + `scripts/run_lm_eval.py`（可选 lm-eval）与
+    `rl/judge.py` HTTP world judge（可选），均带缺依赖/缺 env 守卫。
+  - `loss_spike_rollback` 在 distributed 下显式拒绝（内存快照是单进程实现）。
+- **实现了什么**:
+  - CPU/Gloo world=1 与 world=2：FSDP2/DDP 一步更新后的 model.pt sha256
+    完全一致（seed/batch 相同）；
+  - HF tied 模型 export → load logits 仍逐位一致；
+  - 新增 3 个集成测试；pytest 110 passed。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **110 passed**
+  - `bash scripts/debug_smoke.sh` → 通过
+  - `python scripts/test_distributed.py --world-size 1|2 --mode fsdp2|ddp` → PASS
+- **未完成 / 风险**:
+  - 无 CUDA 实机；EP/TP/CP、bf16、NCCL 未验证；
+  - lm-eval 与 HTTP judge 未真实运行；
+  - vLLM 自定义模型支持与 verl GPU smoke 待做。
