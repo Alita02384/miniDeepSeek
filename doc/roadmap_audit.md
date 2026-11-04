@@ -14,7 +14,7 @@
 都已经有代码和测试。**但不是路线图 100% 完成**，剩余缺口集中在：
 
 - 数据侧：长文档/多语言语料、FIM / token-splitting、真实 6B 数据；
-- 训练侧：EP/CP/激活重计算（本轮明确不做）、teacher/rollout bf16、分布式 RL；
+- 训练侧：EP/CP/激活重计算（本轮明确不做）、分布式 RL；
 - 推理侧：vLLM 自定义模型/kernel、verl GPU 实跑；
 - 后训练：teacher hidden-state 缓存/offload、>10 teachers、GRM（本轮明确不做）；
 - 模型侧：vLLM/verl 的 GPU 数值验证；
