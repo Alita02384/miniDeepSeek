@@ -77,7 +77,8 @@ def probe_routing(model, batch, stale_gates) -> RoutingRecord:
     model.eval()
     try:
         with swap_router_gates(model, stale_gates), record_routing(model) as record:
-            model.forward(batch, use_mtp=False)
+            # Include MTP routers so replay can cover the full training forward.
+            model.forward(batch)
     finally:
         if was_training:
             model.train()

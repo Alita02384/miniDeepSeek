@@ -115,10 +115,11 @@ class Trainer:
         self.run_name = run_name or Path(config.train.out_dir).name
         set_seed(config.model.seed)
         self.optimizer = build_optimizer(model, config.optim)
+        schedule_steps = int(config.train.schedule_steps or config.train.steps)
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
             warmup_steps=config.schedule.warmup_steps,
-            total_steps=max(config.train.steps, 1),
+            total_steps=max(schedule_steps, 1),
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
             decay_start_ratio=config.schedule.decay_start_ratio,
@@ -213,7 +214,10 @@ class Trainer:
 
     def _apply_index_topk(self) -> None:
         if self._topk_schedule is not None:
-            target = self._topk_schedule.topk_at(self.step, self.config.train.steps)
+            target = self._topk_schedule.topk_at(
+                self.step,
+                int(self.config.train.schedule_steps or self.config.train.steps),
+            )
             if target != self.model.current_index_topk():
                 self.model.set_index_topk(target)
 
@@ -282,8 +286,9 @@ class Trainer:
         )
         if final == initial:
             return initial
-        start = int(self.config.train.steps * self.config.train.mtp_decay_ratio)
-        remaining = max(self.config.train.steps - start, 1)
+        total_steps = int(self.config.train.schedule_steps or self.config.train.steps)
+        start = int(total_steps * self.config.train.mtp_decay_ratio)
+        remaining = max(total_steps - start, 1)
         progress = min(max((self.step - start) / remaining, 0.0), 1.0)
         return initial + (final - initial) * progress
 

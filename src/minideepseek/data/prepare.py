@@ -105,6 +105,29 @@ def cmd_opd(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_curriculum(args: argparse.Namespace) -> int:
+    """Build the 2K/4K/8K packed datasets used by the length curriculum."""
+    out_dir = _resolve(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    reports = {}
+    for seq_len in args.seq_lens:
+        suffix = {2048: "2k", 4096: "4k", 8192: "8k"}.get(seq_len, str(seq_len))
+        output = out_dir / f"pretrain_{suffix}.npz"
+        reports[str(seq_len)] = build_pretrain_dataset(
+            [_resolve(path) for path in args.input],
+            output,
+            tokenizer=load_tokenizer(vocab_limit=args.vocab_limit),
+            seq_len=seq_len,
+            max_records=args.max_records,
+            max_tokens=args.max_tokens,
+            min_chars=args.min_chars,
+            seed=args.seed,
+            domain=args.domain,
+        )
+    _print(reports)
+    return 0
+
+
 def cmd_fertility(args: argparse.Namespace) -> int:
     texts = (record.get("text", "") for record in iter_jsonl(_resolve(args.input)))
     report = fertility_report(texts, max_documents=args.limit)
@@ -196,6 +219,20 @@ def build_parser() -> argparse.ArgumentParser:
     opd.add_argument("--default-teacher", default="general")
     opd.add_argument("--max-per-source", type=int)
     opd.set_defaults(func=cmd_opd)
+
+    curriculum = subparsers.add_parser(
+        "curriculum", help="build 2K/4K/8K packed datasets for the length curriculum"
+    )
+    curriculum.add_argument("--input", nargs="+", required=True)
+    curriculum.add_argument("--out-dir", required=True)
+    curriculum.add_argument("--seq-lens", nargs="+", type=int, default=[2048, 4096, 8192])
+    curriculum.add_argument("--max-records", type=int)
+    curriculum.add_argument("--max-tokens", type=int)
+    curriculum.add_argument("--min-chars", type=int, default=32)
+    curriculum.add_argument("--domain", default="general")
+    curriculum.add_argument("--seed", type=int, default=1234)
+    curriculum.add_argument("--vocab-limit", type=int, default=None)
+    curriculum.set_defaults(func=cmd_curriculum)
 
     fertility = subparsers.add_parser("fertility", help="tokenizer fertility report")
     fertility.add_argument("--input", required=True)

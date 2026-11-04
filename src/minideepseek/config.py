@@ -237,6 +237,8 @@ class TrainSettings(BaseConfig):
     # Sparse-index warmup (roadmap section 3.5); None disables scheduling.
     index_topk_final: int | None = None
     index_topk_warmup_ratio: float = 0.0
+    # Curriculum stages keep one global schedule across resumes.
+    schedule_steps: int | None = None
 
 
 @dataclass

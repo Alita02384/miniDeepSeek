@@ -44,12 +44,15 @@ def test_curriculum_stage_config_overrides(tmp_path):
         batch_tokens_final=4096,
         batch_warmup_ratio=0.1,
     )
-    config = _stage_config(base, stage, out_dir=tmp_path, index=1, resume="prev/final")
+    config = _stage_config(
+        base, stage, out_dir=tmp_path, index=1, resume="prev/final", schedule_steps=1000
+    )
     assert config.model.seq_len == 4096
     assert config.data.tokenized_path == "stage.npz"
     assert config.data.batch_tokens == 1024
     assert config.data.batch_tokens_final == 4096
     assert config.data.batch_warmup_ratio == 0.1
     assert config.train.steps == 100
+    assert config.train.schedule_steps == 1000
     assert config.train.resume == "prev/final"
     assert config.train.out_dir.endswith("stage_01_seq4096")

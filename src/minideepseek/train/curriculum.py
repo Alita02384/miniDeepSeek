@@ -86,6 +86,7 @@ def _stage_config(
     out_dir: Path,
     index: int,
     resume: str | None,
+    schedule_steps: int,
 ) -> TrainConfig:
     config = TrainConfig.from_dict(base.to_dict())
     config.model.seq_len = int(stage.seq_len)
@@ -102,6 +103,7 @@ def _stage_config(
     if stage.batch_warmup_ratio is not None:
         config.data.batch_warmup_ratio = float(stage.batch_warmup_ratio)
     config.train.steps = int(stage.until_step)
+    config.train.schedule_steps = int(schedule_steps)
     config.train.out_dir = str(out_dir / f"stage_{index:02d}_seq{stage.seq_len}")
     config.train.resume = resume
     return config
@@ -114,9 +116,15 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
     out_dir = Path(settings.out_dir)
     reports: list[dict[str, Any]] = []
     resume: str | None = None
+    final_step = int(settings.stages[-1].until_step)
     for index, stage in enumerate(settings.stages):
         config = _stage_config(
-            base, stage, out_dir=out_dir, index=index, resume=resume
+            base,
+            stage,
+            out_dir=out_dir,
+            index=index,
+            resume=resume,
+            schedule_steps=final_step,
         )
         from .run import run as run_stage
 

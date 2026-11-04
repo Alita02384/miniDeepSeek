@@ -286,15 +286,24 @@ def all_reduce_gradients(model: nn.Module, world_size: int) -> None:
         parameter.grad.div_(world_size)
 
 
-def gather_model_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
-    """Full (unsharded, CPU) model state dict; collective when FSDP2 is active."""
+def gather_model_state_dict(
+    model: nn.Module, *, all_ranks: bool = False
+) -> dict[str, torch.Tensor]:
+    """Full model state dict; collective when FSDP2 is active.
+
+    With ``all_ranks=False`` (checkpoint save) ``cpu_offload`` keeps the full
+    dict on rank 0 only.  Rollback needs it on every rank, so pass
+    ``all_ranks=True``.
+    """
     from torch.distributed.checkpoint.state_dict import (
         StateDictOptions,
         get_model_state_dict,
     )
 
     options = StateDictOptions(
-        full_state_dict=True, cpu_offload=True, broadcast_from_rank0=True
+        full_state_dict=True,
+        cpu_offload=not all_ranks,
+        broadcast_from_rank0=not all_ranks,
     )
     return get_model_state_dict(model, options=options)
 
@@ -310,9 +319,20 @@ def _copy_full_tensor(parameter: torch.Tensor, full: torch.Tensor) -> None:
         world = mesh.size()
         local_rank = mesh.get_local_rank()
         value = full.to(device=parameter.device, dtype=parameter.dtype)
+        local = parameter.to_local()
         if world > 1 and isinstance(placements[0], Shard):
-            chunks = torch.chunk(value, world, dim=placements[0].dim)
-            value = chunks[local_rank]
+            if placements[0].dim != 0:
+                raise TypeError("only Shard(dim=0) is supported for FSDP2 load")
+            chunks = torch.chunk(value, world, dim=0)
+            piece = chunks[local_rank] if local_rank < len(chunks) else value[:0]
+            # FSDP may pad/truncate an uneven shard; align to its local shape.
+            flat = piece.reshape(-1)
+            target = local.numel()
+            if flat.numel() < target:
+                flat = torch.cat([flat, flat.new_zeros(target - flat.numel())])
+            elif flat.numel() > target:
+                flat = flat[:target]
+            value = flat.reshape(local.shape)
         elif world > 1 and not isinstance(placements[0], Replicate):
             raise TypeError(f"unsupported placement {placements[0]!r}")
         sharded = DTensor.from_local(
@@ -343,7 +363,9 @@ def load_model_state_dict(model: nn.Module, state: dict[str, torch.Tensor]) -> N
             buffer.copy_(state[name].to(device=buffer.device, dtype=buffer.dtype))
 
 
-def gather_optimizer_state_dict(model: nn.Module, optimizer) -> dict[str, Any]:
+def gather_optimizer_state_dict(
+    model: nn.Module, optimizer, *, all_ranks: bool = False
+) -> dict[str, Any]:
     """Full optimizer state; collective when FSDP2 is active.
 
     ``HybridOptimizer`` owns a Muon and an AdamW instance; each is gathered
@@ -355,7 +377,9 @@ def gather_optimizer_state_dict(model: nn.Module, optimizer) -> dict[str, Any]:
     )
 
     options = StateDictOptions(
-        full_state_dict=True, cpu_offload=True, broadcast_from_rank0=True
+        full_state_dict=True,
+        cpu_offload=not all_ranks,
+        broadcast_from_rank0=not all_ranks,
     )
     if hasattr(optimizer, "optimizers"):
         return {

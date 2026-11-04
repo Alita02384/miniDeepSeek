@@ -11,6 +11,14 @@
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
+额外验证：
+
+```bash
+.venv/bin/python scripts/test_distributed.py --world-size 2 --mode fsdp2
+.venv/bin/python -m minideepseek.data.prepare curriculum \
+  --input /tmp/corpus.jsonl --out-dir /tmp/tokenized --seq-lens 2048 4096 8192
+```
+
 端到端门禁（训练 smoke + 一致性 + 测试）：
 
 ```bash

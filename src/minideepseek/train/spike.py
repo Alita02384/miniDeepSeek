@@ -77,9 +77,11 @@ def snapshot(step: int, model, optimizer, *, distributed=None) -> RollbackSnapsh
             step=int(step),
             model_state={
                 key: value.detach().clone()
-                for key, value in gather_model_state_dict(model).items()
+                for key, value in gather_model_state_dict(model, all_ranks=True).items()
             },
-            optimizer_state=gather_optimizer_state_dict(model, optimizer),
+            optimizer_state=gather_optimizer_state_dict(
+                model, optimizer, all_ranks=True
+            ),
         )
     return RollbackSnapshot(
         step=int(step),

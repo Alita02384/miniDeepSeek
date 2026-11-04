@@ -60,6 +60,11 @@ V4 的数学与参数布局。state dict 的 key 与形状和参考实现一致�
 
 # 4) 多卡（CUDA）：torchrun + FSDP2
 NPROC_PER_NODE=8 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
+
+# 5) 2K→4K→8K 长度课程（先准备三段数据）
+.venv/bin/python -m minideepseek.data.prepare curriculum \
+  --input data/raw/pretrain.jsonl --out-dir data/tokenized --seq-lens 2048 4096 8192
+./scripts/train_curriculum.sh configs/pretrain/length_curriculum.yaml
 ```
 
 单独运行：
@@ -93,6 +98,7 @@ configs/
 .venv/bin/python -m minideepseek.data.prepare fertility --input ...
 .venv/bin/python -m minideepseek.data.prepare contamination --train ... --eval ...
 .venv/bin/python -m minideepseek.data.prepare manifest --manifest data/manifests/pretrain_6b.yaml
+.venv/bin/python -m minideepseek.data.prepare curriculum --input ... --out-dir data/tokenized
 
 # 训练 / RL
 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
@@ -159,6 +165,9 @@ scripts/          # 环境、数据、训练、评估脚本
 - **4K dense-over-compressed → 8K sparse 的 index top-k 调度**：`IndexTopKSchedule`。
 - **GRPO/OPD 从 checkpoint 初始化**：`train.resume` 分别加载 SFT specialist 与 base student。
 - **checkpoint 主链**：torch state dict → safetensors → DCP；三者均已验证可回读。
+- **长度课程**：`train/curriculum.py` 分阶段 2K→4K→8K，累计 step + resume；不是单次动态改 seq_len。
+- **数据混料**：`data.sources` 权重混料；manifest 继续负责 license/epoch 校验。
+- **AR**：预取下一 optimizer step 的 batch 并用当前 gate 缓存 routing；无异步 overlap。
 
 ---
 
