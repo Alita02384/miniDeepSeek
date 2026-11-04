@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             seq_len=args.seq_len,
             n_mtp_layers=args.n_mtp_layers,
             swiglu_limit=10.0,
+            index_topk=args.index_topk,
             device=args.device,
             dtype=args.dtype,
             seed=args.seed,
