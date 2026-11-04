@@ -225,3 +225,26 @@
 - **未完成 / 风险**:
   - sequence-length curriculum 仍是数据分阶段 recipe，没有单次训练自动调度；
   - weighted data mixer / paragraph-level dedup / 更细 quality filter 仍未实现。
+
+## 2026-11-04 对照官方 V4 报告修正优化器与 LR
+
+- **commit**: `7fbd0c1` fix: 按 V4 报告对齐 Muon/AdamW/LR schedule
+- **做了什么**:
+  - Muon 改为官方 Algorithm 1：8 步快速 NS + 2 步稳定 NS，
+    更新缩放 `sqrt(max(n,m)) * 0.18`；
+  - AdamW eps 改为官方 1e-20；
+  - mHC 参数分组修正：`hc_base`/`hc_scale` → AdamW，`hc_fn` → Muon；
+  - LR schedule 增加 `decay_start_ratio`，实现 warmup→保持→末期 cosine；
+  - `doc/roadmap_audit.md` 补官方报告逐条对照。
+- **实现了什么**:
+  - Muon/AdamW/学习率三个此前与官方报告不一致的点已修正；
+  - 新增 flat→cosine 单测；pytest 115 passed。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **115 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0
+  - `scripts/test_distributed.py --world-size 1|2 --mode fsdp2` → sha256 一致
+- **未完成 / 风险**:
+  - 官方报告的 EP/CP/tensor-level activation checkpointing、FP4 QAT、
+    batch-invariant kernels、GRM、teacher hidden-state cache、preemptible
+    rollout 等仍未实现；见审计文档的分类。
