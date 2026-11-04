@@ -225,6 +225,9 @@ def _is_adamw_parameter(name: str, parameter: Tensor) -> bool:
         return True
     if any(marker in name for marker in ("tok_embeddings", "lm_head", "router.gate")):
         return True
+    # mHC static parameters are small and use AdamW in the V4 recipe.
+    if "hc_" in name:
+        return True
     return parameter.numel() < 64
 
 

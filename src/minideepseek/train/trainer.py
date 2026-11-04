@@ -67,6 +67,7 @@ class StepMetrics:
     main_loss: float = 0.0
     mtp_loss: float = 0.0
     balance_loss: float = 0.0
+    indexer_loss: float = 0.0
     tokens: int = 0
     grad_norm: float = 0.0
     lr: float = 0.0
@@ -80,6 +81,7 @@ class StepMetrics:
             "main_loss": self.main_loss,
             "mtp_loss": self.mtp_loss,
             "balance_loss": self.balance_loss,
+            "indexer_loss": self.indexer_loss,
             "tokens": self.tokens,
             "grad_norm": self.grad_norm,
             "lr": self.lr,
@@ -310,6 +312,11 @@ class Trainer:
             )
             metrics.loss = float(loss_output.total.detach())
             metrics.balance_loss = float(balance_loss.detach())
+            metrics.indexer_loss = (
+                float(loss_output.indexer.detach())
+                if loss_output.indexer is not None
+                else 0.0
+            )
             metrics.tokens = loss_output.token_count
             metrics.router = routing_metrics(routing)
             metrics.swiglu = swiglu.as_dict()
@@ -364,6 +371,7 @@ class Trainer:
             main_loss=_mean(m.main_loss for m in micro_metrics),
             mtp_loss=_mean(m.mtp_loss for m in micro_metrics),
             balance_loss=_mean(m.balance_loss for m in micro_metrics),
+            indexer_loss=_mean(m.indexer_loss for m in micro_metrics),
             tokens=sum(m.tokens for m in micro_metrics),
             grad_norm=grad_norm,
             lr=float(self.optimizer.param_groups[0]["lr"]) if self.optimizer.param_groups else 0.0,

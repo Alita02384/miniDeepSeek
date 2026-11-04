@@ -248,7 +248,10 @@ def clip_grad_norm(model: nn.Module, max_norm: float) -> float:
     if not has_dtensor:
         return float(torch.nn.utils.clip_grad_norm_(parameters, max_norm))
 
-    total = torch.zeros((), dtype=torch.float64, device=parameters[0].grad.device)
+    device = parameters[0].grad.device
+    # NCCL has no float64 all-reduce; float32 is sufficient for a gradient norm.
+    dtype = torch.float64 if device.type == "cpu" else torch.float32
+    total = torch.zeros((), dtype=dtype, device=device)
     for parameter in parameters:
         gradient = parameter.grad
         if isinstance(gradient, DTensor):
@@ -259,9 +262,9 @@ def clip_grad_norm(model: nn.Module, max_norm: float) -> float:
                 value = gradient.full_tensor()
             else:
                 value = gradient.to_local()
-            total += value.detach().float().double().pow(2).sum()
+            total += value.detach().float().to(dtype).pow(2).sum()
         else:
-            total += gradient.detach().float().double().pow(2).sum()
+            total += gradient.detach().float().to(dtype).pow(2).sum()
     if dist.is_initialized():
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
     norm = float(total.sqrt())
