@@ -299,3 +299,20 @@
   - AR probe 同步执行、无 EP overlap；
   - EP/CP/激活重计算、GRM/world 专家按用户要求不做；
   - vLLM/verl GPU、FIM/长文档、teacher cache 仍未做。
+
+## 2026-11-04 bf16 统一与 FSDP optimizer state
+
+- **commit**: `d363fef` feat: rollout/eval/teacher 统一 bf16 autocast；修复 FSDP optimizer state 恢复
+- **做了什么**:
+  - `MiniDeepSeekModel` 增加 `autocast_dtype`，CUDA `forward` 统一 bf16；
+    build_model/build_trainer/GRPO/OPD/eval/smoke 传递 dtype，teacher 增加 dtype；
+  - FSDP `load_optimizer_state_dict` 按参数名映射并 shard 到 local DTensor；
+  - `doc/roadmap_audit` 更新 dtype/autocast 与已补齐项。
+- **验证**:
+  - ruff 通过；pytest **125 passed**；debug_smoke exit 0；
+  - FSDP2 world=1/2 sha256 一致；
+  - 2 进程 resume/rollback 临时脚本通过。
+- **未完成 / 风险**:
+  - teacher 权重仍 fp32（只 autocast），未做 hidden-state cache/bf16 offload；
+  - AR probe 同步；EP/CP/激活重计算、GRM/world 专家按用户要求不做；
+  - vLLM/verl GPU、FIM/长文档仍未做。
