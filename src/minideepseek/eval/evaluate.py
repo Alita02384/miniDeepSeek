@@ -59,6 +59,7 @@ def _load_model(config: EvalConfig, tokenizer: MiniDeepSeekTokenizer) -> MiniDee
         swiglu_limit=config.model.swiglu_limit,
         index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
+        dtype=config.model.dtype,
     )
     if config.checkpoint:
         meta = load_checkpoint(config.checkpoint, model, map_location="cpu")

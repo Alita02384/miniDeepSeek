@@ -307,6 +307,7 @@ def build_grpo_trainer(
         swiglu_limit=config.model.swiglu_limit,
         index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
+        dtype=config.model.dtype,
     )
     tokenizer = tokenizer or load_tokenizer(vocab_limit=config.model.vocab_limit)
     if config.train.resume:

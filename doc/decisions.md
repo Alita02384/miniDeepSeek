@@ -341,3 +341,13 @@
 - **权重同步**：vLLM generator 版本计数 + 可选 actor/rollout logprob 门禁。
 - **未做**：EP/CP/激活重计算、teacher hidden-state cache、GRM（按用户要求
   世界知识专家先不做）。
+
+### D32. rollout/eval/teacher 统一使用 wrapper autocast
+
+- **实际**：`MiniDeepSeekModel` 新增 `autocast_dtype`；CUDA 上 `forward` 自动
+  `torch.autocast(bfloat16)`，训练/GRPO/OPD/eval/teacher 都走同一 wrapper。
+  权重仍是 fp32 master（teacher 未做 bf16 权重 cast/offload）。
+- **依据**：roadmap §5 要求 bf16；之前只有 Trainer 有 autocast，rollout/actor
+  精度不一致。
+- **影响**：CUDA 上训练与采样算术精度一致；CPU 测试保持 fp32。teacher 的
+  显存节省仍需要权重 bf16 或 hidden-state cache（未做）。

@@ -165,6 +165,7 @@ scripts/          # 环境、数据、训练、评估脚本
 - **4K dense-over-compressed → 8K sparse 的 index top-k 调度**：`IndexTopKSchedule`。
 - **GRPO/OPD 从 checkpoint 初始化**：`train.resume` 分别加载 SFT specialist 与 base student。
 - **checkpoint 主链**：torch state dict → safetensors → DCP；三者均已验证可回读。
+- **bf16**：CUDA 上 wrapper 统一 autocast；权重保持 fp32 master。
 - **长度课程**：`train/curriculum.py` 分阶段 2K→4K→8K，累计 step + resume；不是单次动态改 seq_len。
 - **数据混料**：`data.sources` 权重混料；manifest 继续负责 license/epoch 校验。
 - **AR**：预取下一 optimizer step 的 batch 并用当前 gate 缓存 routing；无异步 overlap。

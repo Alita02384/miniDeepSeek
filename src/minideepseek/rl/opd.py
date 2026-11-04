@@ -272,6 +272,7 @@ def load_teacher(
         n_mtp_layers=settings.n_mtp_layers,
         device=device,
         swiglu_limit=10.0,
+        dtype=settings.dtype,
     )
     if settings.checkpoint:
         meta = load_checkpoint(settings.checkpoint, model, map_location="cpu")
@@ -303,6 +304,7 @@ def build_opd_trainer(
         swiglu_limit=config.model.swiglu_limit,
         index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
+        dtype=config.model.dtype,
     )
     if config.train.resume:
         meta = load_checkpoint(config.train.resume, student, map_location=device)

@@ -307,6 +307,7 @@ class TeacherSettings(BaseConfig):
     key: str | None = None
     weight: float = 1.0
     n_mtp_layers: int = 0
+    dtype: str = "bfloat16"
 
 
 @dataclass

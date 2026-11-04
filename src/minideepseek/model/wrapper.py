@@ -64,6 +64,7 @@ class MiniDeepSeekModel:
         *,
         device: torch.device | str = "cpu",
         init_weights: bool = True,
+        dtype: str | torch.dtype | None = None,
     ):
         from .model import DeepSeekV4Model
 
@@ -77,6 +78,7 @@ class MiniDeepSeekModel:
         # is normalised by local tokens, so divide by world size to recover the
         # global per-token value.
         self.aux_loss_world_size = 1
+        self.autocast_dtype = _resolve_autocast_dtype(dtype, self.device)
 
     # -- nn.Module delegation -------------------------------------------------
     def __call__(self, batch: PackedBatch, **kwargs):
@@ -172,13 +174,14 @@ class MiniDeepSeekModel:
         if batch.input_ids.device != self.device:
             batch = batch.to(self.device)
         metadata = self.attention_metadata(batch)
-        outputs = self.model(
-            batch.input_ids,
-            batch.positions,
-            metadata,
-            padding_mask=batch.padding_mask,
-            aux_loss_denominators=self._aux_loss_denominators(batch),
-        )
+        with _autocast(self.device, self.autocast_dtype):
+            outputs = self.model(
+                batch.input_ids,
+                batch.positions,
+                metadata,
+                padding_mask=batch.padding_mask,
+                aux_loss_denominators=self._aux_loss_denominators(batch),
+            )
         outputs = (outputs,) if isinstance(outputs, Tensor) else tuple(outputs)
         if not use_mtp:
             outputs = outputs[:1]
@@ -425,6 +428,7 @@ def build_model(
     index_topk: int | None = None,
     indexer_loss_coeff: float = 0.01,
     init_weights: bool = True,
+    dtype: str | torch.dtype | None = None,
 ) -> MiniDeepSeekModel:
     """Build a miniDeepSeek model for the requested flavor."""
     from .config import build_model_config
@@ -438,7 +442,9 @@ def build_model(
         index_topk=index_topk,
         indexer_loss_coeff=indexer_loss_coeff,
     )
-    return MiniDeepSeekModel(config, device=device, init_weights=init_weights)
+    return MiniDeepSeekModel(
+        config, device=device, init_weights=init_weights, dtype=dtype
+    )
 
 
 def model_config_dict(config) -> dict:
@@ -498,3 +504,31 @@ def _sample_tokens(
     ids = torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
     log_probs = F.log_softmax(filtered, dim=-1)
     return ids, log_probs.gather(-1, ids.unsqueeze(-1)).squeeze(-1)
+
+
+def _resolve_autocast_dtype(dtype, device: torch.device) -> torch.dtype | None:
+    if device.type != "cuda" or dtype in (None, "float32", torch.float32):
+        return None
+    if isinstance(dtype, str):
+        mapping = {
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float16": torch.float16,
+            "fp16": torch.float16,
+        }
+        return mapping.get(dtype.lower())
+    return dtype if dtype in (torch.bfloat16, torch.float16) else None
+
+
+class _null_context:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *args):
+        return False
+
+
+def _autocast(device: torch.device, dtype: torch.dtype | None):
+    if dtype is None or device.type != "cuda":
+        return _null_context()
+    return torch.autocast(device_type="cuda", dtype=dtype)

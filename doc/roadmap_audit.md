@@ -47,7 +47,7 @@
 | TP / CP | ❌ | — | 官方 §3.4.3 CP 面向 1M context；本项目 8K 未实现 |
 | 激活重计算 | ❌ | — | 官方 §3.4.4 是 tensor-level checkpointing；本项目 60M 未接 |
 | bf16 训练 | ✅ | `train/trainer.py` | CUDA autocast；CPU 用 fp32 |
-| eval/RL/teacher bf16 | ⚠️ | — | 模型仍 fp32；只有训练器 autocast |
+| eval/RL/teacher bf16 | ⚠️ | `model/wrapper.py` | CUDA 上 forward 统一 autocast bf16；权重仍 fp32（teacher 内存未省） |
 | FP8 / FP4 / 1M context | ❌ | — | 路线图非目标 |
 
 ## 3. 数据技术
@@ -123,7 +123,7 @@
 | routing 门禁 | ✅ | `consistency/checks.py` | ≥99.9% |
 | checkpoint 门禁 | ✅ | `consistency/checks.py` | 位级 |
 | 权重同步版本校验 | ⚠️ | `rl/rollout.py` | 代码门禁有；真实 vLLM 未跑 |
-| dtype/autocast 统一 | ⚠️ | 训练有 autocast；eval/RL 无 | |
+| dtype/autocast 统一 | ✅ | `model/wrapper.py` | 训练/rollout/eval/teacher 共用 wrapper autocast；CPU 保持 fp32 |
 | math/code/world 自写评估 | ✅ | `eval/` | |
 | lm-eval 通用基准 | ⚠️ | `eval/lm_eval.py` | 可选依赖，未实跑 |
 | MMLU/ARC/C-Eval 实际分数 | ❌ | — | 未产出 |

@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             swiglu_limit=10.0,
             index_topk=args.index_topk,
+            dtype=args.dtype,
         )
         load_checkpoint(checkpoint, reloaded)
         batch = batches[0].to(device)
