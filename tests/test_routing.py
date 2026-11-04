@@ -76,3 +76,16 @@ def test_hash_router_table_is_persistent(debug_model):
     assert hash_router.tid2eid.numel() > 0
     buffer_names = dict(debug_model.model.named_buffers())
     assert "layers.0.feed_forward.router.tid2eid" in buffer_names
+
+
+def test_domain_routing_metrics(debug_model, small_batch):
+    from minideepseek.model.routing import domain_routing_metrics
+
+    with record_routing(debug_model.model) as recorded:
+        debug_model.forward(small_batch, use_mtp=False)
+    domains = [0] * 8 + [1] * 5
+    metrics = domain_routing_metrics(recorded, domains, names={0: "general", 1: "code"})
+    assert metrics["domain_general_tokens"] == 8
+    assert metrics["domain_code_tokens"] == 5
+    assert 0.0 <= metrics["domain_general_routing_entropy_normalized"] <= 1.0
+    assert metrics["domain_general_expert_load_max_over_mean"] >= 1.0

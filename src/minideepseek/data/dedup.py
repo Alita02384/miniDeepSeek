@@ -1,10 +1,10 @@
 """Near-duplicate detection with MinHash-LSH.
 
 The roadmap requires document- and paragraph-level deduplication before
-tokenization.  This module implements **document-level** MinHash-LSH; paragraph
-deduplication is not wired into the pipeline yet (see doc/roadmap_audit.md).
-It is compact and dependency-free, suitable for the local debug corpora; it is
-not a replacement for a distributed dedup pipeline at 6B tokens.
+tokenization.  This module implements document-level MinHash-LSH plus a
+streaming paragraph deduper; both are wired into the pretrain pipeline.  They
+are compact and dependency-free, suitable for local debug corpora, not a
+replacement for a distributed dedup pipeline at 6B tokens.
 """
 
 from __future__ import annotations
@@ -105,6 +105,36 @@ def duplicate_indices(texts: list[str], *, threshold: float = 0.8) -> set[int]:
         elif right not in duplicates:
             duplicates.add(left)
     return duplicates
+
+
+_PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")
+
+
+class ParagraphDeduper:
+    """Drop repeated paragraphs (across documents) while keeping the first."""
+
+    def __init__(self, *, min_chars: int = 64):
+        self.min_chars = max(int(min_chars), 1)
+        self._seen: set[int] = set()
+        self.removed = 0
+
+    def __call__(self, text: str) -> str:
+        paragraphs = _PARAGRAPH_SPLIT.split(text)
+        if len(paragraphs) <= 1:
+            return text
+        kept: list[str] = []
+        for paragraph in paragraphs:
+            normalized = normalize_for_dedup(paragraph)
+            if len(normalized) < self.min_chars:
+                kept.append(paragraph)
+                continue
+            digest = _hash64(normalized)
+            if digest in self._seen:
+                self.removed += 1
+                continue
+            self._seen.add(digest)
+            kept.append(paragraph)
+        return "\n\n".join(kept)
 
 
 class MinHashIndex:

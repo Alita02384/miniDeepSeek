@@ -28,6 +28,7 @@ from torch import Tensor
 from ..config import RLConfig, resolve_device, set_seed
 from ..data.grpo import GRPORecord
 from ..model.checkpoint import load_checkpoint, save_checkpoint
+from ..model.routing import domain_routing_metrics, record_routing
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.metrics import MetricsLogger
@@ -50,6 +51,9 @@ class GRPOStepStats:
     approx_kl: float = 0.0
     grad_norm: float = 0.0
     lr: float = 0.0
+    rollout_weight_version: int = 0
+    weight_sync_logprob_diff: float = 0.0
+    routing: dict[str, float] = field(default_factory=dict)
     components: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -65,6 +69,9 @@ class GRPOStepStats:
             "approx_kl": self.approx_kl,
             "grad_norm": self.grad_norm,
             "lr": self.lr,
+            "rollout_weight_version": self.rollout_weight_version,
+            "weight_sync_logprob_diff": self.weight_sync_logprob_diff,
+            **{f"routing_{key}": value for key, value in self.routing.items()},
             **{f"reward_{key}": value for key, value in self.components.items()},
         }
 
@@ -131,12 +138,34 @@ class GRPOTrainer:
         length = sum(sample.response_length for sample in flat_samples)
         if length == 0:
             raise RuntimeError("all sampled responses are empty")
-        actor_logprobs = self.model.response_logprobs(
-            batch,
-            response_mask,
-            requires_grad=True,
-            temperature=self.config.rl.temperature,
-        )
+        if self.config.rl.log_domain_routing:
+            domain_names: dict[int, str] = {}
+            labels: list[int] = []
+            for sample in flat_samples:
+                domain = sample.record.domain if sample.record else "general"
+                index = {name: i for i, name in domain_names.items()}.get(domain)
+                if index is None:
+                    index = len(domain_names)
+                    domain_names[index] = domain
+                labels.extend([index] * len(sample.sequence))
+            with record_routing(self.model.model) as routing_record:
+                actor_logprobs = self.model.response_logprobs(
+                    batch,
+                    response_mask,
+                    requires_grad=True,
+                    temperature=self.config.rl.temperature,
+                )
+            routing_stats = domain_routing_metrics(
+                routing_record, labels, names=domain_names
+            )
+        else:
+            actor_logprobs = self.model.response_logprobs(
+                batch,
+                response_mask,
+                requires_grad=True,
+                temperature=self.config.rl.temperature,
+            )
+            routing_stats = {}
         old_logprobs = torch.tensor(
             [value for sample in flat_samples for value in sample.sampling_logprobs],
             dtype=torch.float32,
@@ -177,6 +206,7 @@ class GRPOTrainer:
             clip_fraction=float(clip_fraction),
             ratio_mean=float(ratio.detach().mean()),
             approx_kl=float(approx_kl),
+            routing=routing_stats,
         )
         component_values: dict[str, list[float]] = {}
         for group in rewards:
@@ -202,7 +232,19 @@ class GRPOTrainer:
             for group in groups
         ]
         self.optimizer.zero_grad(set_to_none=True)
+        samples = self._flatten(groups)
+        sync_diff = 0.0
+        every = int(self.config.rl.weight_sync_check_every)
+        if every > 0 and self.engine.generator is not None and self.step_index % every == 0:
+            diff = self.engine.check_generator_consistency(samples)
+            sync_diff = float(diff or 0.0)
+            if sync_diff > self.config.rl.weight_sync_threshold:
+                raise RuntimeError(
+                    f"rollout/actor weight-sync logprob mismatch: {sync_diff:.3e} "
+                    f"> {self.config.rl.weight_sync_threshold:.1e}"
+                )
         loss, stats = self.compute_loss(groups, rewards)
+        stats.weight_sync_logprob_diff = sync_diff
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite GRPO loss at step {self.step_index}")
         loss.backward()

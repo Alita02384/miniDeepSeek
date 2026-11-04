@@ -1,0 +1,53 @@
+# Weighted multi-source pilot template. Prepare each tokenized .npz first.
+# Weights are batch-level approximations of the token ratios in
+# data/manifests/pretrain_6b.yaml; the manifest remains the source of truth for
+# license / epoch-cap validation.
+model:
+  flavor: mini_60m
+  seq_len: 4096
+  index_topk: 1024
+  n_mtp_layers: 1
+  swiglu_limit: 10.0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+optim:
+  kind: hybrid
+  lr: 0.0006
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 100
+  decay: cosine
+  min_lr_ratio: 0.1
+  decay_start_ratio: 0.8
+data:
+  batch_tokens: 16384
+  batch_tokens_final: 65536
+  batch_warmup_ratio: 0.1
+  shuffle: true
+  seed: 1234
+  sources:
+    - path: data/tokenized/pretrain_general_4k.npz
+      weight: 0.60
+      domain: general
+    - path: data/tokenized/pretrain_code_4k.npz
+      weight: 0.25
+      domain: code
+    - path: data/tokenized/pretrain_math_4k.npz
+      weight: 0.10
+      domain: math
+    - path: data/tokenized/pretrain_long_4k.npz
+      weight: 0.05
+      domain: general
+train:
+  steps: 200
+  grad_accum: 8
+  log_every: 1
+  out_dir: checkpoints/mixed_pilot
+  mtp_weight: 0.3
+  balance_loss_coeff: 0.0001
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32

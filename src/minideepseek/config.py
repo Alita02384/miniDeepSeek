@@ -159,8 +159,16 @@ class ScheduleSettings(BaseConfig):
 
 
 @dataclass
+class DataSourceSettings(BaseConfig):
+    path: str
+    weight: float = 1.0
+    domain: str = "general"
+
+
+@dataclass
 class DataSettings(BaseConfig):
     path: str | None = None
+    sources: list[DataSourceSettings] = field(default_factory=list)
     tokenized_path: str | None = None
     tokenizer_dir: str | None = None
     seq_len: int | None = None
@@ -283,6 +291,9 @@ class RLSettings(BaseConfig):
     vllm_model_path: str | None = None
     vllm_tensor_parallel_size: int = 1
     vllm_gpu_memory_utilization: float = 0.4
+    log_domain_routing: bool = False
+    weight_sync_check_every: int = 0
+    weight_sync_threshold: float = 1e-3
 
 
 @dataclass

@@ -23,15 +23,17 @@
 | CSA indexer 蒸馏 loss | `model/compressor.py` | loss 有限、indexer 有梯度、eval 关闭 |
 | Muon + AdamW 混合优化器 | `train/optimizer.py` | 官方 8+2 hybrid NS、gamma=0.18、AdamW eps=1e-20、单步更新 |
 | loss-free bias + sequence balance loss | `train/losses.py` | bias 更新、balance loss 有限值 |
-| Anticipatory Routing | `model/anticipatory.py` | stale gate probe → replay 一致性 |
-| 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token warmup；flat→cosine LR；val_path |
+| Anticipatory Routing | `model/anticipatory.py`, `train/trainer.py` | 一步预取队列 + cache → replay；默认关 |
+| 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token warmup；flat→cosine LR；val_path；2K→4K→8K 分阶段 runner |
 | GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
-| 数据管线 | `data/` | 打包、mask、MinHash、13-gram、fertility、manifest、license |
+| 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
+| 权重版本 + logprob 门禁 | `rl/rollout.py` | vLLM 版本计数与 actor/rollout 对比 |
+| 数据管线 | `data/` | 打包、mask、MinHash+段落去重、13-gram、fertility、manifest、license、加权混料、语言/vendored/math 过滤 |
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`115 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`125 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -140,7 +142,7 @@ src/minideepseek/
 ├── rl/           # torch rollout、reward、GRPO、多教师 OPD
 ├── consistency/  # logprob / routing / checkpoint 一致性门禁
 └── eval/         # math / code / world 评估与报告
-tests/            # 94 个 CPU 测试，全部使用 debug model
+tests/            # 125 个 CPU 测试，全部使用 debug model
 doc/              # decisions / sources / PROCESS / testing
 scripts/          # 环境、数据、训练、评估脚本
 ```

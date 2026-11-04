@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ from ..model.checkpoint import load_checkpoint, save_checkpoint
 from ..model.routing import (
     record_routing,
     replay_routing,
+    router_gate_snapshot,
     routing_metrics,
 )
 from ..model.wrapper import MiniDeepSeekModel, build_model
@@ -158,15 +160,11 @@ class Trainer:
             min_history=config.train.loss_spike_min_history,
         )
         self._ar_force_until = -1
+        # (batch, routing record) computed one step ahead with the current gates.
+        self._ar_queue: deque[tuple[PackedBatch, object]] = deque()
         self._rollback: RollbackSnapshot | None = None
         self._rollback_count = 0
         self._spike_count = 0
-        if self.dist.enabled and config.train.loss_spike_rollback:
-            raise ValueError(
-                "loss_spike_rollback is not supported with distributed training; "
-                "the in-memory snapshot is single-process only. Disable it or "
-                "implement a rank-synchronised rollback."
-            )
         self._use_autocast = config.model.dtype == "bfloat16" and self.device.type == "cuda"
         self._autocast_dtype = torch.bfloat16
         self._first_loss: float | None = None
@@ -224,10 +222,24 @@ class Trainer:
         if not self.config.train.loss_spike_rollback or every <= 0:
             return
         if self.step % every == 0:
-            self._rollback = snapshot(self.step, self.model, self.optimizer)
+            self._rollback = snapshot(
+                self.step,
+                self.model.model,
+                self.optimizer,
+                distributed=self.dist if self.dist.enabled else None,
+            )
 
     def _handle_spike(self, loss: float) -> dict[str, float]:
         is_spike = self.spike_detector.update(loss)
+        if self.dist.enabled:
+            # All ranks must take the same rollback/AR decision.
+            flag = torch.tensor(
+                [1.0 if is_spike else 0.0],
+                dtype=torch.float32,
+                device=self.device,
+            )
+            torch.distributed.broadcast(flag, src=0)
+            is_spike = bool(flag.item())
         record: dict[str, float] = {
             "loss_spike": float(is_spike),
             "ar_active": float(self._ar_enabled()),
@@ -245,7 +257,13 @@ class Trainer:
             and self._rollback is not None
             and self._rollback_count < int(self.config.train.max_rollbacks)
         ):
-            restored_step = restore(self._rollback, self.model, self.optimizer)
+            restored_step = restore(
+                self._rollback,
+                self.model.model,
+                self.optimizer,
+                distributed=self.dist if self.dist.enabled else None,
+            )
+            self._ar_queue.clear()
             self._rollback_count += 1
             record["rollback"] = 1.0
             record["rollback_from_step"] = float(self.step)
@@ -269,8 +287,43 @@ class Trainer:
         progress = min(max((self.step - start) / remaining, 0.0), 1.0)
         return initial + (final - initial) * progress
 
+    # -- anticipatory prefetch ------------------------------------------------
+    def _prefetch_step(self, micro_batches: int) -> None:
+        """Fetch one optimizer step's batches and cache θ_t routing.
+
+        This is the V4 §4.2.3 form at optimizer-step granularity: at step t we
+        prefetch the ``micro_batches`` batches for t+1 and compute their indices
+        with θ_t, so at t+1 they are the stale θ_{t-1} indices.
+        """
+        if self._ar_state is None or not self._ar_enabled():
+            return
+        if self._ar_state.config.delta != 1:
+            # Prefetching multiple steps ahead needs a gate ring buffer; fall
+            # back to the probe path for delta > 1.
+            return
+        if len(self._ar_queue) >= micro_batches:
+            return
+        gates = router_gate_snapshot(self.model.model)
+        while len(self._ar_queue) < micro_batches:
+            batch = self._next_batch()
+            self._ar_queue.append((batch, probe_routing(self.model, batch, gates)))
+
+    def _next_training_batch(self) -> tuple[PackedBatch, object | None]:
+        if self._ar_queue:
+            batch, record = self._ar_queue.popleft()
+            if self._ar_enabled():
+                return batch, record
+            # AR was turned off while this batch was queued; use it normally.
+            return batch, None
+        return self._next_batch(), None
+
     # -- one microbatch -------------------------------------------------------
-    def _forward_backward(self, batch: PackedBatch, mtp_weight: float) -> StepMetrics:
+    def _forward_backward(
+        self,
+        batch: PackedBatch,
+        mtp_weight: float,
+        routing_record=None,
+    ) -> StepMetrics:
         batch = batch.to(self.device)
         accum = max(int(self.config.train.grad_accum), 1)
         metrics = StepMetrics(mtp_weight=mtp_weight)
@@ -324,7 +377,10 @@ class Trainer:
             return total, metrics
 
         total = None
-        if self._ar_state is not None and self._ar_enabled():
+        if routing_record is not None:
+            with replay_routing(self.model.model, routing_record):
+                total, metrics = run_forward()
+        elif self._ar_state is not None and self._ar_enabled():
             stale = self._ar_state.stale_snapshot()
             if stale is not None:
                 probe = probe_routing(self.model, batch, stale)
@@ -354,9 +410,13 @@ class Trainer:
         micro_metrics: list[StepMetrics] = []
         mtp_weight = self._mtp_weight()
         for micro in range(accum):
-            batch = self._next_batch()
+            batch, routing_record = self._next_training_batch()
             with self._gradient_sync(micro == accum - 1):
-                micro_metrics.append(self._forward_backward(batch, mtp_weight))
+                micro_metrics.append(
+                    self._forward_backward(batch, mtp_weight, routing_record)
+                )
+        # θ_t is still current here; prefetch step t+1's batches with it.
+        self._prefetch_step(accum)
         if self.dist.enabled and self.dist.mode == "ddp":
             all_reduce_gradients(self.model.model, self.dist.world_size)
         grad_norm = clip_grad_norm(self.model.model, self.config.optim.grad_clip)

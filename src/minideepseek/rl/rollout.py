@@ -121,12 +121,45 @@ class TorchRolloutEngine:
             groups.append(group)
         return groups
 
-    def sync_weights(self, state_dict) -> None:
-        """Push actor weights to an external generator (vLLM), if one is used."""
+    def sync_weights(self, state_dict) -> int:
+        """Push actor weights to an external generator; return its version."""
         update = getattr(self.generator, "update_weights", None)
         if update is None:
-            return
+            return 0
         update(state_dict, getattr(self.generator, "model_path", ""))
+        return int(getattr(self.generator, "version", 0))
+
+    @property
+    def weight_version(self) -> int:
+        return int(getattr(self.generator, "version", 0))
+
+    def check_generator_consistency(
+        self,
+        samples: Sequence[RolloutSample],
+        *,
+        temperature: float | None = None,
+    ) -> float | None:
+        """Compare vLLM sampling log-probs with the actor's teacher-forced ones.
+
+        Returns the max absolute difference, or ``None`` for the pure torch
+        backend (where rollout and actor are literally the same forward path).
+        """
+        if self.generator is None or not samples:
+            return None
+        actor = self.actor_logprobs(
+            samples,
+            temperature=temperature or samples[0].temperature,
+        ).detach().float().cpu()
+        sampling = torch.tensor(
+            [value for sample in samples for value in sample.sampling_logprobs],
+            dtype=torch.float32,
+        )
+        if actor.numel() != sampling.numel():
+            raise RuntimeError(
+                "generator/actor logprob length mismatch: "
+                f"{actor.numel()} vs {sampling.numel()}"
+            )
+        return float((actor - sampling).abs().max())
 
     # -- actor-side recomputation --------------------------------------------
     @staticmethod

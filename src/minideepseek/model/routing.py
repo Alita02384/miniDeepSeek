@@ -160,6 +160,54 @@ def compare_routing(reference: RoutingRecord, candidate: RoutingRecord) -> dict[
     return per_layer
 
 
+def domain_routing_metrics(
+    record: RoutingRecord,
+    domain_ids: Tensor | list[int],
+    *,
+    names: dict[int, str] | None = None,
+) -> dict[str, float]:
+    """Per-domain expert load / entropy / usage spread.
+
+    ``domain_ids[t]`` labels the token at packed position ``t`` (e.g. the
+    sample's domain in a GRPO batch).  Returns one group of keys per domain.
+    """
+    if not record:
+        return {}
+    ids = torch.as_tensor(domain_ids, dtype=torch.long)
+    if ids.numel() != record.num_tokens:
+        raise ValueError(
+            f"domain_ids has {ids.numel()} entries, record has {record.num_tokens}"
+        )
+    names = names or {}
+    output: dict[str, float] = {}
+    for domain in sorted(int(value) for value in ids.unique()):
+        label = names.get(domain, str(domain))
+        mask = ids == domain
+        if not bool(mask.any()):
+            continue
+        ratios: list[float] = []
+        entropies: list[float] = []
+        fractions: list[float] = []
+        for layer in record.layers.values():
+            routing_map = layer.routing_map[mask].float()
+            counts = routing_map.sum(dim=0)
+            usage = counts / counts.sum().clamp_min(1.0)
+            mean = usage.mean().clamp_min(1e-12)
+            ratios.append(float(usage.max() / mean))
+            entropy = -(usage * usage.clamp_min(1e-12).log()).sum()
+            entropies.append(float(entropy / torch.log(torch.tensor(float(usage.numel())))))
+            fractions.append(float((counts > 0).float().mean()))
+        output[f"domain_{label}_tokens"] = float(mask.sum())
+        output[f"domain_{label}_expert_load_max_over_mean"] = sum(ratios) / len(ratios)
+        output[f"domain_{label}_routing_entropy_normalized"] = (
+            sum(entropies) / len(entropies)
+        )
+        output[f"domain_{label}_experts_used_fraction"] = (
+            sum(fractions) / len(fractions)
+        )
+    return output
+
+
 def routing_metrics(record: RoutingRecord) -> dict[str, float]:
     """Expert-load and routing-entropy summaries over all layers."""
     if not record:

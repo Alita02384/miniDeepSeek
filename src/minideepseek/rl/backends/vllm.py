@@ -73,6 +73,7 @@ class VLLMGenerator:
         self.index_topk = index_topk
         self.indexer_loss_coeff = indexer_loss_coeff
         self._llm = None
+        self.version = 0
         self._build()
 
     def _build(self) -> None:
@@ -172,6 +173,7 @@ class VLLMGenerator:
             self._llm = None
             self.model_path = str(out_dir)
             self._build()
+        self.version += 1
 
     def close(self) -> None:
         self._llm = None

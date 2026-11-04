@@ -11,7 +11,7 @@ from minideepseek.data.grpo import GRPORecord, build_grpo_dataset, convert_recor
 from minideepseek.data.manifest import DataManifest, SourceSpec, validate_manifest
 from minideepseek.data.opd import balance_by_teacher, build_opd_pool, load_opd_prompts
 from minideepseek.data.pretrain import PackedPretrainDataset, build_pretrain_dataset
-from minideepseek.data.quality import score_text
+from minideepseek.data.quality import QualityConfig, score_text
 from minideepseek.tokenizer import load_tokenizer
 
 
@@ -196,3 +196,48 @@ def test_batch_token_warmup_schedule():
     assert token_schedule(100, 400, 0.5, 10, 0) == 100
     assert token_schedule(100, 400, 0.5, 10, 5) == 400
     assert token_schedule(100, 400, 0.5, 10, 3) == 280
+
+
+def test_paragraph_dedup(tmp_path):
+    repeated = (
+        "This paragraph is long enough to be deduplicated across the document. " * 3
+    )
+    text = repeated + "\n\n" + "A unique second paragraph about a different topic. " * 3
+    text = text + "\n\n" + repeated
+    source = tmp_path / "paragraphs.jsonl"
+    source.write_text(json.dumps({"text": text}) + "\n")
+    with_dedup = build_pretrain_dataset(
+        [source],
+        tmp_path / "a.npz",
+        seq_len=256,
+        min_chars=16,
+        quality_filter=False,
+        dedup=False,
+        paragraph_dedup=True,
+    )
+    without = build_pretrain_dataset(
+        [source],
+        tmp_path / "b.npz",
+        seq_len=256,
+        min_chars=16,
+        quality_filter=False,
+        dedup=False,
+        paragraph_dedup=False,
+    )
+    assert with_dedup["paragraphs_removed"] >= 1
+    assert with_dedup["tokens"] < without["tokens"]
+
+
+def test_extended_quality_filters():
+    assert "binary" in score_text("valid text\x00with nul").reasons
+    vendored = "node_modules/react/index.js\n" + "export const x = 1;\n" * 20
+    assert "vendored_code" in score_text(vendored, domain="code").reasons
+    math = "Here is a proof without any formulas. " * 20
+    config = QualityConfig(min_math_formula_ratio=1e-6, require_math_answer=True)
+    reasons = score_text(math, domain="math", config=config).reasons
+    assert "low_formula_density" in reasons
+    assert "missing_answer_marker" in reasons
+    good_math = "\\boxed{42} The value satisfies $x = y + z$ and equals 42."
+    good_reasons = score_text(good_math, domain="math", config=config).reasons
+    assert "low_formula_density" not in good_reasons
+    assert "missing_answer_marker" not in good_reasons

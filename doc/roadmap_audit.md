@@ -11,12 +11,13 @@
 ## 1. 结论
 
 核心主线（模型、数据、预训练/SFT、GRPO、OPD、一致性、评测、FSDP2、HF 导出）
-都已经有代码和测试。**但不是路线图 100% 完成**，主要缺口集中在：
+都已经有代码和测试。**但不是路线图 100% 完成**，剩余缺口集中在：
 
-- 数据侧：段落级去重、加权混料、语言识别/vendored/二进制/数学公式过滤；
-- 训练侧：sequence-length curriculum、EP、激活重计算、分布式 RL；
-- 推理侧：vLLM 自定义模型/kernel、verl GPU 实跑、vLLM 权重版本校验；
-- 模型侧：teacher/rollout 的 bf16 权重（目前训练有 autocast，eval/RL 没有）；
+- 数据侧：长文档/多语言语料、FIM / token-splitting、真实 6B 数据；
+- 训练侧：EP/CP/激活重计算（本轮明确不做）、teacher/rollout bf16、分布式 RL；
+- 推理侧：vLLM 自定义模型/kernel、verl GPU 实跑；
+- 后训练：teacher hidden-state 缓存/offload、>10 teachers、GRM（本轮明确不做）；
+- 模型侧：vLLM/verl 的 GPU 数值验证；
 - 规模侧：没有 6B 数据，也没有真实训练 mini-60M（按项目要求）。
 
 ## 2. 模型与训练技术
@@ -34,12 +35,12 @@
 | MTP depth 1 + loss | ✅ | `model/model.py`, `wrapper.py` | 含多文档 label 边界 |
 | SwiGLU clamp 10 + 监控 | ✅ | `model/nn.py`, `train/metrics.py` | |
 | Muon + AdamW | ✅ | `train/optimizer.py` | 已按官方 Algorithm 1：8+2 hybrid NS、gamma=0.18、AdamW eps=1e-20；FSDP2 DTensor 路径 |
-| Anticipatory Routing | ⚠️ | `model/anticipatory.py` | stale-gate probe + replay，非 dataloader 预取；默认关 |
+| Anticipatory Routing | ⚠️ | `model/anticipatory.py`, `train/trainer.py` | 已加一步预取队列 + 缓存索引；probe 仍同步执行，未做异步 overlap；默认关 |
 | loss spike 检测 / 自动 AR | ✅ | `train/spike.py` | |
-| rollback | ⚠️ | `train/spike.py` | 单进程内存快照；distributed 下显式拒绝 |
+| rollback | ✅ | `train/spike.py` | FSDP2 gather/broadcast 快照；不恢复 dataloader 位置 |
 | 4K dense-over-compressed | ✅ | `train/scheduler.py` | index_topk 调度 |
 | 8K top-k 64 收紧 | ✅ | `train/scheduler.py` | 相对步数比例 |
-| 2K→4K→8K sequence curriculum | ❌ | — | 官方是 4K→16K→64K→1M 分阶段；本项目 roadmap 是 4K/8K，未做单次训练调度 |
+| 2K→4K→8K sequence curriculum | ✅ | `train/curriculum.py` | 分阶段 runner：独立 2K/4K/8K 数据 + 累计 step + resume；不是单次动态长度 |
 | FSDP2 | ✅ | `train/distributed.py` | CPU/Gloo 2 进程；NCCL 未验证 |
 | DDP fallback | ✅ | `train/distributed.py` | 手动梯度平均 |
 | EP（专家并行） | ❌ | — | 官方 §3.1；本项目 FSDP2 复制专家分片，无 all-to-all；60M/6 专家下收益有限 |
@@ -59,15 +60,15 @@
 | SFT packing | ✅ | `data/sft.py` | |
 | GRPO/OPD schema | ✅ | `data/grpo.py`, `opd.py` | |
 | MinHash 文档级去重 | ✅ | `data/dedup.py` | |
-| 段落级去重 | ❌ | — | `dedup.py` 已注明只做文档级；官方报告只写 web filtering，未细化段落级 |
+| 段落级去重 | ✅ | `data/dedup.ParagraphDeduper` | 跨文档段落去重已接入 pretrain（`--no-paragraph-dedup` 可关） |
 | 质量过滤（长度/符号/重复/模板） | ✅ | `data/quality.py` | |
-| 语言识别 | ❌ | — | 未接 fastText/langid |
-| code license / 自动生成过滤 | ✅ | `data/quality.py` | vendored 目录/二进制未做 |
-| math 公式密度 / 答案完整性 | ❌ | — | 只在 GRPO 转换时要求 reference |
+| 语言/脚本识别 | ✅ | `data/quality.py` | 启发式已知 script 比例，非 fastText |
+| code license / 自动生成 / vendored / binary | ✅ | `data/quality.py` | vendored 与二进制为启发式 |
+| math 公式密度 / 答案完整性 | ✅ | `data/quality.py` | 默认只统计；可配置为拒绝 |
 | 13-gram 污染检查 | ✅ | `data/contamination.py` | |
 | fertility | ✅ | `data/fertility.py` | |
 | manifest 权重/epoch 校验 | ✅ | `data/manifest.py` | |
-| 加权数据混料 sampler | ❌ | `manifest.py` 只有 plan | 未接进 `iter_batches` |
+| 加权数据混料 sampler | ✅ | `data/mix.py`, `train/run.py` | `data.sources` 权重混料；manifest 仍管 license/epoch |
 | train/val/eval 无交集 | ⚠️ | GRPO 有 split；pretrain 只校验 manifest | 无自动去重交集检查 |
 | 6B 语料 / 8K 长文数据 | ❌ | — | 当前只有 MiniMind 小样本 |
 | FIM / token-splitting | ❌ | — | 官方 §4.1 明确继承；roadmap 未列，尚未实现 |
@@ -99,13 +100,13 @@
 | code unit-test reward | ✅ | `rl/reward.py` | 子进程执行 |
 | world rubric reward | ✅ | `rl/reward.py` | 启发式默认 |
 | world HTTP judge | ⚠️ | `rl/judge.py` | 可选，未真实调用 |
-| local GRM | ❌ | — | 官方 §5.1.1 用 GRM 并直接 RL 优化 judge；本项目只有启发式/HTTP judge |
+| local GRM | ❌（暂缓） | — | 官方 §5.1.1；用户明确先不做世界知识专家/GRM，等确定替代领域后再做 |
 | medical safety reward | ✅ | `rl/reward.py` | |
 | rollout↔actor logprob 一致性 | ✅ | `consistency/checks.py` | 9.5e-7 |
 | router replay | ✅ | `model/routing.py` | torch 路径 100% |
 | vLLM rollout | ⚠️ | `rl/backends/vllm.py` | 可选；未 GPU 验证 |
 | vLLM router replay | ❌ | — | vLLM 不暴露路由 |
-| 权重版本号 + logits 双校验 | ❌ | — | vLLM 更新只重建 engine |
+| 权重版本号 + logits 双校验 | ✅ | `rl/rollout.py`, `rl/backends/vllm.py` | 版本计数 + 可选 logprob 门禁；未在真实 vLLM 上跑 |
 | OPD on-policy rollout | ✅ | `rl/opd.py` | |
 | OPD full-vocab reverse KL | ✅ | `rl/opd.py` | 6400 词表 |
 | 多教师 hard key / 权重 | ✅ | `rl/opd.py`, `configs/opd` | |
@@ -121,12 +122,12 @@
 | logprob 门禁 | ✅ | `consistency/checks.py` | <1e-3 |
 | routing 门禁 | ✅ | `consistency/checks.py` | ≥99.9% |
 | checkpoint 门禁 | ✅ | `consistency/checks.py` | 位级 |
-| 权重同步版本校验 | ❌ | — | 见上 |
+| 权重同步版本校验 | ⚠️ | `rl/rollout.py` | 代码门禁有；真实 vLLM 未跑 |
 | dtype/autocast 统一 | ⚠️ | 训练有 autocast；eval/RL 无 | |
 | math/code/world 自写评估 | ✅ | `eval/` | |
 | lm-eval 通用基准 | ⚠️ | `eval/lm_eval.py` | 可选依赖，未实跑 |
 | MMLU/ARC/C-Eval 实际分数 | ❌ | — | 未产出 |
-| 域条件专家使用率 | ❌ | `routing_metrics` 只有整体指标 | 未按 domain 分组 |
+| 域条件专家使用率 | ✅ | `routing.domain_routing_metrics` | GRPO 可开 `log_domain_routing` 记录 |
 | HF 导出 | ✅ | `model/hf/` | logits 逐位一致 |
 | torch/safetensors/DCP checkpoint | ✅ | `model/checkpoint.py` | DCP 仅单进程验证 |
 | 分布式 DCP | ⚠️ | 函数存在 | 未在 FSDP2 下验证 |
@@ -149,11 +150,11 @@ HF export → from_pretrained               max |Δ| = 0
 
 ## 9. 建议优先级
 
-1. 数据：加权混料 sampler、段落级去重、语言/vendored/二进制/数学过滤；
-2. 训练：sequence-length curriculum、teacher/rollout bf16、激活重计算；
-3. 推理：vLLM 权重版本号+logits 校验、目标版本 GPU smoke；verl GPU smoke；
-4. 并行：EP（6 专家在 60M 上收益有限，可后置）、分布式 RL；
-5. 评测：lm-eval 实跑、domain-conditioned 路由指标、格式评估器。
+1. 数据：长文档/多语言语料、FIM/token-splitting（官方 §4.1；roadmap 未展开）；
+2. 训练：teacher/rollout bf16、分布式 RL；EP/CP/激活重计算按用户要求暂不做；
+3. 推理：目标 vLLM 版本 GPU smoke、verl GPU smoke；权重版本+logprob 门禁已有代码；
+4. 后训练：teacher hidden-state cache/offload、>10 teachers；
+5. 评测：lm-eval 实跑、格式评估器；GRM 按用户要求先不做。
 
 
 ## 10. 对照官方报告后的归类
@@ -172,17 +173,17 @@ HF export → from_pretrained               max |Δ| = 0
 
 | 项 | 官方位置 | 现状 |
 |---|---|---|
-| Anticipatory Routing 的 prefetch + cache | §4.2.3 | 只做 stale-gate probe + replay 近似，没有 `t-Δt` 预取队列 |
-| 自动短 rollback + AR | §4.2.3 | 有检测/AR，但 rollback 单进程；distributed 显式拒绝 |
-| sequence-length curriculum | §4.2.2 | 官方 4K→16K→64K→1M；本项目无自动调度 |
+| Anticipatory Routing 的 prefetch + cache | §4.2.3 | 一步预取队列已实现；probe 未异步 overlap |
+| 自动短 rollback + AR | §4.2.3 | 检测/AR/rollback 已有；rollback 不恢复 dataloader 位置 |
+| sequence-length curriculum | §4.2.2 | 分阶段 2K→4K→8K runner 已实现 |
 | EP | §3.1 | 未实现；FSDP2 只做参数分片 |
 | 激活重计算 | §3.4.4 | 未接 |
 | FIM / token-splitting | §4.1 | 未实现 |
 | 长文档 / 多语言数据 | §4.1 | 未接入 |
 | GRM | §5.1.1 | 只有启发式 + 可选 HTTP judge |
 | 教师 hidden-state 缓存/offload | §5.2.2 | 未做（3 teacher/6.4K 规模下非必需） |
-| 数据加权混料 | §4.2 | manifest 有 plan，未接 sampler |
-| 段落级去重 | roadmap §4.2.3 | 未实现 |
+| 数据加权混料 | §4.2 | ✅ 已接 `data.sources` |
+| 段落级去重 | roadmap §4.2.3 | ✅ 已接入 pretrain |
 | vLLM / verl GPU 实跑 | — | 仅接口/配置，未验证 |
 
 ### 10.3 已按官方报告修正的差异

@@ -325,3 +325,19 @@
   - `hc_base`/`hc_scale` 走 AdamW，`hc_fn` 走 Muon（之前误把 `hc_fn`
     也归入 AdamW）。
 - **影响**：Muon 更新量与官方一致；旧的“NS-5 + sqrt(rows/cols)”配置不再使用。
+
+### D31. 补齐 roadmap 的 AR/rollback/curriculum/数据/指标缺口
+
+- **Anticipatory Routing**：`train/trainer.py` 增加一步预取队列；在 step t 用当前
+  gate 预计算 t+1 的 routing 索引并缓存，t+1 直接 replay；首步/Δ>1 仍回退
+  probe。probe 仍同步执行，没有做官方 §3.1 的通信 overlap。
+- **rollback**：`train/spike.py` 在 FSDP2 下用 full-state gather/broadcast 快照，
+  spike 决策由 rank0 broadcast；不恢复 dataloader 位置。
+- **sequence-length curriculum**：`train/curriculum.py` 分阶段 2K→4K→8K
+  runner，分别 prepare 数据、累计 step、resume 上一阶段 checkpoint。
+- **数据**：`WeightedBatchMixer`（`data.sources`）、`ParagraphDeduper`、
+  语言/script、vendored、binary、math formula/answer 过滤。
+- **指标**：`domain_routing_metrics`，GRPO 可选 `log_domain_routing`。
+- **权重同步**：vLLM generator 版本计数 + 可选 actor/rollout logprob 门禁。
+- **未做**：EP/CP/激活重计算、teacher hidden-state cache、GRM（按用户要求
+  世界知识专家先不做）。

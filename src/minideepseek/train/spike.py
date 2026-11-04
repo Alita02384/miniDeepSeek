@@ -63,8 +63,24 @@ class RollbackSnapshot:
     optimizer_state: dict
 
 
-def snapshot(step: int, model, optimizer) -> RollbackSnapshot:
-    """Copy model/optimizer state to CPU so later updates cannot mutate it."""
+def snapshot(step: int, model, optimizer, *, distributed=None) -> RollbackSnapshot:
+    """Copy model/optimizer state so later updates cannot mutate it.
+
+    With a distributed context the full state is gathered collectively; only
+    rank 0 keeps the tensors, other ranks keep empty dicts and participate in
+    the later broadcast during :func:`restore`.
+    """
+    if distributed is not None and distributed.enabled:
+        from .distributed import gather_model_state_dict, gather_optimizer_state_dict
+
+        return RollbackSnapshot(
+            step=int(step),
+            model_state={
+                key: value.detach().clone()
+                for key, value in gather_model_state_dict(model).items()
+            },
+            optimizer_state=gather_optimizer_state_dict(model, optimizer),
+        )
     return RollbackSnapshot(
         step=int(step),
         model_state=copy.deepcopy(
@@ -74,7 +90,19 @@ def snapshot(step: int, model, optimizer) -> RollbackSnapshot:
     )
 
 
-def restore(snapshot_state: RollbackSnapshot, model, optimizer) -> int:
+def restore(
+    snapshot_state: RollbackSnapshot,
+    model,
+    optimizer,
+    *,
+    distributed=None,
+) -> int:
+    if distributed is not None and distributed.enabled:
+        from .distributed import load_model_state_dict, load_optimizer_state_dict
+
+        load_model_state_dict(model, snapshot_state.model_state)
+        load_optimizer_state_dict(model, optimizer, snapshot_state.optimizer_state)
+        return snapshot_state.step
     model.load_state_dict(
         {key: value.to(next(model.parameters()).device) for key, value in snapshot_state.model_state.items()}
     )

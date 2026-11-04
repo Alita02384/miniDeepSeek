@@ -176,3 +176,23 @@ def test_grpo_resume_loads_sft_checkpoint(tmp_path, stub_tokenizer):
     batch = from_sequences([[1, 2, 3, 4]])
     with torch.no_grad():
         assert torch.equal(source.forward(batch)[0], model.forward(batch)[0])
+
+
+def test_grpo_domain_routing_metrics(tmp_path, stub_tokenizer):
+    records = [
+        GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math"),
+    ]
+    config = _rl_config(tmp_path, log_domain_routing=True)
+    from minideepseek.model import build_model
+
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
+    trainer = GRPOTrainer(
+        config,
+        model,
+        stub_tokenizer,
+        records,
+        lambda text, _record: RewardResult(total=0.0),
+    )
+    metrics = trainer.train(1)
+    assert any(key.startswith("routing_domain_math") for key in metrics)
+    assert metrics["routing_domain_math_tokens_first"] > 0

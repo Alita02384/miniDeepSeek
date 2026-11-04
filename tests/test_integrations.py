@@ -111,3 +111,28 @@ def test_lm_eval_guard():
 
     with pytest.raises(RuntimeError, match="lm-evaluation-harness is not installed"):
         run_lm_eval("missing", ["mmlu"])
+
+
+def test_weight_version_and_generator_consistency(debug_model, stub_tokenizer):
+    from minideepseek.rl.rollout import RolloutSample, TorchRolloutEngine
+
+    class StubGenerator:
+        model_path = "stub"
+        version = 0
+
+        def update_weights(self, state_dict, out_dir):
+            self.version += 1
+            return self.version
+
+    sample = RolloutSample(
+        prompt_ids=[1, 2, 3],
+        response_ids=[4, 5],
+        sampling_logprobs=[0.0, 0.0],
+        temperature=1.0,
+    )
+    engine = TorchRolloutEngine(debug_model, stub_tokenizer, generator=StubGenerator())
+    version = engine.sync_weights(debug_model.state_dict())
+    assert version == 1
+    actor = engine.flat_logprobs([sample])
+    sample.sampling_logprobs = actor
+    assert engine.check_generator_consistency([sample]) == pytest.approx(0.0, abs=1e-6)

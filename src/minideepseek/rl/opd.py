@@ -41,6 +41,8 @@ class OPDStepStats:
     response_length_mean: float = 0.0
     grad_norm: float = 0.0
     lr: float = 0.0
+    rollout_weight_version: int = 0
+    weight_sync_logprob_diff: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         record = {
@@ -50,6 +52,8 @@ class OPDStepStats:
             "response_length_mean": self.response_length_mean,
             "grad_norm": self.grad_norm,
             "lr": self.lr,
+            "rollout_weight_version": self.rollout_weight_version,
+            "weight_sync_logprob_diff": self.weight_sync_logprob_diff,
         }
         for key, value in self.kl_by_teacher.items():
             record[f"kl_{key}"] = value
@@ -158,6 +162,16 @@ class OPDTrainer:
 
     def step(self) -> dict[str, Any]:
         samples = self._rollout()
+        sync_diff = 0.0
+        every = int(self.config.rl.weight_sync_check_every)
+        if every > 0 and self.engine.generator is not None and self.step_index % every == 0:
+            diff = self.engine.check_generator_consistency(samples)
+            sync_diff = float(diff or 0.0)
+            if sync_diff > self.config.rl.weight_sync_threshold:
+                raise RuntimeError(
+                    f"rollout/student weight-sync logprob mismatch: {sync_diff:.3e} "
+                    f"> {self.config.rl.weight_sync_threshold:.1e}"
+                )
         if not samples:
             raise RuntimeError("rollout produced no samples")
         self.optimizer.zero_grad(set_to_none=True)
@@ -190,6 +204,7 @@ class OPDTrainer:
         )
         self.scheduler.step(self.step_index)
         self.optimizer.step()
+        rollout_version = self.engine.sync_weights(self.student.state_dict())
         stats = OPDStepStats(
             loss=float(loss_total.detach()),
             kl_total=float(loss_total.detach()),
@@ -199,6 +214,8 @@ class OPDTrainer:
             / len(samples),
             grad_norm=grad_norm,
             lr=float(self.optimizer.param_groups[0]["lr"]),
+            rollout_weight_version=rollout_version,
+            weight_sync_logprob_diff=sync_diff,
         )
         return stats.as_dict()
 

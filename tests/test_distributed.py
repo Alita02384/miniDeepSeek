@@ -22,6 +22,7 @@ from minideepseek.train.distributed import (
     init_distributed,
 )
 from minideepseek.train.optimizer import build_optimizer
+from minideepseek.train.spike import restore, snapshot
 from minideepseek.train.trainer import Trainer
 
 
@@ -119,3 +120,31 @@ def test_fsdp2_trainer_save_and_resume(tmp_path, distributed_context):
     other = Trainer(config, resumed, batches, distributed=context)
     meta = other.resume(checkpoint)
     assert meta["step"] == 1
+    # At least one sub-optimizer must have state after resume.
+    assert any(optimizer.state for optimizer in other.optimizer.optimizers)
+
+
+def test_distributed_snapshot_restore(distributed_context):
+    context, settings = distributed_context
+    model = build_model("debugmodel", seq_len=64, device="cpu")
+    model.model = apply_parallelism(model.model, context, settings, device=context.device)
+    optimizer = build_optimizer(model, TrainConfig().optim)
+    optimizer.zero_grad()
+    for parameter in model.parameters():
+        parameter.grad = torch.ones_like(parameter)
+    optimizer.step()
+    state = snapshot(7, model.model, optimizer, distributed=context)
+    before = {
+        name: value.detach().clone()
+        for name, value in model.state_dict().items()
+        if value.is_floating_point()
+    }
+    with torch.no_grad():
+        next(model.parameters()).add_(1.0)
+    restore(state, model.model, optimizer, distributed=context)
+    after = {
+        name: value.detach().clone()
+        for name, value in model.state_dict().items()
+        if value.is_floating_point()
+    }
+    assert all(torch.equal(before[name], after[name]) for name in before)

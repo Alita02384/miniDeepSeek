@@ -299,14 +299,48 @@ def gather_model_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     return get_model_state_dict(model, options=options)
 
 
-def load_model_state_dict(model: nn.Module, state: dict[str, torch.Tensor]) -> None:
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_model_state_dict
+def _copy_full_tensor(parameter: torch.Tensor, full: torch.Tensor) -> None:
+    """Copy a full CPU tensor into a parameter, sharding for DTensor."""
+    from torch.distributed.tensor import DTensor
+    from torch.distributed.tensor.placement_types import Replicate, Shard
 
-    set_model_state_dict(
-        model,
-        state,
-        options=StateDictOptions(full_state_dict=True, broadcast_from_rank0=True),
-    )
+    if isinstance(parameter, DTensor):
+        mesh = parameter.device_mesh
+        placements = parameter.placements
+        world = mesh.size()
+        local_rank = mesh.get_local_rank()
+        value = full.to(device=parameter.device, dtype=parameter.dtype)
+        if world > 1 and isinstance(placements[0], Shard):
+            chunks = torch.chunk(value, world, dim=placements[0].dim)
+            value = chunks[local_rank]
+        elif world > 1 and not isinstance(placements[0], Replicate):
+            raise TypeError(f"unsupported placement {placements[0]!r}")
+        sharded = DTensor.from_local(
+            value.contiguous(), mesh, placements, shape=full.shape, stride=full.stride()
+        )
+        parameter.copy_(sharded)
+    else:
+        parameter.copy_(full.to(device=parameter.device, dtype=parameter.dtype))
+
+
+@torch.no_grad()
+def load_model_state_dict(model: nn.Module, state: dict[str, torch.Tensor]) -> None:
+    """Load a full CPU state dict into a plain/DDP/FSDP2 model.
+
+    ``set_model_state_dict``'s broadcast path is not implemented for all
+    DTensor ops on every torch build, so we copy each full tensor into its
+    local shard explicitly.  This also makes resume and rollback deterministic.
+    """
+    named = dict(model.named_parameters())
+    buffers = dict(model.named_buffers())
+    missing = [name for name in named if name not in state]
+    if missing:
+        raise KeyError(f"checkpoint is missing parameters: {missing[:8]}")
+    for name, parameter in named.items():
+        _copy_full_tensor(parameter, state[name])
+    for name, buffer in buffers.items():
+        if name in state and torch.is_tensor(state[name]):
+            buffer.copy_(state[name].to(device=buffer.device, dtype=buffer.dtype))
 
 
 def gather_optimizer_state_dict(model: nn.Module, optimizer) -> dict[str, Any]:

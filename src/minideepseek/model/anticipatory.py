@@ -4,16 +4,19 @@ V4 decouples the routing decision from the current weights: the features are
 computed with ``theta_t`` while the router selects experts with ``theta_{t-dt}``.
 The indices are prepared one step ahead and cached.
 
-Implementation here is the two-pass form described in the roadmap:
+Implementation:
 
-1. probe: run a no-grad forward with router gate weights from ``t - delta`` and
-   record the resulting top-k indices;
-2. train: run the real forward with :func:`replay_routing` so the step uses the
-   cached indices, and update the weights with the normal gradient path.
+* the trainer prefetches the next optimizer step's batches and caches the
+  routing indices computed with the *current* gate weights ``theta_t``;
+* the next step replays those cached indices, so it uses ``theta_{t-1}`` while
+  its features come from the updated backbone;
+* when the queue is empty (first step after enabling, or ``delta > 1``) the
+  trainer falls back to a no-grad probe with the stale-gate snapshot.
 
-The probe costs one extra forward.  The mechanism is implemented and tested but
-disabled by default (60M has low spike risk); enable it from the training config
-with ``anticipatory_routing.enabled=true``.
+The probe/prefetch still runs synchronously (no EP communication overlap yet).
+The mechanism is implemented and tested but disabled by default (60M has low
+spike risk); enable it from the training config with
+``anticipatory_routing.enabled=true``.
 """
 
 from __future__ import annotations

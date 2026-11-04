@@ -48,6 +48,7 @@ def cmd_pretrain(args: argparse.Namespace) -> int:
         min_chars=args.min_chars,
         seed=args.seed,
         dedup=not args.no_dedup,
+        paragraph_dedup=not args.no_paragraph_dedup,
         quality_filter=not args.no_quality,
         domain=args.domain,
     )
@@ -163,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     pretrain.add_argument("--seed", type=int, default=1234)
     pretrain.add_argument("--vocab-limit", type=int, default=None, help="debug-only token-id modulo")
     pretrain.add_argument("--no-dedup", action="store_true")
+    pretrain.add_argument("--no-paragraph-dedup", action="store_true")
     pretrain.add_argument("--no-quality", action="store_true")
     pretrain.set_defaults(func=cmd_pretrain)
 

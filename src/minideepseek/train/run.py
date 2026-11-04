@@ -19,6 +19,53 @@ from .distributed import init_distributed
 from .trainer import build_trainer
 
 
+def _load_single_dataset(mode: str, path: str):
+    return SFTDataset(path) if mode == "sft" else PackedPretrainDataset(path)
+
+
+def _batch_factory(
+    config: TrainConfig,
+    mode: str,
+    dataset,
+    *,
+    shard_rank: int,
+    shard_world_size: int,
+):
+    total_steps = max(config.train.steps * max(config.train.grad_accum, 1), 1)
+
+    def factory():
+        if mode == "sft":
+            from ..data.sft import iter_batches
+
+            return iter_batches(
+                dataset,
+                batch_tokens=config.data.batch_tokens,
+                batch_tokens_final=config.data.batch_tokens_final,
+                batch_warmup_ratio=config.data.batch_warmup_ratio,
+                total_steps=total_steps,
+                shuffle=config.data.shuffle,
+                seed=config.data.seed,
+                shard_rank=shard_rank,
+                shard_world_size=shard_world_size,
+            )
+        from ..data.pretrain import iter_batches
+
+        return iter_batches(
+            dataset,
+            batch_tokens=config.data.batch_tokens,
+            batch_tokens_final=config.data.batch_tokens_final,
+            batch_warmup_ratio=config.data.batch_warmup_ratio,
+            total_steps=total_steps,
+            seq_len=config.model.seq_len,
+            shuffle=config.data.shuffle,
+            seed=config.data.seed,
+            shard_rank=shard_rank,
+            shard_world_size=shard_world_size,
+        )
+
+    return factory
+
+
 def load_dataset(
     config: TrainConfig,
     mode: str,
@@ -27,42 +74,57 @@ def load_dataset(
     shard_world_size: int = 1,
     path: str | None = None,
 ):
+    explicit_path = path
     path = path or config.data.tokenized_path
+    if config.data.sources and explicit_path is None:
+        from ..data.mix import BatchSource, WeightedBatchMixer
+
+        total_batches = max(config.train.steps * max(config.train.grad_accum, 1), 1)
+        sources = []
+        meta_sources = []
+        for spec in config.data.sources:
+            dataset = _load_single_dataset(mode, spec.path)
+            sources.append(
+                BatchSource(
+                    name=spec.path,
+                    factory=_batch_factory(
+                        config,
+                        mode,
+                        dataset,
+                        shard_rank=shard_rank,
+                        shard_world_size=shard_world_size,
+                    ),
+                    weight=spec.weight,
+                )
+            )
+            meta_sources.append(
+                {
+                    "path": spec.path,
+                    "weight": spec.weight,
+                    "domain": spec.domain,
+                    "tokens": getattr(dataset, "num_tokens", None),
+                }
+            )
+        mixer = WeightedBatchMixer(
+            sources,
+            total_batches=total_batches,
+            seed=config.data.seed,
+            shuffle=config.data.shuffle,
+        )
+        return {"meta": {"sources": meta_sources}}, mixer
     if not path:
         raise SystemExit(
-            "data.tokenized_path is required; run `python -m minideepseek.data.prepare` first"
+            "data.tokenized_path or data.sources is required; "
+            "run `python -m minideepseek.data.prepare` first"
         )
-    if mode == "sft":
-        dataset = SFTDataset(path)
-        from ..data.sft import iter_batches
-
-        batches = iter_batches(
-            dataset,
-            batch_tokens=config.data.batch_tokens,
-            batch_tokens_final=config.data.batch_tokens_final,
-            batch_warmup_ratio=config.data.batch_warmup_ratio,
-            total_steps=max(config.train.steps * max(config.train.grad_accum, 1), 1),
-            shuffle=config.data.shuffle,
-            seed=config.data.seed,
-            shard_rank=shard_rank,
-            shard_world_size=shard_world_size,
-        )
-    else:
-        dataset = PackedPretrainDataset(path)
-        from ..data.pretrain import iter_batches
-
-        batches = iter_batches(
-            dataset,
-            batch_tokens=config.data.batch_tokens,
-            batch_tokens_final=config.data.batch_tokens_final,
-            batch_warmup_ratio=config.data.batch_warmup_ratio,
-            total_steps=max(config.train.steps * max(config.train.grad_accum, 1), 1),
-            seq_len=config.model.seq_len,
-            shuffle=config.data.shuffle,
-            seed=config.data.seed,
-            shard_rank=shard_rank,
-            shard_world_size=shard_world_size,
-        )
+    dataset = _load_single_dataset(mode, path)
+    batches = _batch_factory(
+        config,
+        mode,
+        dataset,
+        shard_rank=shard_rank,
+        shard_world_size=shard_world_size,
+    )()
     return dataset, batches
 
 
@@ -95,7 +157,7 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
     checkpoint = trainer.save("final")
     report = {
         "mode": mode,
-        "dataset": getattr(dataset, "meta", {}),
+        "dataset": dataset.get("meta", {}) if isinstance(dataset, dict) else getattr(dataset, "meta", {}),
         "params": model.parameter_report(),
         "summary": summary,
         "checkpoint": str(checkpoint),
