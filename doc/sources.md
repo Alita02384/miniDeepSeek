@@ -1,66 +1,88 @@
 # 代码来源与改动
 
 > 规则见 `AGENTS.md` §3.3：保留版权头、只复制最小闭包、记录来源 commit 与改动。
-> 本仓库**不修改**任何第三方 checkout。
+> 本仓库**不修改**任何第三方 checkout，**运行时不 import** 它们。
+> 第三方目录只作为参考实现；需要的代码已经重构进 `src/minideepseek/`。
 
 ## 1. torchtitan（BSD-3-Clause）
 
-- 来源：`../torchtitan`，checkout commit `01586df70`（`git -C ../torchtitan rev-parse HEAD`）。
-- 用途：DeepSeek-V4 的**模型实现**（attention / compressor / mHC / MoE / MTP /
-  sharding / state_dict_adapter）与 debug 配置的对照。运行时通过
-  `src/minideepseek/_compat.py` 把该 checkout 加到 `sys.path`；也可显式安装。
+- 来源：`../torchtitan`，checkout commit
+  `01586df70d7599d59a87663f39670a8c694924c3`。
+- 用途：DeepSeek-V4 的结构、数学、参数布局与 debug 配置对照。
 
-### 复制的文件
+### 复制/重构的文件
 
-| 本仓库文件 | 上游文件 | 改动 |
+torchtitan 的 V4 实现依赖 `models/common`、`config`、`distributed`、
+`spmd_types` 等约 1.4 万行框架代码。我们把**模型数学与参数布局**重构为
+普通 `nn.Module`，去掉 sharding / SPMD / config 框架，而不是整目录搬入。
+
+| 本仓库文件 | 上游参考 | 改动 |
 |---|---|---|
-| `src/minideepseek/model/flavors.py` | `torchtitan/models/deepseek_v4/flavors.py` | 见下 |
+| `src/minideepseek/model/config.py` | `deepseek_v4/flavors.py` | 用 dataclass 重写 flavor 构建；新增 mini_60m/110m/200m 与 dense 对照；集中管理 `swiglu_limit` / tied embedding / index_topk |
+| `src/minideepseek/model/nn.py` | `models/common/{activation,nn_modules,linear}.py` | `RMSNorm`、`LimitedSwiGLU`、初始化、Hadamard、SwiGLU clamp |
+| `src/minideepseek/model/rope.py` | `models/common/rope.py` | 实数版 adjacent-pair RoPE + YaRN，缓存为 buffer |
+| `src/minideepseek/model/mhc.py` | `deepseek_v4/mhc.py` | 保留 HcSplitSinkhorn / HcPre / HcPost / HcHead 数学与参数名 |
+| `src/minideepseek/model/moe.py` | `deepseek_v4/moe.py`, `models/common/moe/*` | 自写 hash/learned router、grouped expert 参数（key 与上游一致）、shared expert、loss-free bias |
+| `src/minideepseek/model/compressor.py` | `deepseek_v4/compressor.py` | Compressor / Indexer / SparseIndexerLoss；用 torch 重写 reference top-k 选择，去掉 fused kernel 依赖 |
+| `src/minideepseek/model/attention.py` | `deepseek_v4/attention.py`, `models/common/attn_gym` | SWA/CSA/HCA + gather attention + sink；`gather_attn` 参考实现按原数学重写 |
+| `src/minideepseek/model/model.py` | `deepseek_v4/model.py`, `deepseek_v3/mtp.py` | Decoder、TransformerBlock、MTPBlock、MTP roll；去掉 PP/CP/SPMD |
+| `src/minideepseek/model/routing.py` | — | 本项目新增：record/replay、gate snapshot、路由指标 |
+| `src/minideepseek/model/batch.py` | — | 本项目新增：多文档 packed batch 与 MTP target shift |
+| `src/minideepseek/model/wrapper.py` | — | 本项目新增：loss/logprob/generate/参数统计 |
 
-改动明细：
+改动原则：
 
-1. 保留原 BSD-3 版权头与文件级说明，追加本项目的来源说明。
-2. 相对导入 `from .attention/.compressor/.mhc/.model/.moe/.mtp/.sharding` 改为
-   `torchtitan.models.deepseek_v4.*` 绝对导入（实现类留在上游）。
-3. 新增 `_MINI_PRESETS` 与 `_mini_model`：mini-60M / 110M / 200M 三档配置；
-   `compress_ratios = (0, 0) + (4, 32) * k`，`hca=32`、`index_topk=64`、
-   `n_hash_layers=3`、`top_k=2`、`num_experts=6`、`num_shared_experts=1`、
-   `swiglu_limit=10.0`、`hc_mult=4`、tied embeddings。
-4. 新增 `_mini_60m_dense` / `debugmodel_dense` 与 `_mini_dense_from_debug`：
-   `compress_ratios` 全 0、`window_size=seq_len` 的 dense 对照。
-5. 新增 `tie_word_embeddings` 与 `swiglu_limit` 运行时覆盖参数
-   （上游 debug flavor 默认 `swiglu_limit=None`，本项目测试需要开启 clamp）。
-6. `MODEL_FLAVORS` 只注册 debug / mini / dense 六个 flavor；上游 flash/pro 的
-   **构建函数仍保留在文件中**用于结构对照，但不在注册表，避免误用 284B 配置。
-7. 未改动 `torchtitan/` 下任何文件；开发过程中一次 `pip install -e` 产生的
-   `torchtitan.egg-info` 已删除，最终环境不写上游目录。
+1. 保留上游版权头，并在文件头注明“refactored from …”。
+2. state dict 的 key 与形状对齐上游（例如 `layers.0.feed_forward.routed_experts.w13.weight`、
+   `attention.compressor_128.*`、`hc_attn_pre.hc_fn`），便于对照与转换。
+3. 去掉 `spmd_types` / `torch_remat` / sharding / TP/CP/EP 的运行时代码；
+   多卡并行在本项目自己的 `train/distributed.py` 中实现（FSDP2）。
+4. 参考实现当前在 CPU 上仍会把 routed expert 输入 cast 到 bf16；本项目
+   在 fp32 下不强制 cast，因此逐层对比的相对误差约 1e-4（见
+   `scripts/verify_reference.py`）。
+5. 未改动 `torchtitan/` 下任何文件。
+
+### 数值对齐
+
+`scripts/verify_reference.py`（需要本地存在 `../torchtitan`，仅开发用）
+构建同一份 debug 配置、拷入同一 state dict，逐层比较 block 输出：
+
+```text
+seq=48 : rel diff  layer0 1.4e-4 / layer1 1.1e-4 / layer2 8.5e-5 / layer3 7.5e-5
+seq=512: rel diff  layer0 1.5e-4 / layer1 1.0e-4 / layer2 8.1e-5 / layer3 7.9e-5
+```
+
+差异全部来自上游对 expert 输入的 bf16 cast（fp32 下无法消除）。
 
 ## 2. minimind（Apache-2.0）
 
 | 本仓库文件 | 上游文件 | 说明 |
 |---|---|---|
-| `tokenizer/tokenizer.json` | `minimind/model/tokenizer.json` | 6,400 词表，36 个 added tokens；未修改 |
+| `tokenizer/tokenizer.json` | `minimind/model/tokenizer.json` | 6,400 词表，36 个 added tokens；未修改；sha256 `71f32c68…a668` |
 | `tokenizer/tokenizer_config.json` | `minimind/model/tokenizer_config.json` | chat template 原样复制；未修改 |
 
+minimind commit：`233d00fa068ec2b8c0d4f07b703934d6391a5a73`。
+
 数据样本（`pretrain_t2t_mini.jsonl` / `sft_t2t_mini.jsonl` / `agent_rl_math.jsonl`）
-只在本地脚本中读取，**不复制进 git**。
+只在本地数据准备脚本中读取，**不复制进 git**。
 
 ## 3. verl（Apache-2.0）与 DeepSeek-V4-Flash（MIT）
 
-- **未复制代码**。
 - verl：阅读 `docs/algo/opd.md`、`examples/on_policy_distillation_trainer/`、
   `utils/veomni/router_replay.py` 的设计，作为 `rl/opd.py`、`rl/rollout.py`、
-  `model/routing.py` 的算法参考。本项目在 CPU 环境下不能安装/运行 verl+vLLM，
-  因此实现为原生 torch 版本（见 `doc/decisions.md`）。
-- DeepSeek-V4-Flash：阅读 `config.json`、`README.md`、inference 结构，用于对照
-  超参和 chat 格式；按要求**没有整体复制** `inference/model.py`。
+  `model/routing.py` 的算法参考；未复制运行时代码。
+- DeepSeek-V4-Flash：阅读 `config.json`、`README.md`、inference 结构，用于
+  对照超参与 chat 格式；没有复制 `inference/model.py`。
+- vLLM / verl 只作为**可选 extra**（`pyproject.toml`），不装也能运行本项目；
+  详见 `doc/decisions.md` 的 D11/D15 与后续集成条目。
 
 ## 4. 复现来源
 
 ```bash
 git -C ../torchtitan rev-parse HEAD      # 01586df70...
-git -C ../minimind rev-parse HEAD 2>/dev/null || true
-sha256sum tokenizer/tokenizer.json      # 见 checkpoint meta / data meta
+git -C ../minimind rev-parse HEAD        # 233d00f...
+shasum -a 256 tokenizer/tokenizer.json   # 71f32c68...
 ```
 
-torchtitan 上游若有变动，`flavors.py` 的私有构建函数签名可能变化；升级时先跑
-`pytest tests/test_model.py tests/test_tokenizer.py`，再重新核对本文件的改动点。
+参考实现升级时，先跑 `pytest tests/test_model.py` 与本文件的数值对齐脚本，
+再核对 state dict key/shape 是否变化。

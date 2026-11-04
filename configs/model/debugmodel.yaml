@@ -1,4 +1,4 @@
-# DeepSeek-V4 debug model (torchtitan parity): 256 dim, 4 layers, 4 experts.
+# DeepSeek-V4 debug model (reference parity): 256 dim, 4 layers, 4 experts.
 flavor: debugmodel
 seq_len: 2048
 n_mtp_layers: 0

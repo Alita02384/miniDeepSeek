@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import torch
-from torchtitan.config.parallelism import ParallelismConfig
 
-from minideepseek.model.flavors import MODEL_FLAVORS, build_model_config
+from minideepseek.model.config import MODEL_FLAVORS, build_model_config
+from minideepseek.model.model import DeepSeekV4Model
 from minideepseek.train.metrics import iter_limited_swiglu, swiglu_monitor
 
 
@@ -73,13 +73,11 @@ def test_generation_is_deterministic_with_greedy(debug_model):
 def test_mini_flavors_are_registered():
     for flavor in ("mini_60m", "mini_110m", "mini_200m", "mini_60m_dense", "debugmodel"):
         assert flavor in MODEL_FLAVORS
-    config = build_model_config(
-        "mini_60m", parallelism=ParallelismConfig(enable_sequence_parallel=False), seq_len=512, n_mtp_layers=1
-    )
+    config = build_model_config("mini_60m", seq_len=512, n_mtp_layers=1)
     assert config.vocab_size == 6400
     assert len(config.layers) == 12
-    assert config.enable_weight_tying is True
-    assert config.compress_ratios[:4] == (0, 0, 4, 32)
+    assert config.tie_word_embeddings is True
+    assert tuple(layer.attention.compress_ratio for layer in config.layers[:4]) == (0, 0, 4, 32)
     assert config.layers[2].attention.compress_ratio == 4
     assert config.layers[3].attention.compress_ratio == 32
     assert config.n_mtp_layers == 1
@@ -94,3 +92,22 @@ def test_swiglu_monitor_reports_clamp_stats(make_debug_model, small_batch):
     assert stats.calls > 0
     assert stats.elements > 0
     assert 0.0 <= stats.as_dict()["swiglu_gate_clamp_rate"] <= 1.0
+
+
+def test_flavor_parameter_counts_are_calibrated():
+    """Lock the roadmap calibration: values include MTP depth 1 + tied embeddings."""
+    expected = {
+        "debugmodel": 12_984_104,
+        "mini_60m": 65_262_922,
+        "mini_60m_dense": 62_526_593,
+        "mini_110m": 120_652_773,
+        "mini_200m": 218_205_261,
+    }
+    for flavor, target in expected.items():
+        config = build_model_config(
+            flavor,
+            seq_len=16384 if flavor == "debugmodel" else 8192,
+            n_mtp_layers=1,
+        )
+        params = sum(p.numel() for p in DeepSeekV4Model(config).parameters())
+        assert abs(params - target) / target < 0.001, (flavor, params, target)

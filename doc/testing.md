@@ -1,13 +1,13 @@
 # 测试与验收
 
-> 当前阶段只验证**代码逻辑**。所有模型测试固定使用 torchtitan 的
-> `deepseek_v4_debugmodel`（`debugmodel` / `mtp` 变体），不训练 mini-60M。
+> 当前阶段只验证**代码逻辑**。所有模型测试固定使用项目自带的
+> `debugmodel`（与 DeepSeek-V4 debug 配置同构；`mtp` 变体），不训练 mini-60M。
 
 ## 运行
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 93 passed, ~20s on CPU
+.venv/bin/python -m pytest -q   # 94 passed, ~20s on CPU
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -23,7 +23,7 @@
 |---|---|
 | `test_batch.py` | 文档打包、positions、target mask、MTP shift、跨文档边界、padded→packed |
 | `test_tokenizer.py` | 6,400 词表、特殊 token、chat template、response-only mask、多轮 |
-| `test_model.py` | forward/backward、MTP 形状、loss、logprob、greedy 生成、参数报告、mini 配置结构、SwiGLU clamp 监控 |
+| `test_model.py` | forward/backward、MTP 形状、loss、logprob、greedy 生成、参数报告、mini 配置结构、五档参数校准、SwiGLU clamp 监控 |
 | `test_routing.py` | hash/learned router 录制、replay 一致率、指标、gate 快照、hash 表持久化 |
 | `test_checkpoint.py` | torch / safetensors / DCP 三种存取、logits 位级一致、RNG 状态、指纹 |
 | `test_optimizer.py` | Newton-Schulz、Muon 单步、混合参数分组、warmup/cosine |
@@ -39,9 +39,9 @@
 
 ## 关键验收数值（本机实测）
 
-- debugmodel：无 MTP 10.60M；MTP depth 1 12.98M。
-- mini 配置参数：`mini_60m` 65.26M、`mini_110m` 120.65M、`mini_200m` 218.21M、
-  `mini_60m_dense` 62.52M。
+- debugmodel：无 MTP 10.60M；MTP depth 1 12.98M（12,984,104）。
+- mini 配置参数（含 MTP depth 1、tied embeddings）：`mini_60m` 65,262,922、
+  `mini_110m` 120,652,773、`mini_200m` 218,205,261、`mini_60m_dense` 62,526,593。
 - 一致性（float32 CPU）：
   - rollout ↔ teacher-forced logprob：max |Δ| ≈ **9.5e-7**（阈值 1e-3）；
   - router replay：top-k 集合一致率 **100%**（阈值 99.9%）；
@@ -50,11 +50,25 @@
 - GRPO：1 步，`approx_kl ≈ 1e-6`（rollout/actor 同温度），ratio 均值 ≈ 1。
 - OPD：2 teacher，KL 分量均 > 0，teacher 参数逐位不变。
 
+## 与参考实现的数值对齐（开发用）
+
+`scripts/verify_reference.py` 需要本地 `../torchtitan`，不进默认测试：
+
+```text
+seq=320, packed 2 docs, debugmodel + MTP depth 1
+layer 0: max rel diff 1.5e-4
+layer 1: max rel diff 1.1e-4
+layer 2: max rel diff 7.8e-5
+layer 3: max rel diff 8.3e-5
+logits depth 0: mean abs 2.3e-4, max abs 8.3e-2
+logits depth 1: mean abs 2.6e-4, max abs 8.2e-2
+```
+
+逐层误差来自参考实现把 routed expert 输入 cast 到 bf16；logits 的 max abs
+由极少数 token 的离散路由翻转造成，mean abs 仍是 2e-4 量级。
+
 ## 已知警告
 
-- `compressor.py:144 UserWarning: In CPU autocast, but the target dtype is not supported.`
-  来自上游在 CPU 上尝试 fp32 autocast；torch 会禁用该 autocast，数值仍是 float32，
-  测试全部通过。这不是本仓库的代码。
 - `torch.distributed is disabled... assuming single process`：DCP 单进程保存/读取。
 
 ## 未覆盖 / 未验证

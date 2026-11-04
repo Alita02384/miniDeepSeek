@@ -74,3 +74,30 @@
 - **实现了什么**: 之前带 `--index-topk` 时重载模型会用 flavor 默认值，导致 checkpoint 对比误报；现在 `checkpoint_max_abs_diff=0.0`。
 - **验证**: `ruff check src tests` 通过；`pytest -q` → 93 passed；`python -m minideepseek.train.smoke --flavor debugmodel --steps 1 --index-topk 4` → `checkpoint_verified: true`。
 - **未完成 / 风险**: 无新增；该参数只影响 CSA index 选择，不改变模型参数。
+
+## 2026-11-04 自包含模型重构（移除 torchtitan 运行时依赖）
+
+- **commit**: `a25e893` refactor: 将 DeepSeek-V4 模型重构进项目，移除 torchtitan 运行时依赖
+- **做了什么**:
+  - 将 V4 模型数学（config / nn / rope / mHC / MoE / compressor / attention / decoder / MTP）
+    重构进 `src/minideepseek/model/`，去掉 torchtitan 的 config/SPMD/sharding/remat 框架；
+    state dict key 与形状对齐参考实现。
+  - 删除 `src/minideepseek/_compat.py` 与复制的 `model/flavors.py`；`routing` / `losses`
+    / `metrics` / `wrapper` 全部改为项目内实现。
+  - 补齐 CSA indexer 蒸馏 loss（`SparseIndexerLoss`）；SwiGLU clamp 改为可监控的
+    `LimitedSwiGLU`；routed/shared expert 的 w2 使用 depth-scaled 初始化。
+  - 新增 `scripts/verify_reference.py` 逐层数值对齐脚本；新增参数校准测试。
+- **实现了什么**:
+  - 项目在 `../torchtitan` 不存在时也能 import/构建/训练 debug 模型；
+  - debug 模型与参考实现逐层相对误差 ≤ 1.6e-4（fp32，差异来自上游 expert bf16 cast）；
+  - 参数校准锁定：mini_60m 65,262,922 / mini_110m 120,652,773 / mini_200m 218,205,261 /
+    mini_60m_dense 62,526,593 / debugmodel+MTP 12,984,104。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **94 passed**（CPU，约 19s）
+  - `bash scripts/debug_smoke.sh` → 通过
+  - `python scripts/verify_reference.py --seq-len 320 --mtp` → block rel ≤ 1.6e-4，
+    logits mean abs ≤ 2.7e-4
+- **未完成 / 风险**:
+  - 多卡 FSDP2 / EP、HF 格式、vLLM / verl 接入尚未实现（下一步）；
+  - 没有真实训练 mini-60M；数据仍只用 MiniMind 小样本。

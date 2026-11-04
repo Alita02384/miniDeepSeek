@@ -5,17 +5,22 @@
 
 ## 2026-11-04 模型与训练
 
-### D1. 不整体复制 `deepseek_v4/`，改为运行时依赖 torchtitan
+### D1. 模型实现整体重构进本项目，不再运行时依赖 torchtitan
 
 - **原方案**：roadmap 阶段 1 要求把 `torchtitan/models/deepseek_v4/` 复制到
-  `src/minideepseek/model/`。
-- **实际**：只复制 **flavor 构建器**（`flavors.py`），模型实现类（model / attention /
-  compressor / mHC / MoE / MTP / sharding）继续从只读 checkout 导入。
-- **依据**：最小闭包原则（`AGENTS.md` §3.3）；该目录依赖 `torchtitan.models.common`
-  ~13.6k 行与 `torchtitan.config/distributed`，整体复制会引入大量需要同步维护的代码，
-  而我们没有修改这些实现的需求。只复制“需要新增 mini flavor”的构建层。
-- **影响**：仓库必须能访问同级 `torchtitan/`（或设置 `MINIDEEPSEEK_TORCHITAN_PATH`）；
-  upstream 升级时需重跑模型测试。`doc/sources.md` 记录了复制范围。
+  `src/minideepseek/model/`；早期实现只复制了 flavor 构建器，其余运行时 import。
+- **实际**：把 V4 的**模型数学与参数布局**重构为普通 `nn.Module`
+  （`config/nn/rope/mhc/moe/compressor/attention/model`），去掉 torchtitan 的
+  config / SPMD / sharding / remat 框架；state dict key 与形状对齐上游。
+  运行时不再 import torchtitan，`_compat.py` 与复制的 `flavors.py` 已删除。
+- **依据**：项目要独立开源（`AGENTS.md` §3.0）；上游目录依赖约 1.4 万行框架代码，
+  整目录复制会引入大量无关并行/配置逻辑，而我们需要的是 V4 数学本身。
+- **影响**：
+  - debug 模型与上游逐层对齐，fp32 相对误差 ~1e-4（来源是上游把 routed expert
+    输入 cast 到 bf16；见 `scripts/verify_reference.py`）；
+  - 并行/分片改由本项目 `train/distributed.py` 的 FSDP2 路径负责，不再依赖上游
+    sharding；TP/CP/EP 的上游实现未复制，属于后续工作；
+  - upstream 升级时按 `doc/sources.md` 的映射重新核对。
 
 ### D2. mini 配置的实测参数与目标有偏差
 
@@ -35,7 +40,9 @@
 ### D3. HCA 压缩率取 32（官方 128），index top-k 取 64
 
 - **原方案**：官方 `m'=128`；roadmap 推荐 32。
-- **实际**：mini flavor `compress_ratios = (0,0)+(4,32)*k`，`index_topk=64`。
+- **实际**：mini flavor `compress_ratios = (0,0)+(4,32)*k`；
+  `index_topk` 默认取 `min(2048, max(seq_len // 4, 64))`（4K→1024、8K→2048，
+  即 dense-over-compressed），训练末期按 `IndexTopKSchedule` 收紧到 64。
 - **依据**：官方 128 是为 1M 上下文调的；4K 下只剩 32 个全局表项，过粗。
 - **影响**：与官方不同构于“压缩率”一个数值；机制（compressor + indexer + top-k）一致。
   严格对齐官方可另建 `compress_ratios=(0,0)+(4,128)*k` 消融。

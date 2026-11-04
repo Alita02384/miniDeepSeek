@@ -18,11 +18,7 @@ from dataclasses import dataclass, field
 import torch
 from torch import Tensor
 
-from .._compat import ensure_torchtitan
-
-ensure_torchtitan()
-
-from torchtitan.models.deepseek_v4.moe import DeepSeekV4Router  # noqa: E402
+from .moe import DeepSeekV4Router
 
 
 @dataclass

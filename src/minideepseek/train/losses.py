@@ -15,13 +15,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from .._compat import ensure_torchtitan
-
-ensure_torchtitan()
-
-from torchtitan.models.common.moe import MoE  # noqa: E402
-
-from ..model.routing import RoutingRecord, iter_routers  # noqa: E402
+from ..model.moe import MoE
+from ..model.routing import RoutingRecord, iter_routers
 
 
 @contextlib.contextmanager

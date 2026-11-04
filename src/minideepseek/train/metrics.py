@@ -13,11 +13,7 @@ from typing import Any
 import torch
 from torch import Tensor
 
-from .._compat import ensure_torchtitan
-
-ensure_torchtitan()
-
-from torchtitan.models.common.activation import LimitedSwiGLU  # noqa: E402
+from ..model.nn import LimitedSwiGLU
 
 
 def gradient_norm(model) -> float:
@@ -94,17 +90,10 @@ def iter_limited_swiglu(model):
     """Yield every ``LimitedSwiGLU`` activation instance reachable from ``model``."""
     seen = set()
     for module in model.modules():
-        for attribute in ("activation_fn",):
-            activation = getattr(module, attribute, None)
-            if isinstance(activation, LimitedSwiGLU) and id(activation) not in seen:
-                seen.add(id(activation))
-                yield activation
-        for child_name in ("routed_experts", "shared_experts"):
-            child = getattr(module, child_name, None)
-            activation = getattr(child, "activation_fn", None) if child is not None else None
-            if isinstance(activation, LimitedSwiGLU) and id(activation) not in seen:
-                seen.add(id(activation))
-                yield activation
+        activation = getattr(module, "activation_fn", None)
+        if isinstance(activation, LimitedSwiGLU) and id(activation) not in seen:
+            seen.add(id(activation))
+            yield activation
 
 
 @contextlib.contextmanager
@@ -124,8 +113,9 @@ def swiglu_monitor(model) -> Iterator[SwiGLUStats]:
             with torch.no_grad():
                 stats.calls += 1
                 stats.elements += gate.numel()
-                stats.gate_clamped += int((gate > _activation.limit).sum())
-                stats.up_clamped += int((up.abs() > _activation.limit).sum())
+                if _activation.limit is not None:
+                    stats.gate_clamped += int((gate > _activation.limit).sum())
+                    stats.up_clamped += int((up.abs() > _activation.limit).sum())
                 stats.gate_abs_max = max(stats.gate_abs_max, float(gate.detach().abs().max()))
                 stats.up_abs_max = max(stats.up_abs_max, float(up.detach().abs().max()))
             return _original(gate, up)

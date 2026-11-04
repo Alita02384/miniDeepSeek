@@ -1,7 +1,8 @@
 """High-level model wrapper used by every miniDeepSeek component.
 
-The V4 architecture itself is torchtitan's ``DeepSeekV4Model``.  This wrapper
-adds the pieces the rest of the project needs:
+The V4 architecture lives in :mod:`minideepseek.model.model` (a self-contained
+refactor of the reference implementation).  This wrapper adds the pieces the
+rest of the project needs:
 
 * a packed, multi-document batch API (``PackedBatch``);
 * a loss that handles response masks and MTP depths;
@@ -20,12 +21,6 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from .._compat import ensure_torchtitan
-
-ensure_torchtitan()
-
-from torchtitan.config.parallelism import ParallelismConfig  # noqa: E402
-
 from .batch import PackedBatch, shift_targets  # noqa: E402
 
 
@@ -38,6 +33,7 @@ class LossOutput:
     mtp: dict[int, Tensor] = field(default_factory=dict)
     main_token_count: int = 0
     mtp_token_count: dict[int, int] = field(default_factory=dict)
+    indexer: Tensor | None = None
 
     @property
     def token_count(self) -> int:
@@ -69,13 +65,12 @@ class MiniDeepSeekModel:
         device: torch.device | str = "cpu",
         init_weights: bool = True,
     ):
+        from .model import DeepSeekV4Model
+
         self.config = config
-        self.model: nn.Module = config.build()
+        self.model: nn.Module = DeepSeekV4Model(config)
         if init_weights:
-            # ``Config.build()`` only allocates parameters; torchtitan's
-            # trainer calls ``init_weights`` explicitly.  Forgetting it leaves
-            # garbage values (observed as NaN in the first MoE layer).
-            self.model.init_weights(buffer_device=torch.device(device))
+            self.model.init_weights()
         self.model.to(device)
         self.device = torch.device(device)
 
@@ -156,8 +151,7 @@ class MiniDeepSeekModel:
 
     def _indexer_aux_enabled(self) -> bool:
         for layer in self.config.layers:
-            aux = getattr(layer.attention.inner_attention, "aux_loss", None)
-            if aux is not None:
+            if getattr(layer.attention, "use_indexer_aux", False):
                 return True
         return False
 
@@ -208,6 +202,7 @@ class MiniDeepSeekModel:
         preds = self.forward(batch)
         main_loss, main_count = self._masked_ce(preds[0], batch, 0)
         total = main_loss
+        indexer_loss = self.model.collect_indexer_loss()
         mtp_losses: dict[int, Tensor] = {}
         mtp_counts: dict[int, int] = {}
         depths = len(preds) - 1
@@ -218,12 +213,15 @@ class MiniDeepSeekModel:
                 mtp_losses[depth] = loss
                 mtp_counts[depth] = count
                 total = total + loss * per_depth
+        if indexer_loss is not None:
+            total = total + indexer_loss
         return LossOutput(
             total=total,
             main=main_loss,
             mtp=mtp_losses,
             main_token_count=main_count,
             mtp_token_count=mtp_counts,
+            indexer=indexer_loss,
         )
 
     # -- log-probabilities ----------------------------------------------------
@@ -357,18 +355,18 @@ class MiniDeepSeekModel:
             raise ValueError("index_topk must be positive")
         previous = None
         for layer in self.model.layers.values():
-            inner = layer.attention.inner_attention
-            if hasattr(inner, "index_topk"):
+            attention = layer.attention
+            if hasattr(attention, "index_topk"):
                 if previous is None:
-                    previous = int(inner.index_topk)
-                inner.index_topk = int(topk)
+                    previous = int(attention.index_topk)
+                attention.index_topk = int(topk)
         return int(previous) if previous is not None else int(topk)
 
     def current_index_topk(self) -> int | None:
         for layer in self.model.layers.values():
-            inner = layer.attention.inner_attention
-            if hasattr(inner, "index_topk"):
-                return int(inner.index_topk)
+            attention = layer.attention
+            if hasattr(attention, "index_topk"):
+                return int(attention.index_topk)
         return None
 
     # -- reporting ------------------------------------------------------------
@@ -378,18 +376,13 @@ class MiniDeepSeekModel:
         routed = 0
         router = 0
         shared = 0
-        attention = 0
-        other = 0
-        for name, module in self.model.named_modules():
-            if name.endswith("feed_forward") and hasattr(module, "routed_experts"):
+        for module in self.model.modules():
+            if hasattr(module, "routed_experts") and hasattr(module, "router"):
                 routed += sum(p.numel() for p in module.routed_experts.parameters())
                 router += sum(p.numel() for p in module.router.parameters())
                 if getattr(module, "shared_experts", None) is not None:
                     shared += sum(p.numel() for p in module.shared_experts.parameters())
-            elif name.endswith(".attention") and isinstance(module, nn.Module):
-                attention += sum(p.numel() for p in module.parameters(recurse=False))
-        # Attention submodules own their projections; count all attention params
-        # by subtracting the MoE and embedding/head slices from the total.
+        # Attention owns most of what remains; keep it as one bucket.
         embedding = self.model.tok_embeddings.weight.numel()
         lm_head = (
             self.model.lm_head.weight.numel()
@@ -423,20 +416,16 @@ def build_model(
     n_mtp_layers: int = 0,
     device: torch.device | str = "cpu",
     tie_word_embeddings: bool | None = None,
-    swiglu_limit: float | None = None,
+    swiglu_limit: float | None = 10.0,
     index_topk: int | None = None,
     indexer_loss_coeff: float = 0.01,
     init_weights: bool = True,
-    parallelism: ParallelismConfig | None = None,
 ) -> MiniDeepSeekModel:
     """Build a miniDeepSeek model for the requested flavor."""
-    from .flavors import build_model_config
+    from .config import build_model_config
 
-    if parallelism is None:
-        parallelism = ParallelismConfig(enable_sequence_parallel=False)
     config = build_model_config(
         flavor,
-        parallelism=parallelism,
         seq_len=seq_len,
         n_mtp_layers=n_mtp_layers,
         tie_word_embeddings=tie_word_embeddings,

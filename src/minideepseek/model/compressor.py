@@ -1,0 +1,301 @@
+# Copyright (c) 2026 miniDeepSeek contributors.
+# Refactored from torchtitan/models/deepseek_v4/compressor.py (BSD-3-Clause, Meta).
+"""KV compression and the CSA indexer."""
+
+from __future__ import annotations
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from .nn import RMSNorm, hadamard, init_linear
+from .rope import RoPE
+
+
+def compressed_cu_seqlens(cu_seqlens: torch.Tensor, ratio: int) -> torch.Tensor:
+    """Offsets of each document's compressed entries (``len // ratio`` each)."""
+    counts = torch.diff(cu_seqlens) // ratio
+    return F.pad(counts.cumsum(0, dtype=torch.int32), (1, 0))
+
+
+def compressed_gather_indices(
+    topk_indices: torch.Tensor, cu_seqlens: torch.Tensor | None, ratio: int
+) -> torch.Tensor:
+    gather = topk_indices.clamp_min(0).long()
+    if cu_seqlens is not None:
+        doc = torch.searchsorted(
+            cu_seqlens[1:],
+            torch.arange(topk_indices.shape[0], device=topk_indices.device),
+            right=True,
+            out_int32=True,
+        )
+        gather = gather + compressed_cu_seqlens(cu_seqlens, ratio)[doc, None]
+    return gather.masked_fill(topk_indices < 0, 0)
+
+
+class Compressor(nn.Module):
+    """Turn each ``ratio`` tokens into one weighted-sum KV entry."""
+
+    def __init__(
+        self,
+        dim: int,
+        head_dim: int,
+        rope_head_dim: int,
+        compress_ratio: int,
+        *,
+        overlap: bool | None = None,
+        rope: RoPE,
+        norm_eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.head_dim = head_dim
+        self.rope_head_dim = rope_head_dim
+        self.compress_ratio = compress_ratio
+        self.overlap = compress_ratio == 4 if overlap is None else overlap
+        coff = 2 if self.overlap else 1
+        self.wkv = nn.Linear(dim, coff * head_dim, bias=False)
+        self.wgate = nn.Linear(dim, coff * head_dim, bias=False)
+        self.norm = RMSNorm(head_dim, norm_eps)
+        self.ape = nn.Parameter(torch.empty(compress_ratio, coff * head_dim))
+        self.rope = rope
+
+    def init_weights(self) -> None:
+        init_linear(self.wkv)
+        init_linear(self.wgate)
+        nn.init.ones_(self.norm.weight)
+        nn.init.trunc_normal_(self.ape, std=0.02)
+
+    def _overlap_transform(self, tensor: torch.Tensor, value: float, first: torch.Tensor | None):
+        d = self.head_dim
+        prev = torch.cat([torch.full_like(tensor[:1, :, :d], value), tensor[:-1, :, :d]], dim=0)
+        if first is not None:
+            prev = prev.masked_fill(first[:, None, None], value)
+        return torch.cat([prev, tensor[:, :, d:]], dim=1)
+
+    def forward(self, x: torch.Tensor, positions: torch.Tensor, cu_seqlens: torch.Tensor):
+        seqlen = x.shape[0]
+        ratio = self.compress_ratio
+        rd = self.rope_head_dim
+        kv = self.wkv(x)
+        score = self.wgate(x)
+        if cu_seqlens is None:
+            if seqlen % ratio != 0:
+                raise ValueError(f"seqlen {seqlen} not divisible by ratio {ratio}")
+            comp_positions = positions[::ratio]
+            kv = kv.unflatten(0, (-1, ratio))
+            score = score.unflatten(0, (-1, ratio))
+            first = None
+        else:
+            if seqlen < ratio:
+                return x.new_zeros(0, self.head_dim)
+            cmp_cu = compressed_cu_seqlens(cu_seqlens, ratio)
+            slot = torch.arange(seqlen // ratio, dtype=torch.int32, device=x.device)
+            doc = torch.searchsorted(cmp_cu[1:], slot, right=True, out_int32=True)
+            group = slot - cmp_cu[doc]
+            start = torch.where(slot < cmp_cu[-1], cu_seqlens[doc] + group * ratio, 0)
+            token = start.unsqueeze(1) + torch.arange(ratio, device=x.device)
+            kv, score = kv[token], score[token]
+            comp_positions = positions[start]
+            first = group == 0
+        score = score + self.ape
+        if self.overlap:
+            kv = self._overlap_transform(kv, 0.0, first)
+            score = self._overlap_transform(score, float("-inf"), first)
+        kv = (kv * score.softmax(dim=1)).sum(dim=1)
+        kv = self.norm(kv)
+        nope, rope = torch.split(kv, [self.head_dim - rd, rd], dim=-1)
+        rope = self.rope(rope.unsqueeze(1), positions=comp_positions).squeeze(1)
+        return torch.cat([nope, rope], dim=-1)
+
+
+class Indexer(nn.Module):
+    """Produce low-dimensional query/key features and top-k compressed slots."""
+
+    def __init__(
+        self,
+        dim: int,
+        q_lora_rank: int,
+        num_heads: int,
+        index_head_dim: int,
+        compress_ratio: int,
+        rope: RoPE,
+        norm_eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = index_head_dim
+        self.rope_head_dim = rope.dim
+        self.softmax_scale = index_head_dim**-0.5
+        self.compress_ratio = compress_ratio
+        self.rope = rope
+        self.wq_b = nn.Linear(q_lora_rank, num_heads * index_head_dim, bias=False)
+        self.weights_proj = nn.Linear(dim, num_heads, bias=False)
+        self.compressor = Compressor(
+            dim,
+            index_head_dim,
+            rope.dim,
+            compress_ratio,
+            overlap=True,
+            rope=rope,
+            norm_eps=norm_eps,
+        )
+
+    def init_weights(self) -> None:
+        init_linear(self.wq_b)
+        init_linear(self.weights_proj)
+        self.compressor.init_weights()
+
+    def _rotate_activation(self, x: torch.Tensor) -> torch.Tensor:
+        matrix = hadamard(x.shape[-1], x.dtype, x.device)
+        return F.linear(x, matrix) * (x.shape[-1] ** -0.5)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        qr: torch.Tensor,
+        *,
+        positions: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ):
+        q = self.wq_b(qr).view(x.shape[0], self.num_heads, self.head_dim)
+        nope, rope = torch.split(q, [self.head_dim - self.rope_head_dim, self.rope_head_dim], dim=-1)
+        rope = self.rope(rope, positions=positions)
+        q = self._rotate_activation(torch.cat([nope, rope], dim=-1))
+        k = self._rotate_activation(
+            self.compressor(x, positions=positions, cu_seqlens=cu_seqlens)
+        )
+        w = self.weights_proj(x) * (self.softmax_scale * self.num_heads**-0.5)
+        return q, k, w
+
+    @staticmethod
+    def select(
+        idx_q: torch.Tensor,
+        idx_k: torch.Tensor,
+        idx_w: torch.Tensor,
+        *,
+        topk: int,
+        ratio: int,
+        cu_seqlens: torch.Tensor,
+        return_scores: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Reference Lightning-Indexer selection (no fused kernel dependency)."""
+        tokens = idx_q.shape[0]
+        candidates = idx_k.shape[0]
+        cu_k = compressed_cu_seqlens(cu_seqlens, ratio)
+        k = min(topk, max(candidates, 1))
+        if candidates == 0 or k == 0:
+            empty = torch.full((tokens, topk), -1, dtype=torch.int32, device=idx_q.device)
+            return empty, None
+        # Packed causal bounds: a query sees ceil((local_pos + 1) / ratio) entries.
+        positions = torch.arange(tokens, device=idx_q.device, dtype=torch.int32)
+        doc = torch.searchsorted(cu_seqlens[1:], positions, right=True, out_int32=True)
+        starts = cu_k[doc]
+        local = positions - cu_seqlens[doc]
+        ends = torch.minimum(cu_k[(doc + 1).clamp(max=cu_k.shape[0] - 1)], starts + (local + 1) // ratio)
+        valid = (torch.arange(candidates, device=idx_q.device)[None, :] >= starts[:, None]) & (
+            torch.arange(candidates, device=idx_q.device)[None, :] < ends[:, None]
+        )
+        accum = torch.float32
+        dots = torch.einsum("thd,sd->ths", idx_q.to(accum), idx_k.to(accum))
+        scores = (torch.relu(dots) * idx_w.to(accum).unsqueeze(-1)).sum(1) * (
+            idx_q.shape[1] * idx_q.shape[2]
+        ) ** -0.5
+        scores = scores.masked_fill(~valid, float("-inf"))
+        selected = scores.topk(k, dim=-1).indices.to(torch.int32)
+        selected_valid = (selected >= starts[:, None]) & (selected < ends[:, None])
+        local_indices = torch.where(selected_valid, selected - starts[:, None], -1)
+        if k < topk:
+            local_indices = F.pad(local_indices, (0, topk - k), value=-1)
+        if not return_scores:
+            return local_indices, None
+        gather = compressed_gather_indices(local_indices, cu_seqlens, ratio)
+        selected_k = idx_k[gather]
+        logits = torch.einsum("thd,tkd->thk", idx_q, selected_k)
+        topk_scores = (torch.relu(logits) * idx_w.unsqueeze(-1)).sum(1)
+        topk_scores = topk_scores.masked_fill(local_indices < 0, -torch.inf)
+        return local_indices, topk_scores
+
+
+class SparseIndexerLoss(nn.Module):
+    """Distill the CSA indexer on the main attention's log-sum-exp.
+
+    The teacher distribution is the head-averaged, L1-normalized attention mass
+    that the main kernel put on each selected compressed slot (DeepSeek-V3.2
+    section 2.1, inherited by V4).  The student is the indexer's selected-slot
+    logits.  The returned scalar is ``coeff / denominator`` times the summed
+    KL, matching the reference's carrier injection.
+    """
+
+    def __init__(
+        self,
+        *,
+        num_heads: int,
+        compress_ratio: int = 4,
+        coeff: float = 0.01,
+        chunk_size: int = 128,
+        mass_weighted: bool = False,
+        softmax_scale: float,
+    ):
+        super().__init__()
+        if coeff < 0:
+            raise ValueError("indexer loss coefficient must be non-negative")
+        self.num_heads = num_heads
+        self.compress_ratio = compress_ratio
+        self.coeff = coeff
+        self.chunk_size = chunk_size
+        self.mass_weighted = mass_weighted
+        self.softmax_scale = softmax_scale
+
+    @torch.no_grad()
+    def teacher(
+        self,
+        query: torch.Tensor,
+        compressed_kv: torch.Tensor,
+        topk_indices: torch.Tensor,
+        attention_lse: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+    ) -> torch.Tensor:
+        gather = compressed_gather_indices(topk_indices, cu_seqlens, self.compress_ratio)
+        targets = []
+        with torch.autocast(device_type=query.device.type, enabled=False):
+            for start in range(0, query.shape[0], self.chunk_size):
+                stop = start + self.chunk_size
+                valid = topk_indices[start:stop] >= 0
+                keys = compressed_kv[gather[start:stop]].float()
+                logits = (
+                    torch.einsum("thd,tkd->thk", query[start:stop].float(), keys)
+                    * self.softmax_scale
+                )
+                logits = logits - attention_lse[start:stop, :, None].float()
+                logits = logits.masked_fill(~valid[:, None], float("-inf"))
+                targets.append(logits.exp().sum(dim=1) / self.num_heads)
+        return torch.cat(targets)
+
+    def forward(
+        self,
+        query: torch.Tensor,
+        compressed_kv: torch.Tensor,
+        topk_indices: torch.Tensor,
+        topk_scores: torch.Tensor,
+        attention_lse: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        *,
+        denominator: int | torch.Tensor,
+    ) -> torch.Tensor:
+        if topk_scores.numel() == 0:
+            return topk_scores.new_zeros(())
+        p = self.teacher(query, compressed_kv, topk_indices, attention_lse, cu_seqlens)
+        t = p / p.sum(dim=-1, keepdim=True).clamp_min(torch.finfo(torch.float32).tiny)
+        slot_valid = torch.isfinite(topk_scores)
+        logits = topk_scores.float()
+        all_invalid = ~slot_valid.any(dim=-1, keepdim=True)
+        log_student = F.log_softmax(
+            logits.masked_fill(~slot_valid, float("-inf")).masked_fill(all_invalid, 0.0),
+            dim=-1,
+        )
+        log_student = log_student.masked_fill(~slot_valid, 0.0)
+        weight = p if self.mass_weighted else t
+        terms = torch.special.xlogy(weight, t) - weight * log_student
+        raw_sum = terms.masked_fill(~slot_valid, 0.0).sum()
+        scale = 1.0 / max(float(denominator), 1.0)
+        return raw_sum * (self.coeff * scale)

@@ -57,7 +57,8 @@ def test_gate_snapshot_swap(debug_model, small_batch):
         debug_model.forward(small_batch, use_mtp=False)
     with torch.no_grad():
         for _name, router in iter_routers(debug_model.model):
-            router.gate.weight.add_(2.0)
+            bias = torch.arange(router.num_experts, dtype=router.gate.weight.dtype)
+            router.gate.weight.add_(bias.unsqueeze(1) * 4.0)
     with swap_router_gates(debug_model.model, snapshot):
         with record_routing(debug_model.model) as after:
             debug_model.forward(small_batch, use_mtp=False)

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Create the local venv and install the pinned runtime.
+# Create the local venv and install the runtime.
 #
-# The read-only torchtitan checkout stays untouched: `minideepseek._compat`
-# adds ../torchtitan to sys.path at runtime.  Set MINIDEEPSEEK_TORCHTITAN_PATH
-# if your checkout lives elsewhere.
+# The project is self-contained: model code lives under src/minideepseek/model
+# and no sibling checkout is imported at runtime.  CUDA is optional here; the
+# same environment works on CPU for the debug model.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -20,8 +20,7 @@ fi
 
 "$UV" venv --python "$PYTHON" .venv
 "$UV" pip install --python .venv/bin/python \
-  torch spmd_types==0.3.1 torch_remat==0.2.2 torch_checkpointing==0.1.1 \
-  attn-gym safetensors tokenizers jinja2 numpy pyyaml pytest ruff
+  torch safetensors tokenizers jinja2 numpy pyyaml pytest ruff
 "$UV" pip install --python .venv/bin/python -e . --no-deps
 
 .venv/bin/python - <<'PY'

@@ -20,9 +20,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
-# The read-only torchtitan checkout supplies the DeepSeek-V4 architecture.
-# Install it with `pip install -e ../torchtitan --no-deps` (see scripts/setup_env.sh).
-torchtitan = []
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -43,5 +40,4 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 ignore = ["E501", "B008"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/minideepseek/model/flavors.py" = ["E", "F", "B", "UP", "SIM", "I"]
 "tests/*" = ["B", "SIM"]
