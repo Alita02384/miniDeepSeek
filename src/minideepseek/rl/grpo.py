@@ -31,6 +31,15 @@ from ..model.checkpoint import load_checkpoint, save_checkpoint
 from ..model.routing import domain_routing_metrics, record_routing
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
+from ..train.distributed import (
+    DistributedContext,
+    apply_parallelism,
+    gather_model_state_dict,
+    gather_optimizer_state_dict,
+    init_distributed,
+    load_model_state_dict,
+    load_optimizer_state_dict,
+)
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
@@ -87,6 +96,7 @@ class GRPOTrainer:
         *,
         run_name: str | None = None,
         engine: TorchRolloutEngine | None = None,
+        distributed: DistributedContext | None = None,
     ):
         if not records:
             raise ValueError("GRPO requires at least one prompt record")
@@ -95,6 +105,7 @@ class GRPOTrainer:
         self.config = config
         self.model = model
         self.tokenizer = tokenizer
+        self.dist = distributed or DistributedContext(device=model.device)
         self.records = list(records)
         self.reward_fn = reward_fn
         self.engine = engine or TorchRolloutEngine(model, tokenizer)
@@ -106,7 +117,9 @@ class GRPOTrainer:
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
         )
-        self.logger = MetricsLogger(config.train.out_dir)
+        self.logger = (
+            MetricsLogger(config.train.out_dir) if self.dist.is_main else None
+        )
         self.rng = random.Random(config.model.seed)
         self.step_index = 0
         self.run_name = run_name or Path(config.train.out_dir).name
@@ -262,7 +275,10 @@ class GRPOTrainer:
         total = int(steps if steps is not None else self.config.train.steps)
         while self.step_index < total:
             metrics = self.step()
-            if self.step_index % max(self.config.train.log_every, 1) == 0:
+            if (
+                self.logger is not None
+                and self.step_index % max(self.config.train.log_every, 1) == 0
+            ):
                 self.logger.log(self.step_index, metrics)
             if (
                 self.config.train.ckpt_every > 0
@@ -271,23 +287,68 @@ class GRPOTrainer:
                 self.save(f"step_{self.step_index + 1:06d}")
             self.step_index += 1
         self.save("final")
-        summary = self.logger.summary()
+        summary = self.logger.summary() if self.logger is not None else {}
         summary["steps_run"] = self.step_index
         return summary
 
     def save(self, name: str = "final") -> Path:
         path = Path(self.config.train.out_dir) / name
-        save_checkpoint(
-            path,
-            self.model,
-            optimizer=self.optimizer,
-            step=self.step_index,
-            config=self.config.to_dict(),
-            tokenizer_hash=self.tokenizer.sha256,
-            seed=self.config.model.seed,
-            extra={"run_name": self.run_name, "method": "grpo"},
-        )
+        if self.dist.enabled:
+            state = gather_model_state_dict(self.model.model)
+            optim_state = gather_optimizer_state_dict(self.model.model, self.optimizer)
+            self.dist.barrier()
+            if self.dist.is_main:
+                save_checkpoint(
+                    path,
+                    self.model,
+                    optimizer=self.optimizer,
+                    step=self.step_index,
+                    config=self.config.to_dict(),
+                    tokenizer_hash=self.tokenizer.sha256,
+                    seed=self.config.model.seed,
+                    extra={"run_name": self.run_name, "method": "grpo"},
+                    state_dict=state,
+                    optimizer_state=optim_state,
+                )
+            self.dist.barrier()
+        else:
+            save_checkpoint(
+                path,
+                self.model,
+                optimizer=self.optimizer,
+                step=self.step_index,
+                config=self.config.to_dict(),
+                tokenizer_hash=self.tokenizer.sha256,
+                seed=self.config.model.seed,
+                extra={"run_name": self.run_name, "method": "grpo"},
+            )
         return path
+
+    def resume(self, directory: str | Path) -> dict[str, Any]:
+        if not self.dist.enabled:
+            optimizer = (
+                self.optimizer
+                if (Path(directory) / "optimizer.pt").exists()
+                else None
+            )
+            meta = load_checkpoint(
+                directory, self.model, optimizer=optimizer, map_location="cpu"
+            )
+        else:
+            import torch as _torch
+
+            from ..model.checkpoint import read_metadata
+
+            path = Path(directory)
+            state = _torch.load(path / "model.pt", map_location="cpu", weights_only=True)
+            load_model_state_dict(self.model.model, state)
+            optim_path = path / "optimizer.pt"
+            if optim_path.exists():
+                optim_state = _torch.load(optim_path, map_location="cpu", weights_only=True)
+                load_optimizer_state_dict(self.model.model, self.optimizer, optim_state)
+            meta = read_metadata(path)
+        self.step_index = int(meta.get("step", 0))
+        return meta
 
 
 def build_grpo_trainer(
@@ -296,8 +357,11 @@ def build_grpo_trainer(
     reward_fn: Callable[[str, GRPORecord], RewardResult],
     *,
     tokenizer: MiniDeepSeekTokenizer | None = None,
+    distributed: DistributedContext | None = None,
 ) -> tuple[GRPOTrainer, MiniDeepSeekModel]:
-    device = resolve_device(config.model.device)
+    context = distributed or init_distributed(config.distributed, config.model.device)
+    device = context.device if context.enabled else resolve_device(config.model.device)
+    set_seed(config.model.seed)
     model = build_model(
         config.model.flavor,
         seq_len=config.model.seq_len,
@@ -309,18 +373,38 @@ def build_grpo_trainer(
         indexer_loss_coeff=config.model.indexer_loss_coeff,
         dtype=config.model.dtype,
     )
+    if context.enabled:
+        model.model = apply_parallelism(
+            model.model, context, config.distributed, device=device
+        )
+        if config.rl.rollout_backend == "vllm":
+            raise ValueError(
+                "vLLM rollout with FSDP2 GRPO is not wired; use the torch backend "
+                "or run verl's FSDP actor."
+            )
+        records = list(records)[context.rank :: context.world_size]
+        if not records:
+            raise ValueError(
+                f"rank {context.rank} has no GRPO records after sharding"
+            )
     tokenizer = tokenizer or load_tokenizer(vocab_limit=config.model.vocab_limit)
-    if config.train.resume:
-        meta = load_checkpoint(config.train.resume, model, map_location=device)
-        expected = meta.get("tokenizer_hash")
-        if expected and expected != tokenizer.sha256:
-            raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
     from .backends import build_rollout_engine
 
     engine = build_rollout_engine(config, model, tokenizer)
     trainer = GRPOTrainer(
-        config, model, tokenizer, records, reward_fn, engine=engine
+        config,
+        model,
+        tokenizer,
+        records,
+        reward_fn,
+        engine=engine,
+        distributed=context,
     )
+    if config.train.resume:
+        meta = trainer.resume(config.train.resume)
+        expected = meta.get("tokenizer_hash")
+        if expected and expected != tokenizer.sha256:
+            raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
     return trainer, model
 
 

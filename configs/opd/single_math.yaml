@@ -39,3 +39,7 @@ teachers:
     flavor: mini_60m
     seq_len: 4096
     weight: 1.0
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32

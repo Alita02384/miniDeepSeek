@@ -14,7 +14,7 @@
 都已经有代码和测试。**但不是路线图 100% 完成**，剩余缺口集中在：
 
 - 数据侧：长文档/多语言语料、FIM / token-splitting、真实 6B 数据；
-- 训练侧：EP/CP/激活重计算（本轮明确不做）、分布式 RL；
+- 训练侧：EP/CP/激活重计算（本轮明确不做）；
 - 推理侧：vLLM 自定义模型/kernel、verl GPU 实跑；
 - 后训练：teacher hidden-state 缓存/offload、>10 teachers、GRM（本轮明确不做）；
 - 模型侧：vLLM/verl 的 GPU 数值验证；
@@ -113,7 +113,7 @@
 | teacher no_grad/eval | ✅ | `rl/opd.py` | bf16 未做 |
 | verl GRPO/OPD | ⚠️ | `rl/verl.py`, `scripts/export_verl.py` | 接口/配置，未 GPU 实跑 |
 | verl full-vocab reverse KL | ❌ | — | verl 模板用 forward_kl_topk；canonical 是 `rl/opd.py` |
-| 分布式 GRPO/OPD | ❌ | — | torch trainer 单进程；verl adapter 是可选路径，未 GPU 实跑 |
+| 分布式 GRPO/OPD | ✅ | `rl/grpo.py`, `rl/opd.py`, `train/distributed.py` | FSDP2 actor/student，2 进程 CPU/Gloo 验证；vLLM/verl GPU 未验证 |
 | teacher hidden-state cache/offload | ❌ | — | 官方 §5.2.2；3 teacher / 6.4K 词表下直接全 logits 可接受，暂未实现 |
 
 ## 6. 一致性 / 评测 / 发布

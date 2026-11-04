@@ -44,3 +44,7 @@ reward:
   parse_bonus: 0.1
   length_penalty: 0.05
   max_length_penalty_at: 2048
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32

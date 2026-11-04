@@ -351,3 +351,19 @@
   精度不一致。
 - **影响**：CUDA 上训练与采样算术精度一致；CPU 测试保持 fp32。teacher 的
   显存节省仍需要权重 bf16 或 hidden-state cache（未做）。
+
+### D33. GRPO/OPD 支持 FSDP2，不再只有单进程
+
+- **实际**：
+  - `RLConfig.distributed` 复用 `DistributedSettings`；
+  - `build_grpo_trainer` / `build_opd_trainer` 在 world>1 时 `apply_parallelism`
+    包装 actor/student，prompt/record 按 rank 分片；
+  - 梯度裁剪使用 FSDP2-aware `clip_grad_norm`；save/resume 走 gather + 手工
+    state load；rank0 才写 checkpoint/日志；
+  - `torchrun` 启动：`NPROC_PER_NODE>1 ./scripts/train_grpo.sh/opd.sh`。
+- **依据**：roadmap 的阶段 4/5 最终是多卡；verl 是生产路径，但本项目也需要
+  自己的小规模多卡正确性路径。
+- **验证**：CPU/Gloo 2 进程 `scripts/test_rl_distributed.py --method grpo|opd`
+  各跑 1 step 并保存；`tests/test_rl_distributed.py` world=1 FSDP2 覆盖。
+- **限制**：vLLM backend 与 FSDP2 RL 未接线（显式拒绝）；teacher 仍每 rank
+  复制；各 rank 局部 loss 等权平均，不等 token 数加权。

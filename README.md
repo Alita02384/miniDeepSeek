@@ -25,7 +25,7 @@
 | loss-free bias + sequence balance loss | `train/losses.py` | bias 更新、balance loss 有限值 |
 | Anticipatory Routing | `model/anticipatory.py`, `train/trainer.py` | 一步预取队列 + cache → replay；默认关 |
 | 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token warmup；flat→cosine LR；val_path；2K→4K→8K 分阶段 runner |
-| GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL |
+| GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL；FSDP2 多卡路径 |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
 | 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
 | 权重版本 + logprob 门禁 | `rl/rollout.py` | vLLM 版本计数与 actor/rollout 对比 |
@@ -33,7 +33,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`125 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`127 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -60,6 +60,8 @@ V4 的数学与参数布局。state dict 的 key 与形状和参考实现一致�
 
 # 4) 多卡（CUDA）：torchrun + FSDP2
 NPROC_PER_NODE=8 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
+NPROC_PER_NODE=8 ./scripts/train_grpo.sh    configs/grpo/math.yaml
+NPROC_PER_NODE=8 ./scripts/train_opd.sh     configs/opd/three_teacher.yaml
 
 # 5) 2K→4K→8K 长度课程（先准备三段数据）
 .venv/bin/python -m minideepseek.data.prepare curriculum \
@@ -148,7 +150,7 @@ src/minideepseek/
 ├── rl/           # torch rollout、reward、GRPO、多教师 OPD
 ├── consistency/  # logprob / routing / checkpoint 一致性门禁
 └── eval/         # math / code / world 评估与报告
-tests/            # 125 个 CPU 测试，全部使用 debug model
+tests/            # 127 个 CPU 测试，全部使用 debug model
 doc/              # decisions / sources / PROCESS / testing
 scripts/          # 环境、数据、训练、评估脚本
 ```
@@ -188,7 +190,7 @@ scripts/          # 环境、数据、训练、评估脚本
 - 没有 DSpark / 推测解码（第一版明确跳过）。
 - Anticipatory Routing 有一步预取队列，但 probe 仍同步执行、没有异步 overlap；默认关闭。
 - 去重、污染检查是单进程实现，6B 规模需要换成分布式版本。
-- 分布式 GRPO/OPD 仍未实现；torch RL 是单进程，verl 是可选 GPU 路径。
+- 分布式 GRPO/OPD 已有 FSDP2 路径（2 进程 CPU 验证）；vLLM/verl GPU 路径未验证。
 - FIM/token-splitting、长文档/多语言数据、teacher hidden-state cache 未做。
 
 逐项实现审计（哪些只是代码落地、哪些还没做）见
