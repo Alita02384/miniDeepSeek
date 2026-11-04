@@ -106,6 +106,7 @@ class ModelConfig:
     norm_eps: float = 1e-6
     tie_word_embeddings: bool = True
     init_std: float = 0.02
+    flavor: str = ""
 
     @property
     def n_layers(self) -> int:
@@ -392,7 +393,7 @@ def build_model_config(
     context = seq_len or default_len
     if context > default_len:
         raise ValueError(f"seq_len {context} exceeds flavor maximum {default_len}")
-    return _build_preset(
+    config = _build_preset(
         preset,
         seq_len=context,
         n_mtp_layers=n_mtp_layers,
@@ -402,3 +403,5 @@ def build_model_config(
         index_topk=index_topk,
         indexer_loss_coeff=indexer_loss_coeff,
     )
+    config.flavor = flavor
+    return config

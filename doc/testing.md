@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 94 passed, ~20s on CPU
+.venv/bin/python -m pytest -q   # 106 passed, ~27s on CPU（无 transformers 时 HF 测试跳过）
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -36,6 +36,9 @@
 | `test_spike.py` | spike 检测、rollback 快照、自动 AR、index top-k 调度 |
 | `test_eval.py` | math/world 评估、报告落盘 |
 | `test_config.py` | 全部 YAML 可加载、未知键拒绝 |
+| `test_distributed.py` | 单进程 FSDP2 wrap、forward/backward、optimizer、state/gather、trainer 保存/恢复 |
+| `test_hf.py` | HF config 往返、key prefix 映射、export/load logits 一致、greedy generate、trust_remote_code 加载 |
+| `test_integrations.py` | verl 数据 schema、reward entrypoint、verl GRPO/OPD config、torch backend、vLLM 缺依赖守卫 |
 
 ## 关键验收数值（本机实测）
 
@@ -49,6 +52,13 @@
 - smoke：2 步 debug 训练 + checkpoint 回读，`checkpoint_max_abs_diff = 0.0`。
 - GRPO：1 步，`approx_kl ≈ 1e-6`（rollout/actor 同温度），ratio 均值 ≈ 1。
 - OPD：2 teacher，KL 分量均 > 0，teacher 参数逐位不变。
+- FSDP2 / DDP：`scripts/test_distributed.py --world-size 1|2 --steps 1`
+  在相同 seed/batch 下，world=1 与 world=2 的 `model.pt` sha256 逐位一致
+  （说明 DTensor 版 Muon、global grad-norm clip、expert-bias 同步都正确）。
+- HF：export → `from_pretrained` 的 logits 与训练模型逐位一致（max |Δ| = 0）；
+  `trust_remote_code=True` 可加载 config/model/tokenizer，greedy generate 可跑。
+- verl：数据 schema、reward 返回值、Hydra override 生成均单测覆盖；
+  未安装 verl 也能 import 本项目。
 
 ## 与参考实现的数值对齐（开发用）
 
@@ -73,8 +83,12 @@ logits depth 1: mean abs 2.6e-4, max abs 8.2e-2
 
 ## 未覆盖 / 未验证
 
-- 多 GPU、FSDP2、EP、TP、CP 路径；本机只有 CPU。
-- 真实 bf16 数值稳定性；测试用 float32。
-- vLLM / verl rollout、权重同步、router replay 的 kernel 级一致性。
+- 多卡 CUDA 实机：FSDP2/DDP 只在 CPU/Gloo 两进程验证；NCCL、bf16 数值、
+  8 卡吞吐、EP/TP/CP、激活重计算未验证。
+- EP（专家并行）：当前 FSDP2 复制专家分片，没有 all-to-all dispatch。
+- vLLM：未安装、未实跑；自定义稀疏注意力的 paged-attention kernel 不存在，
+  只提供保守的 HF 导出 + 采样 + 重建式权重同步。
+- verl：未安装、未实跑；HF rollout + FSDP actor 路径按 verl 当前接口编写，
+  需要在 CUDA 集群上做一次 smoke。
 - 6B 数据规模下的吞吐、去重与污染检查性能。
 - 训练收敛性 / benchmark 分数（当前阶段明确不追求）。

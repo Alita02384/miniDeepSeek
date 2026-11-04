@@ -161,12 +161,16 @@ def iter_batches(
     batch_tokens: int = 4096,
     shuffle: bool = True,
     seed: int = 1234,
+    shard_rank: int = 0,
+    shard_world_size: int = 1,
 ):
     """Yield multi-document batches greedily filled up to ``batch_tokens``."""
     order = list(range(len(dataset)))
     rng = np.random.default_rng(seed)
     if shuffle:
         rng.shuffle(order)
+    if shard_world_size > 1:
+        order = order[shard_rank::shard_world_size]
     group: list[PackedBatch] = []
     total = 0
     for index in order:

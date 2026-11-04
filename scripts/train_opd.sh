@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Multi-teacher OPD launcher (single process torch rollout + full-vocab KL).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

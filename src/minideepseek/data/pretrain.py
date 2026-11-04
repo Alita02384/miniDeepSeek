@@ -258,6 +258,8 @@ def iter_batches(
     batch_size: int = 1,
     shuffle: bool = True,
     seed: int = 1234,
+    shard_rank: int = 0,
+    shard_world_size: int = 1,
 ):
     """Yield ``batch_size`` packs (each pack is already a multi-document batch)."""
     from ..model.batch import concat_batches
@@ -266,6 +268,8 @@ def iter_batches(
     rng = np.random.default_rng(seed)
     if shuffle:
         rng.shuffle(indices)
+    if shard_world_size > 1:
+        indices = indices[shard_rank::shard_world_size]
     for start in range(0, len(indices), batch_size):
         chunk = indices[start : start + batch_size]
         yield concat_batches([dataset[index] for index in chunk])

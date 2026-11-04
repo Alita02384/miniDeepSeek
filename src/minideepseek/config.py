@@ -173,6 +173,24 @@ class AnticipatoryRoutingSettings(BaseConfig):
 
 
 @dataclass
+class DistributedSettings(BaseConfig):
+    """Multi-GPU launch policy.
+
+    ``enabled`` is normally inferred from ``torchrun``'s ``WORLD_SIZE``; set it
+    explicitly only for tests.  ``fsdp2`` shards transformer blocks + root,
+    ``ddp`` replicates the model (useful for small debug runs).
+    """
+
+    enabled: bool = False
+    mode: str = "fsdp2"  # fsdp2 | ddp
+    backend: str = "auto"  # auto | nccl | gloo
+    param_dtype: str = "bfloat16"
+    reduce_dtype: str = "float32"
+    reshard_after_forward: bool = True
+    broadcast_buffers: bool = True
+
+
+@dataclass
 class TrainSettings(BaseConfig):
     steps: int = 10
     grad_accum: int = 1
@@ -209,6 +227,7 @@ class TrainConfig(BaseConfig):
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
     data: DataSettings = field(default_factory=DataSettings)
     train: TrainSettings = field(default_factory=TrainSettings)
+    distributed: DistributedSettings = field(default_factory=DistributedSettings)
     anticipatory: AnticipatoryRoutingSettings = field(
         default_factory=AnticipatoryRoutingSettings
     )
@@ -246,6 +265,11 @@ class RLSettings(BaseConfig):
     kl_coeff: float = 0.0
     min_response_tokens: int = 2
     teacher_weights: dict[str, float] = field(default_factory=dict)
+    # "torch" is the correctness-first path; "vllm" is CUDA-only and optional.
+    rollout_backend: str = "torch"
+    vllm_model_path: str | None = None
+    vllm_tensor_parallel_size: int = 1
+    vllm_gpu_memory_utilization: float = 0.4
 
 
 @dataclass
@@ -266,6 +290,7 @@ class RLConfig(BaseConfig):
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
     data: DataSettings = field(default_factory=DataSettings)
     train: TrainSettings = field(default_factory=TrainSettings)
+    distributed: DistributedSettings = field(default_factory=DistributedSettings)
     rl: RLSettings = field(default_factory=RLSettings)
     reward: RewardSettings = field(default_factory=RewardSettings)
     teachers: list[TeacherSettings] = field(default_factory=list)

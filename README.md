@@ -30,7 +30,7 @@
 | 数据管线 | `data/` | 打包、mask、MinHash、13-gram、fertility、manifest、license |
 | 评估 | `eval/` | math / code / world rubric 报告 |
 
-测试：`94 passed`（CPU，debug model，约 19 秒）。
+测试：`106 passed`（CPU，debug model，约 27 秒）。
 
 ### 模型自包含说明
 
@@ -54,6 +54,9 @@ V4 的数学与参数布局。state dict 的 key 与形状和参考实现一致�
 
 # 3) 端到端门禁：训练 smoke → 一致性 → 全部测试
 ./scripts/debug_smoke.sh
+
+# 4) 多卡（CUDA）：torchrun + FSDP2
+NPROC_PER_NODE=8 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
 ```
 
 单独运行：
@@ -99,7 +102,29 @@ configs/
   --flavor mini_60m --seq-len 4096 --checkpoint checkpoints/pretrain_full/final \
   --prompts data/eval/prompts.jsonl
 .venv/bin/python -m minideepseek.eval.run --config configs/eval/math.yaml
+
+# HF 导出（可选 extra: `pip install -e '.[hf]'`）
+.venv/bin/python scripts/export_hf.py \
+  --checkpoint checkpoints/pretrain_full/final --out hf/mini_60m --flavor mini_60m --seq-len 8192
+
+# verl 数据 + 配置导出（可选 CUDA extra: `pip install -e '.[verl]'`）
+.venv/bin/python scripts/export_verl.py \
+  --hf-model hf/mini_60m --train data/grpo/math.jsonl --out-dir runs/verl_math --rollout hf
 ```
+
+vLLM rollout 在 CUDA 上启用：`configs/grpo/*.yaml` 设置
+
+```yaml
+rl:
+  rollout_backend: vllm
+  vllm_tensor_parallel_size: 1
+  vllm_gpu_memory_utilization: 0.4
+```
+
+> vLLM 需要能通过 `auto_map` 加载 `MiniDeepSeekForCausalLM`。当前代码只做
+> HF 导出、采样和保守的权重重建；没有为自定义稀疏注意力写 paged-attention
+> kernel。若目标 vLLM 版本不支持该架构，用 `rollout_backend: torch` 或
+> verl 的 HF rollout。
 
 ---
 
@@ -137,9 +162,13 @@ scripts/          # 环境、数据、训练、评估脚本
 ## 6. 未完成 / 明确不在当前阶段
 
 - 没有真实训练 mini-60M，也没有 0.6B/6B 数据产出；数据只用了 MiniMind 小样本。
-- 多 GPU / FSDP / EP 路径尚未在本机验证；训练器目前是单进程实现。
-- 没有 HF `transformers` 架构类；safetensors 是权重格式。
-- 没有接入 verl / vLLM；rollout 是 full-recompute 的 torch 实现（无 KV cache）。
+- 没有多卡 CUDA 实机：FSDP2/DDP 的 2 进程正确性已在 CPU/Gloo 验证，
+  NCCL、真实 bf16 吞吐、8 卡扩展性、EP 未验证。
+- EP（专家并行）未实现：FSDP2 下 6 个 routed expert 是复制分片，尚未做
+  all-to-all expert dispatch。
+- vLLM 自定义模型/paged-attention kernel 未实现；verl 的 HF rollout 路径
+  未在 GPU 上实跑。vLLM/verl 都只是可选集成。
+- rollout 默认仍是 full-recompute torch（无 KV cache），适合一致性验证，不适合吞吐。
 - world 的默认 judge 只是启发式占位，不是 GRM。
 - 没有接 lm-evaluation-harness；math/code/world 是自写评估。
 - 没有 DSpark / 推测解码（第一版明确跳过）。

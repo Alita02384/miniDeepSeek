@@ -83,14 +83,24 @@ def save_checkpoint(
     seed: int | None = None,
     extra: dict[str, Any] | None = None,
     save_rng: bool = True,
+    state_dict: dict[str, torch.Tensor] | None = None,
+    optimizer_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist model (and optionally optimizer) state, returning metadata."""
+    """Persist model (and optionally optimizer) state, returning metadata.
+
+    ``state_dict`` / ``optimizer_state`` let a distributed caller pass already
+    gathered (full, CPU) states so only rank 0 touches the filesystem.
+    """
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
+    if state_dict is None:
+        state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
+    else:
+        state = {key: value.detach().cpu() for key, value in state_dict.items()}
     torch.save(state, directory / MODEL_FILE)
     if optimizer is not None:
-        torch.save(optimizer.state_dict(), directory / OPTIMIZER_FILE)
+        payload = optimizer.state_dict() if optimizer_state is None else optimizer_state
+        torch.save(payload, directory / OPTIMIZER_FILE)
     meta: dict[str, Any] = {
         "format": "minideepseek-torch-v1",
         "step": int(step),

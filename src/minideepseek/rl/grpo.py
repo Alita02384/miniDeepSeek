@@ -79,6 +79,7 @@ class GRPOTrainer:
         reward_fn: Callable[[str, GRPORecord], RewardResult],
         *,
         run_name: str | None = None,
+        engine: TorchRolloutEngine | None = None,
     ):
         if not records:
             raise ValueError("GRPO requires at least one prompt record")
@@ -89,7 +90,7 @@ class GRPOTrainer:
         self.tokenizer = tokenizer
         self.records = list(records)
         self.reward_fn = reward_fn
-        self.engine = TorchRolloutEngine(model, tokenizer)
+        self.engine = engine or TorchRolloutEngine(model, tokenizer)
         self.optimizer = build_optimizer(model, config.optim)
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
@@ -271,7 +272,12 @@ def build_grpo_trainer(
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
-    trainer = GRPOTrainer(config, model, tokenizer, records, reward_fn)
+    from .backends import build_rollout_engine
+
+    engine = build_rollout_engine(config, model, tokenizer)
+    trainer = GRPOTrainer(
+        config, model, tokenizer, records, reward_fn, engine=engine
+    )
     return trainer, model
 
 

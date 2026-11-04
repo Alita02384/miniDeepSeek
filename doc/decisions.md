@@ -109,15 +109,21 @@
 
 ## 2026-11-04 后训练 / RL
 
-### D11. GRPO / OPD 用原生 torch，不接 verl
+### D11. 默认 torch rollout；vLLM/verl 作为可选集成
 
 - **原方案**：roadmap 阶段 4/5 使用 verl + vLLM。
-- **实际**：`rl/rollout.py`（full-recompute torch rollout）、`rl/grpo.py`、
-  `rl/opd.py`、`rl/reward.py`；接口按 verl 的语义设计，便于后续替换。
-- **依据**：当前验证环境是 macOS CPU，verl/vLLM 依赖 CUDA 栈，无法安装运行；
-  本阶段目标是“代码逻辑与一致性”，原生实现可直接测。
-- **影响**：没有 vLLM 吞吐优化、没有 verl 的分布式 rollout/权重同步；rollout 无
-  KV cache，仅用于正确性验证和小规模 RL。生产路径仍需接 verl（roadmap 阶段 6）。
+- **实际**：
+  - `rl/rollout.py` 的 torch full-recompute 仍是**默认与一致性基准**；
+  - `rl/backends/vllm.py` 提供可选 `VLLMGenerator`（CUDA-only）；
+    actor log-prob 始终由训练模型计算，vLLM 只负责采样；
+  - `rl/verl.py` 提供 verl 数据 schema、`compute_score` reward entrypoint、
+    GRPO/OPD Hydra config 与 `scripts/export_verl.py`。
+- **依据**：CPU 环境装不了 vLLM/verl；而 vLLM 对自定义稀疏注意力没有现成
+  paged-attention/kernel 支持，不能假称“已验证”。先把接口、数据、奖励、HF
+  权重格式打通，GPU 上再替换执行引擎。
+- **影响**：没有 vLLM 吞吐优化；vLLM 权重同步是“重建 engine”的保守实现；
+  verl 只在接口层验证，GPU smoke 待做。torch rollout 无 KV cache，仅用于
+  正确性验证和小规模 RL。
 
 ### D12. OPD 使用 hard teacher key，权重先等权
 
@@ -138,13 +144,19 @@
 - **实际**：未实现；rollout 只有 torch full-recompute。
 - **影响**：无；MTP head 可作为未来的 draft。
 
-### D15. checkpoint 链路
+### D15. checkpoint 链路与 HF 导出
 
 - **实际**：训练 checkpoint 用 `torch.save(state_dict)`；另有 safetensors 导出与
-  `torch.distributed.checkpoint`（DCP）保存/读取；三者都已验证 logits 位级一致。
-- **偏差**：没有 HF `transformers` 架构类，无法让 verl 直接 `AutoModelForCausalLM`
-  加载；DCP 是给未来 torchtitan/verl 的交接格式。
-- **影响**：需要时在 `model/checkpoint.py` 增加 HF adapter（state dict 键映射）。
+  `torch.distributed.checkpoint`（DCP）保存/读取；三者均已验证 logits 位级一致。
+  新增 `model/hf/`：
+  - `MiniDeepSeekConfig` / `MiniDeepSeekForCausalLM`（`transformers` 可选依赖）；
+  - `scripts/export_hf.py` 导出 `config.json` + `model.safetensors` + tokenizer +
+    remote-code 文件；
+  - export → `from_pretrained` 的 logits 与训练模型**逐位一致**。
+- **键映射**：HF 模型内部是 `self.model`，safetensors key 带 `model.` 前缀；
+  `model/hf/convert.py` 提供训练 key ↔ HF key 映射，转换脚本会去掉 MTP 头。
+- **影响**：verl / vLLM 可以直接按 HF 目录加载；DCP 仍是分布式 checkpoint 的
+  交接格式。HF 模型不支持 KV cache（`use_cache=False`），生成走 full recompute。
 
 ## 2026-11-04 数据与评估
 
@@ -169,18 +181,18 @@
 
 ## 2026-11-04 补充：训练稳定性、稀疏调度与 checkpoint 初始化
 
-### D19. 预训练 / SFT trainer 自实现，不包 torchtitan Trainer
+### D19. 预训练 / SFT trainer 自实现，内置 FSDP2/DDP
 
-- **原方案**：roadmap 阶段 2/3 使用 torchtitan Trainer（FSDP2 + EP）与
-  `ChatProcessor` 数据路径。
-- **实际**：`train/trainer.py` 是单进程、显式 forward/backward/step 的循环；
+- **原方案**：roadmap 阶段 2/3 使用 torchtitan Trainer（FSDP2 + EP）。
+- **实际**：`train/trainer.py` 是显式 forward/backward/step 的循环；
+  `train/distributed.py` 提供 `torchrun` 启动、FSDP2（`fully_shard`）与
+  manual DDP、global grad-norm clip、full state gather；
   `data/sft.py` 自己实现 packing 与 response-only mask。
-- **依据**：当前验证目标是在 CPU 上逐项验证机制（MTP、balance loss、路由、
-  clamp、checkpoint）；torchtitan Trainer 需要分布式 launcher、它自己的 config
-  注册表与 grain dataloader，调试成本高。生产训练可换回 torchtitan Trainer，
-  模型与 PackedBatch 契约已对齐。
-- **影响**：没有 FSDP2/EP/TP/CP、没有 torchtitan 的 dataloader 与 checkpoint
-  管理；多卡路径未验证。
+- **依据**：torchtitan Trainer 依赖它自己的 config 注册表、grain dataloader 与
+  sharding 框架；本项目要独立开源，模型和 PackedBatch 契约已经稳定，自己实现
+  ~200 行分布式胶水更可控。
+- **影响**：没有 EP/TP/CP、没有 torchtitan 的 dataloader 与 checkpoint 管理；
+  FSDP2 的 expert 参数按普通参数分片（专家复制，不做 all-to-all）。
 
 ### D20. 4K 主训使用 dense-over-compressed，8K 前收紧到 top-k 64
 
@@ -207,3 +219,54 @@
   OPD 配置指向 base/pilot checkpoint。
 - **影响**：符合“GRPO 从 SFT 出发、student 从 base 出发”的路线；RL 阶段仍重新
   初始化优化器。
+
+## 2026-11-04 多卡、HF、vLLM/verl
+
+### D23. FSDP2 + manual DDP，Muon 在 shard 上 all-gather 后更新
+
+- **实际**：
+  - `DistributedSettings.mode`：`fsdp2`（默认）或 `ddp`；`WORLD_SIZE>1` 自动启用；
+  - FSDP2 对每个 transformer block / MTP block 调 `fully_shard`，再包 root；
+  - Muon 遇到 DTensor 参数时 `full_tensor()` all-gather，做 NS-5，再用
+    `DTensor.from_local` 写回 local shard；AdamW 直接支持 DTensor；
+  - `clip_grad_norm` 对 shard 的平方和做 all-reduce，避免“各 rank 本地 norm”
+    导致不同 DP 尺寸下 clip 系数不同；
+  - expert bias 的 token 计数在更新前 all-reduce。
+- **依据**：roadmap 目标环境是多卡 CUDA；单进程 CPU 只能验证逻辑，但 FSDP2 的
+  DTensor 路径必须现在写对，否则上 GPU 才发现 clip/Muon 不一致。
+- **验证**：CPU/Gloo 两进程，world=1 与 world=2 在相同 seed/batch 下保存的
+  `model.pt` sha256 完全一致（FSDP2 与 DDP 各自内部一致；两种模式之间最大差
+  1.5e-8，来自 float32 norm 计算顺序）。
+- **影响**：Muon 每步 all-gather 全部矩阵，60M 可接受，更大模型需要换成
+  distributed NS 或把 Muon 参数设为 replicated；EP 仍未实现。
+
+### D24. vLLM 只做可选采样后端，权重同步用重建
+
+- **实际**：`rl/backends/vllm.py` 的 `VLLMGenerator` 通过 HF 目录构建
+  `vllm.LLM`，请求 `logprobs=0` 取采样 token 的 logprob；actor logprob 仍来自
+  训练模型；`update_weights` 重新导出 HF，若 vLLM 没有 `reload_weights` 就重建
+  engine。
+- **依据**：vLLM 没有 miniDeepSeek 的 paged-attention kernel；不能在无 GPU 的
+  环境验证自定义模型注册。先保证“采样接口 + HF 权重格式 + 一致性门禁”正确，
+  不伪造吞吐结论。
+- **影响**：现在不能声称 vLLM 可用；需要在 CUDA 上确认目标 vLLM 版本能否通过
+  `auto_map` 加载。不能加载时用 `rollout_backend: torch` 或 verl HF rollout。
+
+### D25. verl 适配走 HF rollout + FSDP actor
+
+- **实际**：`rl/verl.py` 生成 verl `main_ppo` 的 Hydra overrides，数据转成
+  `prompt/data_source/reward_model/extra_info`，`compute_score` 复用项目 reward；
+  `scripts/export_verl.py` 生成 `train.jsonl`/parquet + `run.sh`。
+  默认 `rollout.name=hf`（verl `HFRollout` 调 HF `generate`），避免依赖未实现的
+  vLLM kernel；`rollout.name=vllm` 只在目标 vLLM 支持时使用。
+- **OPD**：verl 的 `loss_mode` 是 k1/k3/forward_kl_topk，没有 V4 的 full-vocab
+  reverse KL；`build_verl_opd_config` 只作为模板，**canonical OPD 仍是
+  `rl/opd.py`**，它直接在 6,400 词表上算全词表 reverse KL。
+- **影响**：verl 未安装、未实跑；接口按 verl 当前源码编写，GPU smoke 待做。
+
+### D26. HF 导出不含 MTP 头
+
+- **实际**：`export_hf` 丢弃 `mtp_layers.*`，HF 模型 `n_mtp_layers=0`。
+- **依据**：MTP 是训练辅助头；推理/rollout 只用主头。保留会浪费显存并让
+  vLLM/verl 的权重加载器多处理无用参数。
+- **影响**：HF logits 与训练模型主头逐位一致；MTP 相关实验仍用训练 checkpoint。

@@ -12,6 +12,7 @@ data contracts are the same.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -35,6 +36,18 @@ from ..model.routing import (
     routing_metrics,
 )
 from ..model.wrapper import MiniDeepSeekModel, build_model
+from .distributed import (
+    DistributedContext,
+    all_reduce_gradients,
+    apply_parallelism,
+    clip_grad_norm,
+    gather_model_state_dict,
+    gather_optimizer_state_dict,
+    gradient_sync_disabled,
+    init_distributed,
+    load_model_state_dict,
+    load_optimizer_state_dict,
+)
 from .losses import (
     capture_gate_scores,
     iter_moe_layers,
@@ -88,10 +101,12 @@ class Trainer:
         val_batches: Iterable[PackedBatch] | None = None,
         tokenizer_hash: str | None = None,
         run_name: str | None = None,
+        distributed: DistributedContext | None = None,
     ):
         self.config = config
         self.model = model
         self.device = model.device
+        self.dist = distributed or DistributedContext(device=self.device)
         self.tokenizer_hash = tokenizer_hash
         self.run_name = run_name or Path(config.train.out_dir).name
         set_seed(config.model.seed)
@@ -103,7 +118,9 @@ class Trainer:
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
         )
-        self.logger = MetricsLogger(config.train.out_dir)
+        self.logger = (
+            MetricsLogger(config.train.out_dir) if self.dist.is_main else None
+        )
         self._topk_schedule = None
         current_topk = model.current_index_topk()
         if (
@@ -153,6 +170,30 @@ class Trainer:
         except StopIteration:
             self._batch_iter = iter(self._batch_factory())
             return next(self._batch_iter)
+
+    # -- distributed ----------------------------------------------------------
+    @contextlib.contextmanager
+    def _gradient_sync(self, enabled: bool):
+        if not self.dist.enabled or enabled:
+            yield
+            return
+        inner = self.model.model
+        no_sync = getattr(inner, "no_sync", None)
+        if no_sync is not None:
+            with no_sync():
+                yield
+        else:
+            with gradient_sync_disabled(inner):
+                yield
+
+    def _sync_expert_usage(self) -> None:
+        """Sum per-rank token counts before the loss-free bias update."""
+        if not self.dist.enabled:
+            return
+        for _name, moe in iter_moe_layers(self.model.model):
+            counts = moe.router.tokens_per_expert_E
+            if counts.numel():
+                self.dist.all_reduce_sum(counts)
 
     # -- stability ------------------------------------------------------------
     def _ar_enabled(self) -> bool:
@@ -298,14 +339,14 @@ class Trainer:
         accum = max(int(self.config.train.grad_accum), 1)
         micro_metrics: list[StepMetrics] = []
         mtp_weight = self._mtp_weight()
-        for _ in range(accum):
+        for micro in range(accum):
             batch = self._next_batch()
-            micro_metrics.append(self._forward_backward(batch, mtp_weight))
-        grad_norm = float(
-            torch.nn.utils.clip_grad_norm_(
-                list(self.model.parameters()), self.config.optim.grad_clip
-            )
-        )
+            with self._gradient_sync(micro == accum - 1):
+                micro_metrics.append(self._forward_backward(batch, mtp_weight))
+        if self.dist.enabled and self.dist.mode == "ddp":
+            all_reduce_gradients(self.model.model, self.dist.world_size)
+        grad_norm = clip_grad_norm(self.model.model, self.config.optim.grad_clip)
+        self._sync_expert_usage()
         update_expert_biases(self.model.model)
         lr_factor = self.scheduler.step(self.step)
         self.optimizer.step()
@@ -340,7 +381,10 @@ class Trainer:
         started = time.time()
         while self.step < total_steps:
             record = self.train_step()
-            if self.step % max(self.config.train.log_every, 1) == 0:
+            if (
+                self.logger is not None
+                and self.step % max(self.config.train.log_every, 1) == 0
+            ):
                 record["elapsed_s"] = round(time.time() - started, 3)
                 self.logger.log(self.step, record)
             if (
@@ -354,17 +398,22 @@ class Trainer:
                 and (self.step + 1) % self.config.train.val_every == 0
             ):
                 val = self.evaluate(self._val_iter, max_steps=self.config.train.val_steps)
-                self.logger.log(self.step, {"val_loss": val["loss"]}, echo=True)
+                if self.logger is not None:
+                    self.logger.log(self.step, {"val_loss": val["loss"]}, echo=True)
             self.step += 1
         self.save(name="final")
-        summary = self.logger.summary()
+        summary = self.logger.summary() if self.logger is not None else {}
         summary.update(
             {
                 "steps_run": self.step,
                 "first_loss": self._first_loss,
                 "last_loss": self._last_loss,
                 "wall_seconds": round(time.time() - started, 3),
-                "tokens": sum(entry.get("tokens", 0) for entry in self.logger.history),
+                "tokens": (
+                    sum(entry.get("tokens", 0) for entry in self.logger.history)
+                    if self.logger is not None
+                    else 0
+                ),
             }
         )
         return summary
@@ -391,27 +440,64 @@ class Trainer:
     # -- checkpoints ----------------------------------------------------------
     def save(self, name: str = "final", *, directory: str | Path | None = None) -> Path:
         path = Path(directory or self.config.train.out_dir) / name
-        save_checkpoint(
-            path,
-            self.model,
-            optimizer=self.optimizer,
-            step=self.step,
-            config=self.config.to_dict(),
-            tokenizer_hash=self.tokenizer_hash,
-            seed=self.config.model.seed,
-            extra={"run_name": self.run_name, "flavor": self.config.model.flavor},
-        )
+        if self.dist.enabled:
+            state = gather_model_state_dict(self.model.model)
+            optim_state = gather_optimizer_state_dict(self.model.model, self.optimizer)
+            self.dist.barrier()
+            if self.dist.is_main:
+                save_checkpoint(
+                    path,
+                    self.model,
+                    optimizer=self.optimizer,
+                    step=self.step,
+                    config=self.config.to_dict(),
+                    tokenizer_hash=self.tokenizer_hash,
+                    seed=self.config.model.seed,
+                    extra={"run_name": self.run_name, "flavor": self.config.model.flavor},
+                    state_dict=state,
+                    optimizer_state=optim_state,
+                )
+            self.dist.barrier()
+        else:
+            save_checkpoint(
+                path,
+                self.model,
+                optimizer=self.optimizer,
+                step=self.step,
+                config=self.config.to_dict(),
+                tokenizer_hash=self.tokenizer_hash,
+                seed=self.config.model.seed,
+                extra={"run_name": self.run_name, "flavor": self.config.model.flavor},
+            )
         return path
 
     def resume(self, directory: str | Path) -> dict[str, Any]:
-        meta = load_checkpoint(
-            directory, self.model, optimizer=self.optimizer, map_location="cpu"
-        )
+        if self.dist.enabled:
+            import torch
+
+            directory = Path(directory)
+            state = torch.load(
+                directory / "model.pt", map_location="cpu", weights_only=True
+            )
+            load_model_state_dict(self.model.model, state)
+            optimizer_path = directory / "optimizer.pt"
+            if optimizer_path.exists():
+                optim_state = torch.load(
+                    optimizer_path, map_location="cpu", weights_only=True
+                )
+                load_optimizer_state_dict(self.model.model, self.optimizer, optim_state)
+            from ..model.checkpoint import read_metadata
+
+            meta = read_metadata(directory)
+        else:
+            meta = load_checkpoint(
+                directory, self.model, optimizer=self.optimizer, map_location="cpu"
+            )
         self.step = int(meta.get("step", 0))
         return meta
 
     def close(self) -> dict[str, Any]:
-        return self.logger.summary()
+        return self.logger.summary() if self.logger is not None else {}
 
 
 def build_trainer(
@@ -420,8 +506,12 @@ def build_trainer(
     *,
     val_batches: Iterable[PackedBatch] | None = None,
     tokenizer_hash: str | None = None,
+    distributed: DistributedContext | None = None,
 ) -> tuple[Trainer, MiniDeepSeekModel]:
-    device = resolve_device(config.model.device)
+    context = distributed or init_distributed(config.distributed, config.model.device)
+    device = context.device if context.enabled else resolve_device(config.model.device)
+    # Seed before construction: every rank must start from identical weights.
+    set_seed(config.model.seed)
     model = build_model(
         config.model.flavor,
         seq_len=config.model.seq_len,
@@ -432,12 +522,17 @@ def build_trainer(
         index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
     )
+    if context.enabled:
+        model.model = apply_parallelism(
+            model.model, context, config.distributed, device=device
+        )
     trainer = Trainer(
         config,
         model,
         train_batches,
         val_batches=val_batches,
         tokenizer_hash=tokenizer_hash,
+        distributed=context,
     )
     if config.train.resume:
         trainer.resume(config.train.resume)

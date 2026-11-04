@@ -15,6 +15,7 @@ from collections.abc import Iterable
 
 import torch
 from torch import Tensor
+from torch.distributed.tensor import DTensor
 
 from ..config import OptimizerSettings
 
@@ -90,7 +91,18 @@ class Muon(torch.optim.Optimizer):
             for parameter in group["params"]:
                 if parameter.grad is None:
                     continue
-                gradient = parameter.grad
+                full_parameter = None
+                if hasattr(parameter, "full_tensor"):
+                    # FSDP2 shards the parameter; orthogonalization is a global
+                    # operation, so gather, update, and scatter the full matrix.
+                    full_parameter = parameter.full_tensor()
+                    gradient = (
+                        parameter.grad.full_tensor()
+                        if hasattr(parameter.grad, "full_tensor")
+                        else parameter.grad
+                    )
+                else:
+                    gradient = parameter.grad
                 if gradient.is_sparse:
                     raise RuntimeError("Muon does not support sparse gradients")
                 state = self.state[parameter]
@@ -110,6 +122,15 @@ class Muon(torch.optim.Optimizer):
                 ).reshape_as(update)
                 rows, cols = update.shape[-2], update.shape[-1]
                 scale = math.sqrt(max(1.0, rows / cols))
+                if full_parameter is not None:
+                    new_full = full_parameter.float() * (1.0 - lr * weight_decay)
+                    new_full = new_full - orthogonal.float() * (lr * scale)
+                    parameter.copy_(
+                        _distribute_like(
+                            new_full.to(full_parameter.dtype), parameter
+                        )
+                    )
+                    continue
                 if weight_decay:
                     parameter.mul_(1.0 - lr * weight_decay)
                 parameter.add_(orthogonal, alpha=-lr * scale)
@@ -166,6 +187,37 @@ class HybridOptimizer:
             if state.get("adamw") is None:
                 raise ValueError("checkpoint has no AdamW state")
             self.adamw.load_state_dict(state["adamw"])
+
+
+def _distribute_like(full: Tensor, like: DTensor) -> DTensor:
+    """Re-shard a full tensor to match an existing FSDP2 parameter."""
+    mesh = like.device_mesh
+    placements = like.placements
+    world = mesh.size()
+    local_rank = mesh.get_local_rank()
+    from torch.distributed.tensor.placement_types import Replicate, Shard
+
+    if world == 1:
+        local = full
+    else:
+        if not isinstance(placements[0], Shard):
+            if isinstance(placements[0], Replicate):
+                local = full
+            else:
+                raise TypeError(f"unsupported placement {placements[0]!r}")
+        else:
+            dim = placements[0].dim
+            chunks = torch.chunk(full, world, dim=dim)
+            if len(chunks) != world:
+                raise RuntimeError("cannot split parameter across ranks")
+            local = chunks[local_rank]
+    return DTensor.from_local(
+        local.contiguous(),
+        mesh,
+        placements,
+        shape=full.shape,
+        stride=full.stride(),
+    )
 
 
 def _is_adamw_parameter(name: str, parameter: Tensor) -> bool:

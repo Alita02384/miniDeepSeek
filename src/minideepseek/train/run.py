@@ -15,10 +15,17 @@ from ..config import TrainConfig, load_config, resolve_device
 from ..data.pretrain import PackedPretrainDataset
 from ..data.sft import SFTDataset
 from ..tokenizer import load_tokenizer
+from .distributed import init_distributed
 from .trainer import build_trainer
 
 
-def load_dataset(config: TrainConfig, mode: str):
+def load_dataset(
+    config: TrainConfig,
+    mode: str,
+    *,
+    shard_rank: int = 0,
+    shard_world_size: int = 1,
+):
     path = config.data.tokenized_path
     if not path:
         raise SystemExit(
@@ -33,6 +40,8 @@ def load_dataset(config: TrainConfig, mode: str):
             batch_tokens=config.data.batch_tokens,
             shuffle=config.data.shuffle,
             seed=config.data.seed,
+            shard_rank=shard_rank,
+            shard_world_size=shard_world_size,
         )
     else:
         dataset = PackedPretrainDataset(path)
@@ -44,26 +53,45 @@ def load_dataset(config: TrainConfig, mode: str):
             batch_size=batch_size,
             shuffle=config.data.shuffle,
             seed=config.data.seed,
+            shard_rank=shard_rank,
+            shard_world_size=shard_world_size,
         )
     return dataset, batches
 
 
 def run(config: TrainConfig, mode: str = "pretrain") -> dict:
     tokenizer = load_tokenizer(vocab_limit=config.model.vocab_limit)
-    dataset, batches = load_dataset(config, mode)
+    context = init_distributed(config.distributed, config.model.device)
+    dataset, batches = load_dataset(
+        config,
+        mode,
+        shard_rank=context.rank,
+        shard_world_size=context.world_size,
+    )
     trainer, model = build_trainer(
-        config, batches, tokenizer_hash=tokenizer.sha256
+        config,
+        batches,
+        tokenizer_hash=tokenizer.sha256,
+        distributed=context,
     )
     summary = trainer.train()
     checkpoint = trainer.save("final")
-    return {
+    report = {
         "mode": mode,
         "dataset": getattr(dataset, "meta", {}),
         "params": model.parameter_report(),
         "summary": summary,
         "checkpoint": str(checkpoint),
         "device": str(resolve_device(config.model.device)),
+        "distributed": {
+            "enabled": context.enabled,
+            "mode": config.distributed.mode,
+            "rank": context.rank,
+            "world_size": context.world_size,
+        },
     }
+    context.shutdown()
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:

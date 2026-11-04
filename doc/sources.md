@@ -74,9 +74,22 @@ minimind commit：`233d00fa068ec2b8c0d4f07b703934d6391a5a73`。
 - DeepSeek-V4-Flash：阅读 `config.json`、`README.md`、inference 结构，用于
   对照超参与 chat 格式；没有复制 `inference/model.py`。
 - vLLM / verl 只作为**可选 extra**（`pyproject.toml`），不装也能运行本项目；
-  详见 `doc/decisions.md` 的 D11/D15 与后续集成条目。
+  详见 `doc/decisions.md` 的 D11/D15/D24/D25。
 
-## 4. 复现来源
+## 4. 本项目新增（非复制）
+
+| 文件 | 说明 |
+|---|---|
+| `src/minideepseek/model/hf/` | HF `PretrainedConfig`/`PreTrainedModel` 适配、训练↔HF key 映射、导出；参考 transformers 文档与 `HFRollout` 的 `generate` 契约，未复制 verl/vLLM 代码 |
+| `src/minideepseek/train/distributed.py` | `torchrun` 启动、FSDP2 `fully_shard`、manual DDP、global grad clip、state gather；按 PyTorch FSDP2 文档实现 |
+| `src/minideepseek/rl/backends/vllm.py` | vLLM `LLM` 采样封装（可选、CUDA-only）；接口参考 verl `vllm_rollout` 的 `generate_sequences` 语义 |
+| `src/minideepseek/rl/verl.py` | verl 数据 schema、reward entrypoint、Hydra config；参考 verl `main_ppo` 配置与 `custom_reward_function` 接口 |
+| `scripts/export_hf.py`, `scripts/export_verl.py`, `scripts/test_distributed.py`, `scripts/verify_reference.py` | 导出与验证脚本 |
+
+这些文件不复制上游实现；verl/vLLM 的运行时依赖是可选项，真正执行前需在
+CUDA 机器上按 `doc/testing.md` 的未验证项补 smoke。
+
+## 5. 复现来源
 
 ```bash
 git -C ../torchtitan rev-parse HEAD      # 01586df70...

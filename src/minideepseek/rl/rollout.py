@@ -59,9 +59,15 @@ class RolloutGroup:
 
 
 class TorchRolloutEngine:
-    def __init__(self, model: MiniDeepSeekModel, tokenizer: MiniDeepSeekTokenizer):
+    def __init__(
+        self,
+        model: MiniDeepSeekModel,
+        tokenizer: MiniDeepSeekTokenizer,
+        generator=None,
+    ):
         self.model = model
         self.tokenizer = tokenizer
+        self.generator = generator
 
     def encode_prompt(self, record: GRPORecord) -> list[int]:
         text = self.tokenizer.render_chat(record.prompt, add_generation_prompt=True)
@@ -84,7 +90,8 @@ class TorchRolloutEngine:
         groups: list[RolloutGroup] = []
         prompt_ids = [self.encode_prompt(record) for record in records]
         repeated = [ids for ids in prompt_ids for _ in range(group_size)]
-        output = self.model.generate(
+        generator = self.generator or self.model
+        output = generator.generate(
             repeated,
             max_new_tokens=max_new_tokens,
             temperature=temperature,
@@ -113,6 +120,13 @@ class TorchRolloutEngine:
                 cursor += 1
             groups.append(group)
         return groups
+
+    def sync_weights(self, state_dict) -> None:
+        """Push actor weights to an external generator (vLLM), if one is used."""
+        update = getattr(self.generator, "update_weights", None)
+        if update is None:
+            return
+        update(state_dict, getattr(self.generator, "model_path", ""))
 
     # -- actor-side recomputation --------------------------------------------
     @staticmethod

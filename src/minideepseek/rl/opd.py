@@ -66,6 +66,7 @@ class OPDTrainer:
         teachers: dict[str, MiniDeepSeekModel],
         *,
         teacher_weights: dict[str, float] | None = None,
+        engine: TorchRolloutEngine | None = None,
     ):
         if not prompts:
             raise ValueError("OPD requires at least one prompt")
@@ -76,7 +77,7 @@ class OPDTrainer:
         self.tokenizer = tokenizer
         self.prompts = list(prompts)
         self.teachers = teachers
-        self.engine = TorchRolloutEngine(student, tokenizer)
+        self.engine = engine or TorchRolloutEngine(student, tokenizer)
         self.optimizer = build_optimizer(student, config.optim)
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
@@ -297,7 +298,10 @@ def build_opd_trainer(
             teachers[settings.key or settings.name] = load_teacher(
                 settings, tokenizer=tokenizer, device=device
             )
+    from .backends import build_rollout_engine
+
+    engine = build_rollout_engine(config, student, tokenizer)
     trainer = OPDTrainer(
-        config, student, tokenizer, prompts, teachers
+        config, student, tokenizer, prompts, teachers, engine=engine
     )
     return trainer, student
