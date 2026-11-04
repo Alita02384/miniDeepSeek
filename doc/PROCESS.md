@@ -316,3 +316,20 @@
   - teacher 权重仍 fp32（只 autocast），未做 hidden-state cache/bf16 offload；
   - AR probe 同步；EP/CP/激活重计算、GRM/world 专家按用户要求不做；
   - vLLM/verl GPU、FIM/长文档仍未做。
+
+## 2026-11-04 GRPO/OPD FSDP2 多卡
+
+- **commit**: `bcf4c2b` feat: GRPO/OPD 支持 FSDP2 多卡路径
+- **做了什么**:
+  - `RLConfig.distributed`；builder 初始化/包装 FSDP2，record/prompt 按 rank 分片；
+  - GRPO/OPD 使用 FSDP-aware clip、gather checkpoint、手工 model/optimizer resume；
+  - vLLM backend 与 FSDP2 RL 显式拒绝；
+  - 新增 `scripts/test_rl_distributed.py` 与 `tests/test_rl_distributed.py`；
+  - train_grpo.sh/train_opd.sh 支持 torchrun。
+- **验证**:
+  - ruff 通过；pytest **127 passed**；debug_smoke exit 0；
+  - `scripts/test_rl_distributed.py --method grpo|opd`（CPU 2 进程）→ PASS，
+    各跑 1 step 并保存。
+- **未完成 / 风险**:
+  - vLLM/verl GPU 路径未验证；teacher 每 rank 复制；局部 loss 等权平均；
+  - teacher hidden-state cache、FIM/长文档仍未做。
