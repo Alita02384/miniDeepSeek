@@ -42,3 +42,27 @@
   - 未提供 HF transformers 架构类；safetensors 只是权重格式；
   - 多 GPU/FSDP/EP 未验证；world judge 为启发式占位；未接 lm-eval-harness；
   - Anticipatory Routing 为两段式近似、默认关闭；DSpark 未实现。
+
+## 2026-11-04 稳定性与稀疏调度补齐
+
+- **commit**: `8869aa9` feat: 补齐 RL 初始化、loss spike 处理与稀疏 index 调度
+- **做了什么**:
+  - GRPO/OPD 从 `train.resume` 加载 SFT specialist / base student checkpoint；校验 tokenizer hash。
+  - 新增 `train/spike.py`：median/MAD loss spike 检测、内存 rollback 快照、spike 后自动开启 AR 的开关。
+  - 新增 `IndexTopKSchedule`：4K dense-over-compressed 默认 `index_topk=seq_len//4`，最后 5% steps 收紧到 64；`set_index_topk` 可运行时切换。
+  - code domain 预训练增加 SPDX license 过滤（copyleft/未知 header），并统计 `dropped_license`。
+  - eval/consistency/RL 构建模型支持 `index_topk` 覆盖；更新配置与文档（D19–D22）。
+- **实现了什么**:
+  - spike 检测与自动 AR 可测；rollback 快照可恢复模型/优化器；
+  - index top-k 调度在 trainer 中逐步生效（测试从 16 → 中间值）；
+  - GRPO/OPD resume 后 logits 与来源 checkpoint 一致；
+  - code license 过滤在预训练 meta 中计数。
+- **验证**:
+  - `ruff check src tests` → All checks passed
+  - `pytest -q` → **93 passed**（CPU，V4 debug model）
+  - `bash scripts/debug_smoke.sh` → 训练 smoke + 一致性 + 测试通过
+  - `prepare_debug_data.sh` + debug pretrain/SFT/GRPO/OPD/eval/consistency 全部实跑通过
+- **未完成 / 风险**:
+  - rollback 是内存快照，不恢复 dataloader 位置；默认关闭；
+  - index top-k 调度与序列长度课程尚未联动（当前只按 step 比例收紧，8K 数据/课程后置）；
+  - 其余风险同 `0296b3f` 条目（未真实训练、未接 verl/vLLM、未做多卡）。
