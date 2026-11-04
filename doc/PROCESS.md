@@ -205,3 +205,23 @@
 - **未完成 / 风险**:
   - HTTP judge / lm-eval / vLLM / verl 均未在 CI 真实调用；
   - EP、真实 6B 数据、真实 60M 训练仍不在当前阶段。
+
+## 2026-11-04 batch warmup 与验证集接线
+
+- **commit**: `ffaa4b4` feat: batch-token 线性 warmup 与 val_path 接线
+- **做了什么**:
+  - `DataSettings` 增加 `batch_tokens_final` / `batch_warmup_ratio`；
+  - `data.pretrain.iter_batches` 与 `data.sft.iter_batches` 通过
+    `token_schedule` 按 micro-batch 线性升温；
+  - `train/run.py` 读取 `train.val_path`，构建独立验证 loader 传给 trainer；
+  - full_6b/pilot/dense_control 从 16K 升到 64K tokens/micro-batch。
+- **实现了什么**:
+  - roadmap 阶段 2 的“前 10% 步线性升 batch”有代码与单测；
+  - 验证 loss 现在可以按 `val_every` 真正跑起来。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **114 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0
+- **未完成 / 风险**:
+  - sequence-length curriculum 仍是数据分阶段 recipe，没有单次训练自动调度；
+  - weighted data mixer / paragraph-level dedup / 更细 quality filter 仍未实现。
