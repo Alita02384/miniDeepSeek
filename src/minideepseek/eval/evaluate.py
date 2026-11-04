@@ -125,6 +125,10 @@ def evaluate(
         seed=config.model.seed,
     )
     settings = config.reward
+    if judge is None and settings.world_judge == "http":
+        from ..rl.judge import make_judge
+
+        judge = make_judge(settings)
     samples: list[EvalSample] = []
     for record, response in zip(records, responses, strict=True):
         if config.domain == "math" or record.verifier == "math_exact_match":

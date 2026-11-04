@@ -95,7 +95,11 @@ class HTTPJudge:
         return body["choices"][0]["message"]["content"]
 
     def __call__(self, response: str, record: GRPORecord) -> dict[str, float]:
-        content = self._request(build_judge_prompt(response, record))
+        content = self._request(build_judge_prompt(response, record)).strip()
+        if content.startswith("```"):
+            content = content.strip("`")
+            if content.startswith("json"):
+                content = content[4:]
         scores = json.loads(content)
         return {
             dimension: max(0.0, min(1.0, float(scores.get(dimension, 0.0))))
