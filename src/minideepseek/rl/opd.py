@@ -274,7 +274,7 @@ def build_opd_trainer(
     tokenizer: MiniDeepSeekTokenizer | None = None,
     teacher_models: dict[str, MiniDeepSeekModel] | None = None,
 ) -> tuple[OPDTrainer, MiniDeepSeekModel]:
-    tokenizer = tokenizer or load_tokenizer()
+    tokenizer = tokenizer or load_tokenizer(vocab_limit=config.model.vocab_limit)
     device = resolve_device(config.model.device)
     student = build_model(
         config.model.flavor,
@@ -283,8 +283,14 @@ def build_opd_trainer(
         device=device,
         tie_word_embeddings=config.model.tie_word_embeddings,
         swiglu_limit=config.model.swiglu_limit,
+        index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
     )
+    if config.train.resume:
+        meta = load_checkpoint(config.train.resume, student, map_location=device)
+        expected = meta.get("tokenizer_hash")
+        if expected and expected != tokenizer.sha256:
+            raise ValueError("OPD student checkpoint tokenizer hash mismatch")
     teachers = teacher_models or {}
     if not teachers:
         for settings in config.teachers:

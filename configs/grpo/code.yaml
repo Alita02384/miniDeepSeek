@@ -28,6 +28,7 @@ train:
   grad_accum: 1
   log_every: 1
   ckpt_every: 20
+  resume: checkpoints/sft_code/final
   out_dir: checkpoints/grpo_code
 rl:
   method: grpo

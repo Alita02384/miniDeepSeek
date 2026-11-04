@@ -24,6 +24,7 @@ train:
   grad_accum: 1
   log_every: 1
   ckpt_every: 50
+  resume: checkpoints/pretrain_full/final
   out_dir: checkpoints/opd_three_teacher
 rl:
   method: opd

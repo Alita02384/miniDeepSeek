@@ -23,6 +23,7 @@ train:
   steps: 200
   log_every: 1
   ckpt_every: 20
+  resume: checkpoints/pretrain_pilot/final
   out_dir: checkpoints/opd_single_math
 rl:
   method: opd

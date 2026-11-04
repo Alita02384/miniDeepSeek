@@ -49,3 +49,34 @@ class WarmupDecaySchedule:
             group["lr"] = base_lr * factor
         self.last_lr = factor
         return factor
+
+
+@dataclass
+class IndexTopKSchedule:
+    """Warm the CSA index from dense-over-compressed to sparse top-k.
+
+    Roadmap section 3.5: keep every compressed entry during 4K main training,
+    then shrink to ``final`` over the last ``warmup_ratio`` of steps before the
+    8K sparse phase.
+    """
+
+    start: int
+    final: int
+    warmup_ratio: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.start < 1 or self.final < 1:
+            raise ValueError("index top-k values must be positive")
+        if not 0.0 <= self.warmup_ratio <= 1.0:
+            raise ValueError("warmup_ratio must be in [0, 1]")
+
+    def topk_at(self, step: int, total_steps: int) -> int:
+        if self.warmup_ratio <= 0 or total_steps <= 0:
+            return self.start
+        start_step = int(total_steps * (1.0 - self.warmup_ratio))
+        if step < start_step:
+            return self.start
+        span = max(total_steps - start_step, 1)
+        progress = min(max((step - start_step) / span, 0.0), 1.0)
+        value = self.start + (self.final - self.start) * progress
+        return max(1, int(round(value)))

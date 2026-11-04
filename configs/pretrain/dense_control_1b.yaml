@@ -2,6 +2,7 @@
 model:
   flavor: mini_60m_dense
   seq_len: 4096
+  index_topk: 1024
   n_mtp_layers: 1
   swiglu_limit: 10.0
   device: auto

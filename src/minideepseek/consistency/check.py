@@ -61,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint")
     parser.add_argument("--prompts")
     parser.add_argument("--demo", action="store_true")
+    parser.add_argument("--index-topk", type=int, default=None)
     parser.add_argument("--max-new-tokens", type=int, default=8)
     parser.add_argument("--logprob-threshold", type=float, default=1e-3)
     parser.add_argument("--routing-threshold", type=float, default=0.999)
@@ -74,6 +75,7 @@ def main(argv: list[str] | None = None) -> int:
         n_mtp_layers=args.n_mtp_layers,
         device=resolve_device(args.device),
         swiglu_limit=10.0,
+        index_topk=args.index_topk,
     )
     if args.checkpoint:
         meta = load_checkpoint(args.checkpoint, model)

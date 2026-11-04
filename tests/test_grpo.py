@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import torch
+
 from minideepseek.config import (
     ModelSettings,
     OptimizerSettings,
@@ -155,3 +157,22 @@ def test_build_grpo_trainer_returns_model(tmp_path, stub_tokenizer):
     )
     assert trainer.model is model
     assert model.vocab_size == 2048
+
+
+def test_grpo_resume_loads_sft_checkpoint(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model, from_sequences
+    from minideepseek.model.checkpoint import save_checkpoint
+
+    torch.manual_seed(7)
+    source = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
+    checkpoint = tmp_path / "sft"
+    save_checkpoint(checkpoint, source, tokenizer_hash=stub_tokenizer.sha256)
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math")]
+    config = _rl_config(tmp_path)
+    config.train.resume = str(checkpoint)
+    trainer, model = build_grpo_trainer(
+        config, records, lambda text, _record: RewardResult(total=0.0), tokenizer=stub_tokenizer
+    )
+    batch = from_sequences([[1, 2, 3, 4]])
+    with torch.no_grad():
+        assert torch.equal(source.forward(batch)[0], model.forward(batch)[0])

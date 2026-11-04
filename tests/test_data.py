@@ -173,3 +173,17 @@ def test_opd_pool(tmp_path):
     assert len(prompts) == 5
     balanced = balance_by_teacher(prompts)
     assert len(balanced) == 5
+
+
+def test_code_license_filter(tmp_path):
+    source = tmp_path / "code.jsonl"
+    docs = [
+        "# SPDX-License-Identifier: GPL-3.0\nprint('copyleft')\n" * 4,
+        "# SPDX-License-Identifier: MIT\ndef f():\n    return 1\n" * 4,
+    ]
+    source.write_text("\n".join(json.dumps({"text": text}) for text in docs) + "\n")
+    output = tmp_path / "code.npz"
+    meta = build_pretrain_dataset(
+        [source], output, seq_len=128, min_chars=16, domain="code", quality_filter=False
+    )
+    assert meta["dropped_license"] >= 1

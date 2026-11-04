@@ -20,6 +20,7 @@ data:
 train:
   steps: 1
   log_every: 1
+  resume: checkpoints/debug_sft/final
   out_dir: checkpoints/debug_opd
 rl:
   method: opd
@@ -38,7 +39,7 @@ teachers:
     weight: 0.5
   - name: code_teacher
     key: code
-    checkpoint: checkpoints/debug_sft/final
+    checkpoint: checkpoints/debug_grpo/final
     flavor: debugmodel
     seq_len: 128
     weight: 0.5

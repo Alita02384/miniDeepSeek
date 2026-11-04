@@ -27,7 +27,7 @@ from torch import Tensor
 
 from ..config import RLConfig, resolve_device, set_seed
 from ..data.grpo import GRPORecord
-from ..model.checkpoint import save_checkpoint
+from ..model.checkpoint import load_checkpoint, save_checkpoint
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.metrics import MetricsLogger
@@ -262,11 +262,16 @@ def build_grpo_trainer(
         device=device,
         tie_word_embeddings=config.model.tie_word_embeddings,
         swiglu_limit=config.model.swiglu_limit,
+        index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
     )
-    trainer = GRPOTrainer(
-        config, model, tokenizer or load_tokenizer(), records, reward_fn
-    )
+    tokenizer = tokenizer or load_tokenizer(vocab_limit=config.model.vocab_limit)
+    if config.train.resume:
+        meta = load_checkpoint(config.train.resume, model, map_location=device)
+        expected = meta.get("tokenizer_hash")
+        if expected and expected != tokenizer.sha256:
+            raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
+    trainer = GRPOTrainer(config, model, tokenizer, records, reward_fn)
     return trainer, model
 
 

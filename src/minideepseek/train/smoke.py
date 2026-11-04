@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", default="checkpoints/smoke")
     parser.add_argument("--data")
     parser.add_argument("--data-kind", choices=["pretrain", "sft"], default="pretrain")
+    parser.add_argument("--index-topk", type=int, default=None, help="CSA top-k override (debug default: none)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--no-verify", action="store_true")
     args = parser.parse_args(argv)
@@ -124,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
             n_mtp_layers=args.n_mtp_layers,
             device=device,
             swiglu_limit=10.0,
+            index_topk=args.index_topk,
         )
         load_checkpoint(checkpoint, reloaded)
         batch = batches[0].to(device)

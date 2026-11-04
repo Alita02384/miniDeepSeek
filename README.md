@@ -30,7 +30,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告 |
 | 数据管线 | `data/` | 打包、mask、MinHash、13-gram、fertility、manifest |
 
-测试：`84 passed`（CPU，V4 debug model，约 16 秒）。
+测试：`93 passed`（CPU，V4 debug model，约 20 秒）。
 
 ---
 
@@ -111,7 +111,7 @@ src/minideepseek/
 ├── rl/           # torch rollout、reward、GRPO、多教师 OPD
 ├── consistency/  # logprob / routing / checkpoint 一致性门禁
 └── eval/         # math / code / world 评估与报告
-tests/            # 84 个 CPU 测试，全部使用 V4 debug model
+tests/            # 93 个 CPU 测试，全部使用 V4 debug model
 doc/              # decisions / sources / PROCESS / testing
 scripts/          # 环境、数据、训练、评估脚本
 ```
@@ -129,6 +129,10 @@ scripts/          # 环境、数据、训练、评估脚本
 - **6 routed + 1 shared，top-2**；hash routing 前 3 层；`route_norm=True`，`route_scale=1.5`。
 - **CSA(4) + HCA(32) + SWA**；dense 对照用 `*_dense` flavor。
 - **SwiGLU clamp 10.0 常开**；**Anticipatory Routing 实现但默认关闭**。
+- **loss spike 检测 / 可选 rollback / 自动开启 AR**：`train/spike.py`，默认关闭。
+- **4K dense-over-compressed → 8K sparse 的 index top-k 调度**：`IndexTopKSchedule`，
+  默认由 `index_topk_final=64` 在最后 5% steps 内收紧。
+- **GRPO/OPD 从 checkpoint 初始化**：`train.resume` 分别加载 SFT specialist 与 base student。
 - **GRPO/OPD 用原生 torch 实现**（rollout + full-vocab reverse KL），因为 verl/vLLM
   在当前 CPU 验证环境不可用；算法与接口保持一致，见 [doc/decisions.md](doc/decisions.md)。
 - **checkpoint 主链**：torch state dict → safetensors → DCP；三者均已验证可回读。

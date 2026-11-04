@@ -159,3 +159,44 @@
 - **实际**：`eval/` 自写 math accuracy / code pass rate / world rubric 聚合。
 - **依据**：当前阶段先验证自写评测链路；harness 接入属于阶段 7。
 - **影响**：没有 MMLU/ARC/HellaSwag 等通用分数。
+
+## 2026-11-04 补充：训练稳定性、稀疏调度与 checkpoint 初始化
+
+### D19. 预训练 / SFT trainer 自实现，不包 torchtitan Trainer
+
+- **原方案**：roadmap 阶段 2/3 使用 torchtitan Trainer（FSDP2 + EP）与
+  `ChatProcessor` 数据路径。
+- **实际**：`train/trainer.py` 是单进程、显式 forward/backward/step 的循环；
+  `data/sft.py` 自己实现 packing 与 response-only mask。
+- **依据**：当前验证目标是在 CPU 上逐项验证机制（MTP、balance loss、路由、
+  clamp、checkpoint）；torchtitan Trainer 需要分布式 launcher、它自己的 config
+  注册表与 grain dataloader，调试成本高。生产训练可换回 torchtitan Trainer，
+  模型与 PackedBatch 契约已对齐。
+- **影响**：没有 FSDP2/EP/TP/CP、没有 torchtitan 的 dataloader 与 checkpoint
+  管理；多卡路径未验证。
+
+### D20. 4K 主训使用 dense-over-compressed，8K 前收紧到 top-k 64
+
+- **实际**：mini flavor 默认 `index_topk = max(seq_len//4, 64)`（4K 时 1024，
+  即全部压缩项）；`TrainSettings.index_topk_final=64` +
+  `index_topk_warmup_ratio=0.05` 在最后 5% steps 内线性收紧。`_dense` flavor
+  则完全去掉 compressor/indexer。
+- **影响**：与 roadmap “先 dense 后 sparse”一致；`configs/model/mini_60m.yaml`
+  的 1024 是 4K 配置，8K 时需要另建 8K 数据与 `seq_len=8192` 配置。
+
+### D21. loss spike 检测、rollback 与 AR 自动开启
+
+- **实际**：`train/spike.py` 用 median/MAD 检测；`TrainSettings` 的
+  `loss_spike_auto_ar` 在 spike 后强制开启 AR `loss_spike_ar_steps` 步；
+  `loss_spike_rollback` + `rollback_every` 可回滚到最近一次内存快照。
+- **依据**：roadmap §3.6 的触发机制；60M 默认关闭。
+- **影响**：rollback 是内存快照（不是磁盘 checkpoint），不恢复 dataloader 位置；
+  默认关闭，只用于长训练/验证机制。
+
+### D22. GRPO/OPD 的初始化 checkpoint
+
+- **实际**：`RLConfig.train.resume` 在 `build_grpo_trainer` / `build_opd_trainer`
+  中加载模型权重（不加载 RL 优化器状态）；GRPO 配置指向对应 SFT specialist，
+  OPD 配置指向 base/pilot checkpoint。
+- **影响**：符合“GRPO 从 SFT 出发、student 从 base 出发”的路线；RL 阶段仍重新
+  初始化优化器。

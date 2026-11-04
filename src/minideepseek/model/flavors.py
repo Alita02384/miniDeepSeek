@@ -1261,7 +1261,9 @@ def _mini_model(
     norm_eps = 1e-6
     index_n_heads = 8
     index_head_dim = 64
-    index_topk = 64
+    # Dense-over-compressed default: every compressed entry is visible.
+    # The 8K sparse phase lowers this to 64 via the trainer's top-k schedule.
+    index_topk = max(seq_len // 4, 64)
     moe_inter_dim = spec["moe_inter_dim"]
     num_experts = 6
     num_shared_experts = 1
@@ -1475,6 +1477,7 @@ def build_model_config(
     n_mtp_layers: int = 0,
     tie_word_embeddings: bool | None = None,
     swiglu_limit: float | None = None,
+    index_topk: int | None = None,
     converters: list[ModelConfigConverter.Config] | None = None,
     indexer_loss_coeff: float = 0.01,
     indexer_loss_mass_weighted: bool = False,
@@ -1499,6 +1502,13 @@ def build_model_config(
     )
     if tie_word_embeddings is not None:
         config.enable_weight_tying = tie_word_embeddings
+    if index_topk is not None:
+        if index_topk < 1:
+            raise ValueError("index_topk must be positive")
+        for layer in list(config.layers) + list(config.mtp_layers or []):
+            inner = layer.attention.inner_attention
+            if hasattr(inner, "index_topk"):
+                inner.index_topk = int(index_topk)
     if swiglu_limit is not None:
         from torchtitan.models.common import LimitedSwiGLU as _LimitedSwiGLU
         from torchtitan.models.common.moe import MoE as _MoEConfig

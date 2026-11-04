@@ -125,6 +125,8 @@ class ModelSettings(BaseConfig):
     seed: int = 1234
     # Debug-only: remap token ids modulo this limit (2048 for the V4 debug model).
     vocab_limit: int | None = None
+    # Dense-over-compressed index selection; None keeps the flavor default.
+    index_topk: int | None = None
 
 
 @dataclass
@@ -185,6 +187,19 @@ class TrainSettings(BaseConfig):
     val_path: str | None = None
     val_every: int = 0
     val_steps: int = 10
+    # Loss-spike stability controls (roadmap section 3.6). Defaults keep the
+    # mechanism inert; turn them on for long runs.
+    loss_spike_window: int = 100
+    loss_spike_sigma: float = 3.0
+    loss_spike_min_history: int = 20
+    loss_spike_auto_ar: bool = False
+    loss_spike_ar_steps: int = 50
+    loss_spike_rollback: bool = False
+    rollback_every: int = 0
+    max_rollbacks: int = 3
+    # Sparse-index warmup (roadmap section 3.5); None disables scheduling.
+    index_topk_final: int | None = None
+    index_topk_warmup_ratio: float = 0.0
 
 
 @dataclass

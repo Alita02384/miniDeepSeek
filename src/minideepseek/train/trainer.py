@@ -44,7 +44,8 @@ from .losses import (
 )
 from .metrics import MetricsLogger, swiglu_monitor
 from .optimizer import build_optimizer
-from .scheduler import WarmupDecaySchedule
+from .scheduler import IndexTopKSchedule, WarmupDecaySchedule
+from .spike import RollbackSnapshot, SpikeDetector, restore, snapshot
 
 
 @dataclass
@@ -103,6 +104,17 @@ class Trainer:
             min_lr_ratio=config.schedule.min_lr_ratio,
         )
         self.logger = MetricsLogger(config.train.out_dir)
+        self._topk_schedule = None
+        current_topk = model.current_index_topk()
+        if (
+            config.train.index_topk_final is not None
+            and current_topk is not None
+        ):
+            self._topk_schedule = IndexTopKSchedule(
+                start=int(current_topk),
+                final=int(config.train.index_topk_final),
+                warmup_ratio=config.train.index_topk_warmup_ratio,
+            )
         self.step = 0
         self._batch_factory = (
             train_batches if callable(train_batches) else (lambda: iter(train_batches))
@@ -117,9 +129,18 @@ class Trainer:
                     max_steps=config.anticipatory.max_steps,
                 )
             )
-            if config.anticipatory.enabled
+            if (config.anticipatory.enabled or config.train.loss_spike_auto_ar)
             else None
         )
+        self.spike_detector = SpikeDetector(
+            window=config.train.loss_spike_window,
+            sigma=config.train.loss_spike_sigma,
+            min_history=config.train.loss_spike_min_history,
+        )
+        self._ar_force_until = -1
+        self._rollback: RollbackSnapshot | None = None
+        self._rollback_count = 0
+        self._spike_count = 0
         self._use_autocast = config.model.dtype == "bfloat16" and self.device.type == "cuda"
         self._autocast_dtype = torch.bfloat16
         self._first_loss: float | None = None
@@ -132,6 +153,56 @@ class Trainer:
         except StopIteration:
             self._batch_iter = iter(self._batch_factory())
             return next(self._batch_iter)
+
+    # -- stability ------------------------------------------------------------
+    def _ar_enabled(self) -> bool:
+        if self._ar_state is None:
+            return False
+        return (
+            self._ar_state.config.enabled
+            or self.step < self._ar_force_until
+        )
+
+    def _apply_index_topk(self) -> None:
+        if self._topk_schedule is not None:
+            target = self._topk_schedule.topk_at(self.step, self.config.train.steps)
+            if target != self.model.current_index_topk():
+                self.model.set_index_topk(target)
+
+    def _maybe_snapshot(self) -> None:
+        every = int(self.config.train.rollback_every)
+        if not self.config.train.loss_spike_rollback or every <= 0:
+            return
+        if self.step % every == 0:
+            self._rollback = snapshot(self.step, self.model, self.optimizer)
+
+    def _handle_spike(self, loss: float) -> dict[str, float]:
+        is_spike = self.spike_detector.update(loss)
+        record: dict[str, float] = {
+            "loss_spike": float(is_spike),
+            "ar_active": float(self._ar_enabled()),
+        }
+        if not is_spike:
+            return record
+        self._spike_count += 1
+        if self.config.train.loss_spike_auto_ar and self._ar_state is not None:
+            self._ar_force_until = max(
+                self._ar_force_until,
+                self.step + int(self.config.train.loss_spike_ar_steps),
+            )
+        if (
+            self.config.train.loss_spike_rollback
+            and self._rollback is not None
+            and self._rollback_count < int(self.config.train.max_rollbacks)
+        ):
+            restored_step = restore(self._rollback, self.model, self.optimizer)
+            self._rollback_count += 1
+            record["rollback"] = 1.0
+            record["rollback_from_step"] = float(self.step)
+            record["rollback_to_step"] = float(restored_step)
+            self.step = restored_step
+        record["ar_active"] = float(self._ar_enabled())
+        return record
 
     # -- schedule -------------------------------------------------------------
     def _mtp_weight(self) -> float:
@@ -198,7 +269,7 @@ class Trainer:
             return total, metrics
 
         total = None
-        if self._ar_state is not None and self._ar_state.config.enabled:
+        if self._ar_state is not None and self._ar_enabled():
             stale = self._ar_state.stale_snapshot()
             if stale is not None:
                 probe = probe_routing(self.model, batch, stale)
@@ -220,6 +291,8 @@ class Trainer:
     # -- one training step ----------------------------------------------------
     def train_step(self) -> dict[str, Any]:
         self.model.train()
+        self._apply_index_topk()
+        self._maybe_snapshot()
         self.optimizer.zero_grad(set_to_none=True)
         reset_expert_usage(self.model.model)
         accum = max(int(self.config.train.grad_accum), 1)
@@ -255,8 +328,10 @@ class Trainer:
             self._first_loss = averaged.loss
         self._last_loss = averaged.loss
         record = averaged.as_dict()
+        record["index_topk"] = float(self.model.current_index_topk() or 0)
         record["lr_factor"] = lr_factor
         record["lr"] = averaged.lr
+        record.update(self._handle_spike(averaged.loss))
         return record
 
     # -- public loop ----------------------------------------------------------
@@ -354,6 +429,7 @@ def build_trainer(
         device=device,
         tie_word_embeddings=config.model.tie_word_embeddings,
         swiglu_limit=config.model.swiglu_limit,
+        index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
     )
     trainer = Trainer(

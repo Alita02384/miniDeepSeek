@@ -191,18 +191,21 @@ def build_pretrain_dataset(
 ) -> dict[str, Any]:
     """Tokenize + pack a pretraining corpus into ``output_path`` (``.npz``)."""
     from .dedup import MinHashIndex
-    from .quality import score_text
+    from .quality import code_license_ok, score_text
 
     tokenizer = tokenizer or load_tokenizer()
     raw = iter_documents(paths, max_records=max_records, min_chars=min_chars)
     dedup_index = MinHashIndex() if dedup else None
-    kept = dropped_quality = dropped_dup = 0
+    kept = dropped_quality = dropped_dup = dropped_license = 0
 
     def filtered_texts():
-        nonlocal kept, dropped_quality, dropped_dup
+        nonlocal kept, dropped_quality, dropped_dup, dropped_license
         for text in raw:
             if dedup_index is not None and dedup_index.is_duplicate(text):
                 dropped_dup += 1
+                continue
+            if domain == "code" and not code_license_ok(text):
+                dropped_license += 1
                 continue
             if quality_filter:
                 result = score_text(text, domain=domain)
@@ -227,6 +230,7 @@ def build_pretrain_dataset(
         "documents_kept": kept,
         "dropped_quality": dropped_quality,
         "dropped_duplicate": dropped_dup,
+        "dropped_license": dropped_license,
         "dedup": bool(dedup),
         "quality_filter": bool(quality_filter),
         "domain": domain,

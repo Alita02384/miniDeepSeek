@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 84 passed, ~17s on CPU
+.venv/bin/python -m pytest -q   # 93 passed, ~20s on CPU
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -29,10 +29,11 @@
 | `test_optimizer.py` | Newton-Schulz、Muon 单步、混合参数分组、warmup/cosine |
 | `test_trainer.py` | 2 步预训练、梯度累积、SFT、expert bias、AR 训练、checkpoint |
 | `test_data.py` | pretrain 打包、MinHash 去重、13-gram 污染、质量过滤、fertility、manifest、GRPO/OPD 转换 |
-| `test_grpo.py` | math/code/world/medical reward、advantage、1 步 GRPO、ratio↔logprob 一致性 |
-| `test_opd.py` | 1 步单/多教师 OPD、teacher 不更新、teacher checkpoint 加载 |
+| `test_grpo.py` | math/code/world/medical reward、advantage、1 步 GRPO、ratio↔logprob 一致性、SFT checkpoint 初始化 |
+| `test_opd.py` | 1 步单/多教师 OPD、teacher 不更新、teacher/base checkpoint 加载 |
 | `test_consistency.py` | logprob / routing / checkpoint 三道门禁 |
 | `test_anticipatory.py` | stale gate probe、replay、状态环形缓冲、closure |
+| `test_spike.py` | spike 检测、rollback 快照、自动 AR、index top-k 调度 |
 | `test_eval.py` | math/world 评估、报告落盘 |
 | `test_config.py` | 全部 YAML 可加载、未知键拒绝 |
 

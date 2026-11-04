@@ -350,6 +350,27 @@ class MiniDeepSeekModel:
             temperature=eff_temperature,
         )
 
+    # -- sparse-index schedule ------------------------------------------------
+    def set_index_topk(self, topk: int) -> int:
+        """Set CSA index top-k at runtime; returns the previous value."""
+        if topk < 1:
+            raise ValueError("index_topk must be positive")
+        previous = None
+        for layer in self.model.layers.values():
+            inner = layer.attention.inner_attention
+            if hasattr(inner, "index_topk"):
+                if previous is None:
+                    previous = int(inner.index_topk)
+                inner.index_topk = int(topk)
+        return int(previous) if previous is not None else int(topk)
+
+    def current_index_topk(self) -> int | None:
+        for layer in self.model.layers.values():
+            inner = layer.attention.inner_attention
+            if hasattr(inner, "index_topk"):
+                return int(inner.index_topk)
+        return None
+
     # -- reporting ------------------------------------------------------------
     def parameter_report(self) -> dict[str, float]:
         """Total and active parameter counts, split by component."""
@@ -403,6 +424,7 @@ def build_model(
     device: torch.device | str = "cpu",
     tie_word_embeddings: bool | None = None,
     swiglu_limit: float | None = None,
+    index_topk: int | None = None,
     indexer_loss_coeff: float = 0.01,
     init_weights: bool = True,
     parallelism: ParallelismConfig | None = None,
@@ -419,6 +441,7 @@ def build_model(
         n_mtp_layers=n_mtp_layers,
         tie_word_embeddings=tie_word_embeddings,
         swiglu_limit=swiglu_limit,
+        index_topk=index_topk,
         indexer_loss_coeff=indexer_loss_coeff,
     )
     return MiniDeepSeekModel(config, device=device, init_weights=init_weights)

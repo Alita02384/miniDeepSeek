@@ -85,3 +85,22 @@ def test_load_teacher_from_checkpoint(tmp_path):
     batch = from_sequences([[1, 2, 3, 4]])
     with torch.no_grad():
         assert torch.equal(model.forward(batch)[0], loaded.forward(batch)[0])
+
+
+def test_opd_resume_loads_base_checkpoint(tmp_path, stub_tokenizer):
+    from minideepseek.model.checkpoint import save_checkpoint
+    from minideepseek.rl.opd import build_opd_trainer
+
+    torch.manual_seed(8)
+    base = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
+    checkpoint = tmp_path / "base"
+    save_checkpoint(checkpoint, base, tokenizer_hash=stub_tokenizer.sha256)
+    prompt = OPDPrompt(prompt=[{"role": "user", "content": "m"}], teacher_key="math", domain="math")
+    config = _opd_config(tmp_path)
+    config.train.resume = str(checkpoint)
+    trainer, student = build_opd_trainer(
+        config, [prompt], tokenizer=stub_tokenizer, teacher_models={"math": base}
+    )
+    batch = from_sequences([[1, 2, 3, 4]])
+    with torch.no_grad():
+        assert torch.equal(base.forward(batch)[0], student.forward(batch)[0])

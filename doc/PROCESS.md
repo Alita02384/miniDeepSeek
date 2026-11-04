@@ -14,3 +14,31 @@
 - **实现了什么**: 暂无代码实现；工作约束、技术计划、进度记录机制就位。
 - **验证**: 文档审阅（无代码可跑）。
 - **未完成 / 风险**: `mini_60m` flavor、debug 模型跑通、数据管线。
+
+## 2026-11-04 全链路代码实现（只用 V4 debug 模型验证）
+
+- **commit**: `0296b3f` feat: 实现 miniDeepSeek 全链路代码并用 V4 debug 模型验证
+- **做了什么**:
+  - 模型：复制 torchtitan `deepseek_v4/flavors.py` 到 `src/minideepseek/model/flavors.py`，新增 `mini_60m/110m/200m` 与 dense 对照 flavor、`swiglu_limit`/tied embedding 覆盖；新增 `PackedBatch`、`MiniDeepSeekModel`、路由 record/replay、Anticipatory Routing、checkpoint（torch / safetensors / DCP）。
+  - 数据：MiniMind tokenizer 封装与 chat response-only mask；pretrain packing、SFT 打包、GRPO/OPD schema、MinHash 去重、13-gram 污染检查、fertility、质量过滤、manifest 校验。
+  - 训练：Muon+AdamW 混合优化器、warmup/cosine、MTP loss、sequence-wise balance loss、expert bias 更新、SwiGLU clamp 监控、单进程 trainer（预训练/SFT）。
+  - 后训练：torch rollout、math/code/world/medical reward、GRPO、多教师 OPD full-vocabulary reverse KL。
+  - 验收：logprob / routing / checkpoint 一致性门禁、math/code/world 评估、YAML 配置与脚本。
+- **实现了什么**:
+  - debug model（10.60M；MTP 12.98M）forward/backward、MTP、路由、checkpoint 全部跑通；
+  - mini 配置参数：`mini_60m` 65.26M、`mini_110m` 120.65M、`mini_200m` 218.21M、`mini_60m_dense` 62.52M（mini 仅构建配置与统计，未训练）；
+  - 一致性实测：rollout↔actor logprob max Δ ≈ 9.5e-7、routing replay 100%、checkpoint logits Δ=0；
+  - 数据管线用 minimind 样本实际生成 pretrain/SFT/GRPO/OPD/eval 小数据集；
+  - 预训练/SFT/GRPO/OPD/eval 的 debug 配置均实跑通过。
+- **验证**:
+  - `.venv/bin/ruff check src tests` → All checks passed
+  - `.venv/bin/python -m pytest -q` → **84 passed**（CPU，V4 debug model，约 16s）
+  - `bash scripts/debug_smoke.sh` → 训练 smoke + 一致性 + 测试全部通过
+  - `bash scripts/prepare_debug_data.sh` → 生成 debug 数据并打印各阶段 meta
+  - `python -m minideepseek.data.prepare manifest --manifest data/manifests/pretrain_6b.yaml` → 无 errors（外部数据路径 warning）
+- **未完成 / 风险**:
+  - 未真实训练 mini-60M / 未产出 6B token 数据；数据只用 MiniMind 小样本；
+  - 未接 verl/vLLM，rollout 为 full-recompute torch，无 KV cache；
+  - 未提供 HF transformers 架构类；safetensors 只是权重格式；
+  - 多 GPU/FSDP/EP 未验证；world judge 为启发式占位；未接 lm-eval-harness；
+  - Anticipatory Routing 为两段式近似、默认关闭；DSpark 未实现。
