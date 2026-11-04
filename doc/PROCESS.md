@@ -101,3 +101,38 @@
 - **未完成 / 风险**:
   - 多卡 FSDP2 / EP、HF 格式、vLLM / verl 接入尚未实现（下一步）；
   - 没有真实训练 mini-60M；数据仍只用 MiniMind 小样本。
+
+## 2026-11-04 多卡 FSDP2 / HF / vLLM + verl 可选接入
+
+- **commit**: `3f04493` feat: 多卡 FSDP2/DDP、HF 导出、vLLM/verl 可选接入
+- **做了什么**:
+  - 新增 `train/distributed.py`：`torchrun` 启动、FSDP2 `fully_shard`、
+    manual DDP、FSDP2-aware global grad-norm clip、full state gather/load；
+    `train/trainer.py` 与 `train/run.py` 接入，数据按 rank 分片。
+  - Muon 支持 DTensor（FSDP2）：`full_tensor()` → NS-5 → 按原 placement 写回。
+  - 新增 `model/hf/`：`MiniDeepSeekConfig`、`MiniDeepSeekForCausalLM`、
+    training↔HF key 映射、`scripts/export_hf.py`；导出目录含 tokenizer 与
+    remote-code 文件，支持 `trust_remote_code=True`。
+  - 新增 `rl/backends/vllm.py`（可选、CUDA-only）与 `rl/verl.py` +
+    `scripts/export_verl.py`（数据 schema / reward / Hydra config）。
+  - 新增 `test_distributed.py`、`test_hf.py`、`test_integrations.py`；
+    `scripts/test_distributed.py` 做多进程验证。
+- **实现了什么**:
+  - CPU/Gloo 2 进程：FSDP2 与 DDP 各自在 world=1 / world=2 下同 seed、同 batch
+    的一步更新后 `model.pt` sha256 完全一致；
+  - FSDP2 与 DDP 两种模式之间最大权重差 1.5e-8（float32 计算顺序）；
+  - HF export → `from_pretrained` 的 logits 与训练模型逐位一致（max |Δ| = 0）；
+  - vLLM/verl 代码路径存在且带明确守卫，未在 GPU 上实跑。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **106 passed**（CPU，约 25s）
+  - `bash scripts/debug_smoke.sh` → 通过
+  - `python scripts/test_distributed.py --world-size 2 --mode fsdp2|ddp` → PASS，
+    两种模式 world=1/2 sha256 一致
+  - `python scripts/export_verl.py ...` → 生成 JSONL/config/run.sh
+- **未完成 / 风险**:
+  - 无 CUDA 实机：NCCL、bf16、8 卡扩展、EP/TP/CP 未验证；
+  - EP 未实现（expert 参数按 FSDP 分片，不是 all-to-all EP）；
+  - vLLM 需要目标版本支持 auto_map；权重同步是重建 engine；
+  - verl HF rollout + FSDP actor 未实跑；OPD 的 full-vocab reverse KL canonical
+    实现仍是本项目 `rl/opd.py`，verl 模板用 forward_kl_topk。
