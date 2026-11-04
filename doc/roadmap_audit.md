@@ -113,6 +113,8 @@
 | teacher no_grad/eval | ✅ | `rl/opd.py` | bf16 未做 |
 | verl GRPO/OPD | ⚠️ | `rl/verl.py`, `scripts/export_verl.py` | 接口/配置，未 GPU 实跑 |
 | verl full-vocab reverse KL | ❌ | — | verl 模板用 forward_kl_topk；canonical 是 `rl/opd.py` |
+| 分布式 GRPO/OPD | ❌ | — | torch trainer 单进程；verl adapter 是可选路径，未 GPU 实跑 |
+| teacher hidden-state cache/offload | ❌ | — | 官方 §5.2.2；3 teacher / 6.4K 词表下直接全 logits 可接受，暂未实现 |
 
 ## 6. 一致性 / 评测 / 发布
 

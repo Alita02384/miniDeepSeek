@@ -176,7 +176,7 @@ scripts/          # 环境、数据、训练、评估脚本
 
 - 没有真实训练 mini-60M，也没有 0.6B/6B 数据产出；数据只用了 MiniMind 小样本。
 - 没有多卡 CUDA 实机：FSDP2/DDP 的 2 进程正确性已在 CPU/Gloo 验证，
-  NCCL、真实 bf16 吞吐、8 卡扩展性、EP 未验证。
+  NCCL、真实 bf16 吞吐、8 卡扩展性未验证。
 - EP（专家并行）未实现：FSDP2 下 6 个 routed expert 是复制分片，尚未做
   all-to-all expert dispatch。
 - vLLM 自定义模型/paged-attention kernel 未实现；verl 的 HF rollout 路径
@@ -186,8 +186,10 @@ scripts/          # 环境、数据、训练、评估脚本
   未在 CI 中真实调用。
 - 没有跑 lm-evaluation-harness（`eval/lm_eval.py` 适配已写，需可选 extra 与 GPU 实跑）。
 - 没有 DSpark / 推测解码（第一版明确跳过）。
-- Anticipatory Routing 是“stale-gate probe + replay”的两段式近似，默认关闭。
+- Anticipatory Routing 有一步预取队列，但 probe 仍同步执行、没有异步 overlap；默认关闭。
 - 去重、污染检查是单进程实现，6B 规模需要换成分布式版本。
+- 分布式 GRPO/OPD 仍未实现；torch RL 是单进程，verl 是可选 GPU 路径。
+- FIM/token-splitting、长文档/多语言数据、teacher hidden-state cache 未做。
 
 逐项实现审计（哪些只是代码落地、哪些还没做）见
 [doc/roadmap_audit.md](doc/roadmap_audit.md)。更多细节见
