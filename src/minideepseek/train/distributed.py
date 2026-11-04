@@ -308,35 +308,48 @@ def gather_model_state_dict(
     return get_model_state_dict(model, options=options)
 
 
-def _copy_full_tensor(parameter: torch.Tensor, full: torch.Tensor) -> None:
-    """Copy a full CPU tensor into a parameter, sharding for DTensor."""
+def _full_to_local(full: torch.Tensor, parameter: torch.Tensor) -> torch.Tensor:
+    """Return the local shard of a full tensor matching ``parameter``."""
     from torch.distributed.tensor import DTensor
     from torch.distributed.tensor.placement_types import Replicate, Shard
 
+    if not isinstance(parameter, DTensor):
+        return full.to(device=parameter.device)
+    mesh = parameter.device_mesh
+    placements = parameter.placements
+    world = mesh.size()
+    local_rank = mesh.get_local_rank()
+    value = full.to(device=parameter.device)
+    local = parameter.to_local()
+    if world > 1 and isinstance(placements[0], Shard):
+        if placements[0].dim != 0:
+            raise TypeError("only Shard(dim=0) is supported for FSDP2 load")
+        chunks = torch.chunk(value, world, dim=0)
+        piece = chunks[local_rank] if local_rank < len(chunks) else value[:0]
+        flat = piece.reshape(-1)
+        target = local.numel()
+        if flat.numel() < target:
+            flat = torch.cat([flat, flat.new_zeros(target - flat.numel())])
+        elif flat.numel() > target:
+            flat = flat[:target]
+        return flat.reshape(local.shape).contiguous()
+    if world > 1 and not isinstance(placements[0], Replicate):
+        raise TypeError(f"unsupported placement {placements[0]!r}")
+    return value.contiguous()
+
+
+def _copy_full_tensor(parameter: torch.Tensor, full: torch.Tensor) -> None:
+    """Copy a full CPU tensor into a parameter, sharding for DTensor."""
+    from torch.distributed.tensor import DTensor
+
     if isinstance(parameter, DTensor):
-        mesh = parameter.device_mesh
-        placements = parameter.placements
-        world = mesh.size()
-        local_rank = mesh.get_local_rank()
-        value = full.to(device=parameter.device, dtype=parameter.dtype)
-        local = parameter.to_local()
-        if world > 1 and isinstance(placements[0], Shard):
-            if placements[0].dim != 0:
-                raise TypeError("only Shard(dim=0) is supported for FSDP2 load")
-            chunks = torch.chunk(value, world, dim=0)
-            piece = chunks[local_rank] if local_rank < len(chunks) else value[:0]
-            # FSDP may pad/truncate an uneven shard; align to its local shape.
-            flat = piece.reshape(-1)
-            target = local.numel()
-            if flat.numel() < target:
-                flat = torch.cat([flat, flat.new_zeros(target - flat.numel())])
-            elif flat.numel() > target:
-                flat = flat[:target]
-            value = flat.reshape(local.shape)
-        elif world > 1 and not isinstance(placements[0], Replicate):
-            raise TypeError(f"unsupported placement {placements[0]!r}")
+        local = _full_to_local(full, parameter)
         sharded = DTensor.from_local(
-            value.contiguous(), mesh, placements, shape=full.shape, stride=full.stride()
+            local,
+            parameter.device_mesh,
+            parameter.placements,
+            shape=full.shape,
+            stride=full.stride(),
         )
         parameter.copy_(sharded)
     else:
@@ -389,22 +402,44 @@ def gather_optimizer_state_dict(
     return get_optimizer_state_dict(model, optimizer, options=options)
 
 
-def load_optimizer_state_dict(model: nn.Module, optimizer, state: dict[str, Any]) -> None:
-    from torch.distributed.checkpoint.state_dict import (
-        StateDictOptions,
-        set_optimizer_state_dict,
-    )
+def _load_single_optimizer(
+    model: nn.Module, optimizer: torch.optim.Optimizer, state: dict[str, Any]
+) -> None:
+    names = {name: parameter for name, parameter in model.named_parameters()}
+    ordered = [parameter for group in optimizer.param_groups for parameter in group["params"]]
+    by_id = {id(parameter): position for position, parameter in enumerate(ordered)}
+    index = {
+        name: by_id[id(parameter)]
+        for name, parameter in names.items()
+        if id(parameter) in by_id
+    }
+    new_groups = []
+    for group in state.get("param_groups", []):
+        new_group = {key: value for key, value in group.items() if key != "params"}
+        new_group["params"] = [index[name] for name in group.get("params", []) if name in index]
+        new_groups.append(new_group)
+    new_state: dict[int, dict[str, Any]] = {}
+    for name, values in state.get("state", {}).items():
+        if name not in index:
+            continue
+        parameter = ordered[index[name]]
+        converted: dict[str, Any] = {}
+        for key, value in values.items():
+            if not torch.is_tensor(value) or value.ndim == 0:
+                converted[key] = value
+            else:
+                converted[key] = _full_to_local(value, parameter)
+        new_state[index[name]] = converted
+    optimizer.load_state_dict({"state": new_state, "param_groups": new_groups})
 
-    options = StateDictOptions(
-        full_state_dict=True, broadcast_from_rank0=True, strict=False
-    )
+
+def load_optimizer_state_dict(model: nn.Module, optimizer, state: dict[str, Any]) -> None:
     if hasattr(optimizer, "optimizers"):
         for name, opt in zip(("muon", "adamw"), optimizer.optimizers, strict=False):
-            if name not in state:
-                continue
-            set_optimizer_state_dict(model, opt, state[name], options=options)
+            if name in state:
+                _load_single_optimizer(model, opt, state[name])
         return
-    set_optimizer_state_dict(model, optimizer, state, options=options)
+    _load_single_optimizer(model, optimizer, state)
 
 
 def is_fsdp2_module(model: nn.Module) -> bool:
