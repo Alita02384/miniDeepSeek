@@ -164,3 +164,27 @@
   - 无 CUDA 实机；EP/TP/CP、bf16、NCCL 未验证；
   - lm-eval 与 HTTP judge 未真实运行；
   - vLLM 自定义模型支持与 verl GPU smoke 待做。
+
+## 2026-11-04 独立性门禁与训练细节修复
+
+- **commit**: `3b4c25d` test: 增加独立性门禁与 HF 1D mask 兼容
+- **commit**: `3b791c2` fix: NCCL 兼容的 grad-norm dtype；mHC 参数走 AdamW；记录 indexer loss
+- **做了什么**:
+  - 新增 `tests/test_independence.py`：源码禁止 import torchtitan/minimind 等参考
+    checkout、禁止 sys.path 注入，并在无 workspace checkout 的子进程中构建模型；
+  - HF forward 兼容 1D `attention_mask`/`position_ids`；
+  - `clip_grad_norm` 在 CUDA/NCCL 上用 float32 累加（NCCL 不支持 float64）；
+  - `hc_*` 参数归入 AdamW（mHC 静态参数），其余矩阵走 Muon；
+  - `StepMetrics` 记录 `indexer_loss`。
+- **实现了什么**:
+  - 独立性从“约定”变成 pytest 门禁；
+  - FSDP2 2 进程仍与 world=1 sha256 一致；
+  - mini-60M tied embedding 在 FSDP2 下 forward/backward/optimizer 正常。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **113 passed**
+  - `bash scripts/debug_smoke.sh` → 通过
+  - `OMP_NUM_THREADS=1 python scripts/test_distributed.py --world-size 2 --mode fsdp2` → PASS
+- **未完成 / 风险**:
+  - EP 仍未实现；vLLM/verl 仍无 GPU 实跑；
+  - 6B 数据与真实训练不在当前阶段。
