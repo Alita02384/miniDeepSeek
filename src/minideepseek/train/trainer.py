@@ -158,6 +158,12 @@ class Trainer:
         self._rollback: RollbackSnapshot | None = None
         self._rollback_count = 0
         self._spike_count = 0
+        if self.dist.enabled and config.train.loss_spike_rollback:
+            raise ValueError(
+                "loss_spike_rollback is not supported with distributed training; "
+                "the in-memory snapshot is single-process only. Disable it or "
+                "implement a rank-synchronised rollback."
+            )
         self._use_autocast = config.model.dtype == "bfloat16" and self.device.type == "cuda"
         self._autocast_dtype = torch.bfloat16
         self._first_loss: float | None = None
@@ -522,6 +528,7 @@ def build_trainer(
         index_topk=config.model.index_topk,
         indexer_loss_coeff=config.model.indexer_loss_coeff,
     )
+    model.aux_loss_world_size = context.world_size
     if context.enabled:
         model.model = apply_parallelism(
             model.model, context, config.distributed, device=device

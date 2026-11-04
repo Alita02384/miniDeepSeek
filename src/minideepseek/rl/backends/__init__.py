@@ -48,5 +48,8 @@ def build_rollout_engine(
         gpu_memory_utilization=config.rl.vllm_gpu_memory_utilization,
         max_model_len=int(config.model.seq_len),
         flavor=model.config.flavor,
+        swiglu_limit=model.config.layers[0].moe.swiglu_limit,
+        index_topk=model.current_index_topk(),
+        indexer_loss_coeff=model.config.layers[-1].attention.indexer_loss_coeff,
     )
     return TorchRolloutEngine(model, tokenizer, generator=generator)

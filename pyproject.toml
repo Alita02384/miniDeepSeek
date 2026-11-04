@@ -25,6 +25,7 @@ hf = ["transformers>=4.46,<5"]
 # CUDA-only rollout and RL stack.  Install explicitly on the training cluster.
 vllm = ["vllm>=0.10"]
 verl = ["verl", "vllm>=0.10"]
+eval = ["lm-eval>=0.4"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

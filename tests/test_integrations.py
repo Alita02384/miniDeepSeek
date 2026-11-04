@@ -74,3 +74,40 @@ def test_vllm_backend_guard():
 
     with pytest.raises(RuntimeError, match="vLLM is not installed"):
         VLLMGenerator("missing", None)
+
+
+def test_http_judge_parses_scores(monkeypatch):
+    from minideepseek.rl.judge import HTTPJudge
+
+    judge = HTTPJudge(url="http://localhost:8000/v1", model="judge")
+    monkeypatch.setattr(
+        judge,
+        "_request",
+        lambda prompt: '{"factuality": 0.9, "relevance": 1.4, "clarity": -0.2}',
+    )
+    record = GRPORecord(prompt=[{"role": "user", "content": "q"}])
+    scores = judge("answer", record)
+    assert scores["factuality"] == 0.9
+    assert scores["relevance"] == 1.0
+    assert scores["clarity"] == 0.0
+
+
+def test_http_judge_requires_env(monkeypatch):
+    from minideepseek.rl.judge import make_judge
+
+    monkeypatch.delenv("MINIDEEPSEEK_JUDGE_URL", raising=False)
+    monkeypatch.delenv("MINIDEEPSEEK_JUDGE_MODEL", raising=False)
+    settings = __import__(
+        "minideepseek.config", fromlist=["RewardSettings"]
+    ).RewardSettings(kind="world", world_judge="http")
+    with pytest.raises(RuntimeError, match="world_judge=http requires"):
+        make_judge(settings)
+
+
+def test_lm_eval_guard():
+    if importlib.util.find_spec("lm_eval") is not None:
+        pytest.skip("lm-eval installed; guard is not exercised")
+    from minideepseek.eval.lm_eval import run_lm_eval
+
+    with pytest.raises(RuntimeError, match="lm-evaluation-harness is not installed"):
+        run_lm_eval("missing", ["mmlu"])

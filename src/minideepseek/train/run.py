@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..config import TrainConfig, load_config, resolve_device
+from ..config import TrainConfig, load_config
 from ..data.pretrain import PackedPretrainDataset
 from ..data.sft import SFTDataset
 from ..tokenizer import load_tokenizer
@@ -82,7 +82,7 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
         "params": model.parameter_report(),
         "summary": summary,
         "checkpoint": str(checkpoint),
-        "device": str(resolve_device(config.model.device)),
+        "device": str(context.device),
         "distributed": {
             "enabled": context.enabled,
             "mode": config.distributed.mode,

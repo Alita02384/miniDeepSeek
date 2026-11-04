@@ -242,6 +242,8 @@ class RewardSettings(BaseConfig):
     length_penalty: float = 0.0
     max_length_penalty_at: int = 2048
     code_timeout_s: float = 5.0
+    world_judge: str = "heuristic"  # heuristic | http
+    world_judge_timeout_s: float = 30.0
     world_weights: dict[str, float] = field(
         default_factory=lambda: {
             "factuality": 0.35,

@@ -85,6 +85,8 @@ minimind commit：`233d00fa068ec2b8c0d4f07b703934d6391a5a73`。
 | `src/minideepseek/rl/backends/vllm.py` | vLLM `LLM` 采样封装（可选、CUDA-only）；接口参考 verl `vllm_rollout` 的 `generate_sequences` 语义 |
 | `src/minideepseek/rl/verl.py` | verl 数据 schema、reward entrypoint、Hydra config；参考 verl `main_ppo` 配置与 `custom_reward_function` 接口 |
 | `scripts/export_hf.py`, `scripts/export_verl.py`, `scripts/test_distributed.py`, `scripts/verify_reference.py` | 导出与验证脚本 |
+| `src/minideepseek/eval/lm_eval.py` | lm-evaluation-harness 适配（可选依赖），未复制其代码 |
+| `src/minideepseek/rl/judge.py` | OpenAI-compatible world judge，未复制第三方实现 |
 
 这些文件不复制上游实现；verl/vLLM 的运行时依赖是可选项，真正执行前需在
 CUDA 机器上按 `doc/testing.md` 的未验证项补 smoke。

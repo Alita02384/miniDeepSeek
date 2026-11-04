@@ -43,11 +43,15 @@ def export_hf(
 ) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Export untied: safetensors rejects aliased storages, and inference
+    # engines prefer a plain ``lm_head.weight`` over a shared tensor.  The
+    # training checkpoint contains both keys, so logits stay identical.
+    del tie_word_embeddings
     config = MiniDeepSeekConfig(
         flavor=flavor,
         seq_len=seq_len,
         n_mtp_layers=0,
-        tie_word_embeddings=tie_word_embeddings,
+        tie_word_embeddings=False,
         swiglu_limit=swiglu_limit,
         index_topk=index_topk,
         indexer_loss_coeff=indexer_loss_coeff,

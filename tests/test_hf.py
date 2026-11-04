@@ -69,3 +69,20 @@ def test_trust_remote_code_loading(tmp_path, monkeypatch, debug_model):
     with torch.no_grad():
         logits = model(input_ids=ids).logits
     assert logits.shape == (1, 3, debug_model.vocab_size)
+
+
+def test_tied_embeddings_export_is_untied(tmp_path, make_debug_model):
+    model = make_debug_model()
+    # Force tying on the debug flavor to exercise the safetensors shared-storage path.
+    model.config.tie_word_embeddings = True
+    model.model.lm_head.weight = model.model.tok_embeddings.weight
+    out = export_hf(
+        model.state_dict(), tmp_path / "tied", flavor="debugmodel", seq_len=64
+    )
+    hf = MiniDeepSeekForCausalLM.from_pretrained(out)
+    assert hf.model.lm_head.weight.data_ptr() != hf.model.tok_embeddings.weight.data_ptr()
+    ids = torch.tensor([[1, 2, 3]])
+    with torch.no_grad():
+        logits = hf(input_ids=ids).logits
+        internal = model.forward(from_sequences([[1, 2, 3]]), use_mtp=False)[0]
+    assert torch.allclose(logits[0, :3], internal, atol=1e-5)

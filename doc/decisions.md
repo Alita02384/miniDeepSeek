@@ -264,9 +264,34 @@
   `rl/opd.py`**，它直接在 6,400 词表上算全词表 reverse KL。
 - **影响**：verl 未安装、未实跑；接口按 verl 当前源码编写，GPU smoke 待做。
 
-### D26. HF 导出不含 MTP 头
+### D26. HF 导出不含 MTP 头，且把 tied embedding 展开
 
-- **实际**：`export_hf` 丢弃 `mtp_layers.*`，HF 模型 `n_mtp_layers=0`。
-- **依据**：MTP 是训练辅助头；推理/rollout 只用主头。保留会浪费显存并让
-  vLLM/verl 的权重加载器多处理无用参数。
-- **影响**：HF logits 与训练模型主头逐位一致；MTP 相关实验仍用训练 checkpoint。
+- **实际**：`export_hf` 丢弃 `mtp_layers.*`，HF 模型 `n_mtp_layers=0`；
+  导出 config 强制 `tie_word_embeddings=False`，把共享的 `lm_head.weight`
+  写成独立张量。
+- **依据**：MTP 是训练辅助头；推理/rollout 只用主头。safetensors 拒绝共享
+  storage，vLLM/verl 的加载器也偏好显式 `lm_head.weight`。
+- **影响**：HF logits 与训练模型主头逐位一致；HF 目录比训练 checkpoint 多一份
+  embedding 参数（mini-60M +4.1M）；MTP 实验仍用训练 checkpoint。
+
+### D27. DP 上 buffer 与 indexer aux loss 的同步
+
+- **实际**：`apply_parallelism` 在 FSDP2/DDP 包装后从 rank0 broadcast 所有
+  buffer（hash 表 `tid2eid`、`expert_bias_E`、RoPE cache 等）；indexer aux
+  loss 按 local token 数归一化后再除以 world size，抵消 FSDP 梯度平均。
+- **依据**：buffer 不参与梯度归约；如果不 broadcast，rank 间 hash 路由可能
+  不一致。aux loss 若只除 local tokens，FSDP 平均后会被放大 world 倍。
+- **影响**：单进程不变；多卡下与全局 per-token loss 一致（已验证 world=1/2
+  权重 sha256 一致）。
+
+### D28. lm-eval 与 HTTP world judge 作为可选路径
+
+- **实际**：
+  - `eval/lm_eval.py` 通过 `lm_eval.simple_evaluate` + `HFLM` 加载 HF 目录，
+    覆盖 MMLU/ARC/HellaSwag 等通用基准；`lm-eval` 是可选 extra。
+  - `rl/judge.py` 提供 OpenAI-compatible HTTP judge（`RewardSettings.world_judge=http`），
+    默认仍是 `default_world_judge` 启发式。
+- **依据**：CPU 环境不能跑 lm-eval 全量、也没有 judge API；代码与守卫先就位，
+  评测结论等 GPU/API 环境。
+- **影响**：默认 math/code/world 自写评估可用；lm-eval 与 HTTP judge 未在 CI
+  实跑，不能把占位分数当质量结论。

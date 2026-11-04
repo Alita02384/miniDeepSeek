@@ -55,6 +55,9 @@ class VLLMGenerator:
         dtype: str = "bfloat16",
         seed: int | None = None,
         flavor: str | None = None,
+        swiglu_limit: float | None = 10.0,
+        index_topk: int | None = None,
+        indexer_loss_coeff: float = 0.01,
     ):
         self.vllm = ensure_vllm()
         self.model_path = str(model_path)
@@ -66,6 +69,9 @@ class VLLMGenerator:
         self.dtype = dtype
         self.seed = seed
         self.flavor = flavor
+        self.swiglu_limit = swiglu_limit
+        self.index_topk = index_topk
+        self.indexer_loss_coeff = indexer_loss_coeff
         self._llm = None
         self._build()
 
@@ -150,7 +156,15 @@ class VLLMGenerator:
         resolved = flavor or self.flavor
         if resolved is None:
             raise ValueError("flavor is required to export vLLM weights")
-        export_hf(state_dict, out_dir, flavor=resolved, seq_len=self.max_model_len)
+        export_hf(
+            state_dict,
+            out_dir,
+            flavor=resolved,
+            seq_len=self.max_model_len,
+            swiglu_limit=self.swiglu_limit,
+            index_topk=self.index_topk,
+            indexer_loss_coeff=self.indexer_loss_coeff,
+        )
         reload = getattr(self._llm, "reload_weights", None)
         if callable(reload):
             reload(str(out_dir))

@@ -250,6 +250,11 @@ def dispatch_reward(
 
 
 def make_reward_fn(settings: RewardSettings, *, judge: Judge | None = None) -> Callable[[str, GRPORecord], RewardResult]:
+    if judge is None and settings.kind == "world" and settings.world_judge == "http":
+        from .judge import make_judge
+
+        judge = make_judge(settings)
+
     def reward_fn(response: str, record: GRPORecord) -> RewardResult:
         return dispatch_reward(response, record, settings, judge=judge)
 

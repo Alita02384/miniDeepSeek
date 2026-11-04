@@ -73,6 +73,10 @@ class MiniDeepSeekModel:
             self.model.init_weights()
         self.model.to(device)
         self.device = torch.device(device)
+        # FSDP averages gradients across data-parallel ranks; the indexer loss
+        # is normalised by local tokens, so divide by world size to recover the
+        # global per-token value.
+        self.aux_loss_world_size = 1
 
     # -- nn.Module delegation -------------------------------------------------
     def __call__(self, batch: PackedBatch, **kwargs):
@@ -214,6 +218,7 @@ class MiniDeepSeekModel:
                 mtp_counts[depth] = count
                 total = total + loss * per_depth
         if indexer_loss is not None:
+            indexer_loss = indexer_loss / max(int(self.aux_loss_world_size), 1)
             total = total + indexer_loss
         return LossOutput(
             total=total,

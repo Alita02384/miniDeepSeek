@@ -28,9 +28,10 @@
 | GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
 | 数据管线 | `data/` | 打包、mask、MinHash、13-gram、fertility、manifest、license |
-| 评估 | `eval/` | math / code / world rubric 报告 |
+| 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
+| world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`106 passed`（CPU，debug model，约 27 秒）。
+测试：`110 passed`（CPU，debug model，约 25 秒）。
 
 ### 模型自包含说明
 
@@ -169,8 +170,9 @@ scripts/          # 环境、数据、训练、评估脚本
 - vLLM 自定义模型/paged-attention kernel 未实现；verl 的 HF rollout 路径
   未在 GPU 上实跑。vLLM/verl 都只是可选集成。
 - rollout 默认仍是 full-recompute torch（无 KV cache），适合一致性验证，不适合吞吐。
-- world 的默认 judge 只是启发式占位，不是 GRM。
-- 没有接 lm-evaluation-harness；math/code/world 是自写评估。
+- world 的默认 judge 仍是启发式占位；HTTP judge 代码已接，但需要 API 与环境变量，
+  未在 CI 中真实调用。
+- 没有跑 lm-evaluation-harness（`eval/lm_eval.py` 适配已写，需可选 extra 与 GPU 实跑）。
 - 没有 DSpark / 推测解码（第一版明确跳过）。
 - Anticipatory Routing 是“stale-gate probe + replay”的两段式近似，默认关闭。
 - 去重、污染检查是单进程实现，6B 规模需要换成分布式版本。

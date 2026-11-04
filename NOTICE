@@ -1,9 +1,17 @@
-miniDeepSeek includes code copied from third-party projects. The original
-copyright headers are retained in the copied files.
+miniDeepSeek includes code refactored from third-party projects. The original
+copyright headers are retained in the derived files, and the project does not
+import those repositories at runtime.
 
-- torchtitan (BSD-3-Clause), Copyright (c) Meta Platforms, Inc. and affiliates:
-  src/minideepseek/model/flavors.py is derived from
-  torchtitan/models/deepseek_v4/flavors.py. See doc/sources.md.
+- torchtitan (BSD-3-Clause), Copyright (c) Meta Platforms, Inc. and affiliates.
+  The DeepSeek-V4 model math and parameter layout in
+  src/minideepseek/model/{config,nn,rope,mhc,moe,compressor,attention,model}.py
+  are refactored from torchtitan/models/deepseek_v4 and models/common.
+  See doc/sources.md for the file-by-file mapping.
 
 - MiniMind (Apache-2.0): tokenizer/tokenizer.json and
   tokenizer/tokenizer_config.json are copied unmodified. See doc/sources.md.
+
+- verl (Apache-2.0) and vLLM (Apache-2.0) are referenced only for interface
+  design (rollout, OPD, custom reward, Hydra config). No source files are
+  copied; they remain optional dependencies. See doc/sources.md and
+  doc/decisions.md.

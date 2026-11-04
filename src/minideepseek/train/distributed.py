@@ -163,6 +163,7 @@ def apply_parallelism(
         # Manual data parallelism: gradients are averaged once per optimizer
         # step (after accumulation).  Keeping the raw module means the wrapper
         # API (set_index_topk / parameter_report / routing) stays unchanged.
+        broadcast_buffers(model, src=0)
         return model
     if settings.mode != "fsdp2":
         raise ValueError(f"unknown distributed mode {settings.mode!r}")
@@ -193,7 +194,21 @@ def apply_parallelism(
         mp_policy=mp_policy,
         reshard_after_forward=settings.reshard_after_forward,
     )
+    broadcast_buffers(model, src=0)
     return model
+
+
+def broadcast_buffers(model: nn.Module, *, src: int = 0) -> None:
+    """Make hash tables / expert bias identical on every rank before training."""
+    if not dist.is_initialized():
+        return
+    for buffer in model.buffers():
+        if buffer.is_floating_point() or buffer.dtype in (
+            torch.int64,
+            torch.int32,
+            torch.bool,
+        ):
+            dist.broadcast(buffer, src=src)
 
 
 @contextmanager
