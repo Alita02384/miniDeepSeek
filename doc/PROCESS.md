@@ -279,3 +279,23 @@
   - EP/CP/激活重计算按用户要求不做；GRM/world 专家按用户要求暂缓；
   - FIM/token-splitting、长文档/多语言语料、teacher hidden-state cache、
     vLLM/verl GPU 实跑仍未完成。
+
+## 2026-11-04 收尾修复：curriculum 全局调度 / AR MTP / FSDP state
+
+- **commit**: `0acc508` fix: 补齐 curriculum 全局调度、AR MTP 路由、FSDP optimizer state 与 rollback 全 rank 快照
+- **做了什么**:
+  - curriculum 每个 stage 共用最终 `schedule_steps`，LR/MTP/index top-k 调度连续；
+  - AR probe 包含 MTP router（否则 replay 缺 MTP 层），预取按 optimizer step 粒度；
+  - FSDP `load_model_state_dict` 处理空 shard/uneven shard；
+  - FSDP optimizer state 按参数名映射并 shard 到 local DTensor，resume 真正恢复；
+  - rollback 快照在所有 rank gather，非 rank0 restore 不再缺 key。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **125 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0
+  - `scripts/test_distributed.py --world-size 1|2 --mode fsdp2` → sha256 一致
+  - 2 进程 resume/rollback 临时脚本 → PASS
+- **未完成 / 风险**:
+  - AR probe 同步执行、无 EP overlap；
+  - EP/CP/激活重计算、GRM/world 专家按用户要求不做；
+  - vLLM/verl GPU、FIM/长文档、teacher cache 仍未做。
