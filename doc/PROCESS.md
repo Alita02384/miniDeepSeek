@@ -188,3 +188,20 @@
 - **未完成 / 风险**:
   - EP 仍未实现；vLLM/verl 仍无 GPU 实跑；
   - 6B 数据与真实训练不在当前阶段。
+
+## 2026-11-04 收尾：评测/裁判接线与路径清理
+
+- **commit**: `ad0f3fd` fix: eval 接 HTTP world judge，容忍 fenced JSON 输出
+- **commit**: `2e5a9f4` chore: HF 导出使用 tokenizer 路径常量
+- **做了什么**:
+  - `eval/evaluate.py` 在 `reward.world_judge=http` 时创建 HTTP judge；
+    judge 响应支持 ```json fenced 输出；
+  - HF 导出从 `paths.TOKENIZER_DIR` 取 tokenizer（支持 env 重定位）；
+  - scheduler 文档去掉“单进程”限定。
+- **验证**:
+  - `ruff check src tests scripts` → All checks passed
+  - `pytest -q` → **113 passed**
+  - `bash scripts/debug_smoke.sh` → 通过
+- **未完成 / 风险**:
+  - HTTP judge / lm-eval / vLLM / verl 均未在 CI 真实调用；
+  - EP、真实 6B 数据、真实 60M 训练仍不在当前阶段。
