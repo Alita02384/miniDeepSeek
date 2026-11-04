@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 110 passed, ~27s on CPU（无 transformers 时 HF 测试跳过）
+.venv/bin/python -m pytest -q   # 113 passed, ~27s on CPU（无 transformers 时 HF 测试跳过）
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -39,6 +39,7 @@
 | `test_distributed.py` | 单进程 FSDP2 wrap、forward/backward、optimizer、state/gather、trainer 保存/恢复 |
 | `test_hf.py` | HF config 往返、key prefix 映射、export/load logits 一致、greedy generate、trust_remote_code 加载 |
 | `test_integrations.py` | verl 数据 schema、reward entrypoint、verl GRPO/OPD config、torch backend、vLLM/lm-eval 缺依赖守卫、HTTP judge 解析 |
+| `test_independence.py` | 源码无 torchtitan/minimind 等 import、无 sys.path 注入、无 workspace checkout 时仍可 import/build |
 
 ## 关键验收数值（本机实测）
 

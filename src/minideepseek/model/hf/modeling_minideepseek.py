@@ -79,10 +79,14 @@ class MiniDeepSeekForCausalLM(PreTrainedModel, GenerationMixin):
             attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
         else:
             attention_mask = attention_mask.to(torch.bool)
+            if attention_mask.ndim == 1:
+                attention_mask = attention_mask.unsqueeze(0)
         if position_ids is None:
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids = position_ids.clamp_min(0)
         else:
+            if position_ids.ndim == 1:
+                position_ids = position_ids.unsqueeze(0)
             if position_ids.shape != input_ids.shape:
                 raise ValueError("position_ids must match input_ids")
 
