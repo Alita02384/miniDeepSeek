@@ -177,5 +177,7 @@ scripts/          # 环境、数据、训练、评估脚本
 - Anticipatory Routing 是“stale-gate probe + replay”的两段式近似，默认关闭。
 - 去重、污染检查是单进程实现，6B 规模需要换成分布式版本。
 
-更多细节见 [doc/decisions.md](doc/decisions.md)、[doc/testing.md](doc/testing.md)、
+逐项实现审计（哪些只是代码落地、哪些还没做）见
+[doc/roadmap_audit.md](doc/roadmap_audit.md)。更多细节见
+[doc/decisions.md](doc/decisions.md)、[doc/testing.md](doc/testing.md)、
 [doc/PROCESS.md](doc/PROCESS.md)。

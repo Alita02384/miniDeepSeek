@@ -1,9 +1,10 @@
 """Near-duplicate detection with MinHash-LSH.
 
 The roadmap requires document- and paragraph-level deduplication before
-tokenization.  This is a compact, dependency-free implementation suitable for
-the corpus sizes used here; it is not a replacement for a distributed dedup
-pipeline at 6B tokens, but it has the same guarantees (thresholded Jaccard).
+tokenization.  This module implements **document-level** MinHash-LSH; paragraph
+deduplication is not wired into the pipeline yet (see doc/roadmap_audit.md).
+It is compact and dependency-free, suitable for the local debug corpora; it is
+not a replacement for a distributed dedup pipeline at 6B tokens.
 """
 
 from __future__ import annotations
