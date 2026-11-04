@@ -66,3 +66,11 @@
   - rollback 是内存快照，不恢复 dataloader 位置；默认关闭；
   - index top-k 调度与序列长度课程尚未联动（当前只按 step 比例收紧，8K 数据/课程后置）；
   - 其余风险同 `0296b3f` 条目（未真实训练、未接 verl/vLLM、未做多卡）。
+
+## 2026-11-04 smoke index_topk 一致性修复
+
+- **commit**: `15574d1` fix: smoke 主模型与重载模型使用同一 index_topk
+- **做了什么**: `train.smoke` 的 `ModelSettings` 现在传入 `--index-topk`；主模型与 checkpoint 重载模型使用同一 CSA top-k。
+- **实现了什么**: 之前带 `--index-topk` 时重载模型会用 flavor 默认值，导致 checkpoint 对比误报；现在 `checkpoint_max_abs_diff=0.0`。
+- **验证**: `ruff check src tests` 通过；`pytest -q` → 93 passed；`python -m minideepseek.train.smoke --flavor debugmodel --steps 1 --index-topk 4` → `checkpoint_verified: true`。
+- **未完成 / 风险**: 无新增；该参数只影响 CSA index 选择，不改变模型参数。
