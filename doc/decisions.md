@@ -309,3 +309,19 @@
   tokens/micro-batch（最终 global batch 仍 0.5M）；debug 配置不受影响。
   sequence-length curriculum（2K→4K→8K）仍是数据分阶段 recipe，尚未做成
   单次训练的自动调度。
+
+### D30. Muon / AdamW / mHC 参数分组按官方 V4 报告修正
+
+- **官方依据**：V4 report §2.4 Algorithm 1：
+  - 8 步 hybrid NS（系数 3.4445/-4.7750/2.0315）+ 2 步稳定
+    （系数 2/-1.5/0.5）；
+  - 更新缩放 `O = O' * sqrt(max(n, m)) * γ`，γ=0.18；
+  - AdamW 用于 embedding、prediction head、RMSNorm、mHC 的 static biases/gating；
+  - AdamW eps=1e-20、betas=(0.9,0.95)、wd=0.1。
+- **修正**：
+  - `train/optimizer.py` 改为 10 步 hybrid NS，默认 γ=0.18；
+  - `OptimizerSettings` 暴露 `ns_steps=10`、`ns_late_steps=2`、
+    `muon_update_scale=0.18`、`eps=1e-20`；
+  - `hc_base`/`hc_scale` 走 AdamW，`hc_fn` 走 Muon（之前误把 `hc_fn`
+    也归入 AdamW）。
+- **影响**：Muon 更新量与官方一致；旧的“NS-5 + sqrt(rows/cols)”配置不再使用。

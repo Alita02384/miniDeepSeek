@@ -15,6 +15,7 @@ class WarmupDecaySchedule:
     total_steps: int
     decay: str = "cosine"
     min_lr_ratio: float = 0.1
+    decay_start_ratio: float = 0.0
 
     def __post_init__(self) -> None:
         if self.warmup_steps < 0:
@@ -23,6 +24,8 @@ class WarmupDecaySchedule:
             raise ValueError("total_steps must be positive")
         if not 0.0 <= self.min_lr_ratio <= 1.0:
             raise ValueError("min_lr_ratio must be in [0, 1]")
+        if not 0.0 <= self.decay_start_ratio <= 1.0:
+            raise ValueError("decay_start_ratio must be in [0, 1]")
         if self.decay not in ("cosine", "linear", "constant"):
             raise ValueError(f"unknown decay {self.decay!r}")
         self.last_lr: float | None = None
@@ -32,10 +35,17 @@ class WarmupDecaySchedule:
             return (step + 1) / self.warmup_steps
         if self.decay == "constant":
             return 1.0
+        # V4 keeps the peak LR until ``decay_start_ratio`` and decays after.
+        decay_start = max(
+            int(round(self.total_steps * self.decay_start_ratio)),
+            self.warmup_steps,
+        )
+        if step < decay_start:
+            return 1.0
         # Include the final step in the decay range: with total_steps=10 and
         # warmup=2, step 9 reaches progress 1.0 (the configured minimum).
-        decay_steps = max(self.total_steps - self.warmup_steps - 1, 1)
-        progress = min(max((step - self.warmup_steps) / decay_steps, 0.0), 1.0)
+        decay_steps = max(self.total_steps - decay_start - 1, 1)
+        progress = min(max((step - decay_start) / decay_steps, 0.0), 1.0)
         if self.decay == "cosine":
             shaped = 0.5 * (1.0 + math.cos(math.pi * progress))
         else:  # linear

@@ -59,3 +59,20 @@ def test_scheduler_warmup_and_decay():
     assert math.isclose(schedule.factor(9), 0.1, rel_tol=1e-6)
     schedule.step(0)
     assert math.isclose(optimizer.param_groups[0]["lr"], 0.5)
+
+
+def test_scheduler_flat_then_cosine():
+    parameter = torch.nn.Parameter(torch.zeros(2, 2))
+    optimizer = Muon([parameter], lr=1.0)
+    optimizer.param_groups[0]["base_lr"] = 1.0
+    schedule = WarmupDecaySchedule(
+        optimizer,
+        warmup_steps=2,
+        total_steps=10,
+        decay="cosine",
+        min_lr_ratio=0.1,
+        decay_start_ratio=0.5,
+    )
+    assert schedule.factor(2) == 1.0
+    assert schedule.factor(4) == 1.0
+    assert schedule.factor(9) < 1.0

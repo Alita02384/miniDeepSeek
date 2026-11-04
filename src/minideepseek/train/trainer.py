@@ -119,6 +119,7 @@ class Trainer:
             total_steps=max(config.train.steps, 1),
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
+            decay_start_ratio=config.schedule.decay_start_ratio,
         )
         self.logger = (
             MetricsLogger(config.train.out_dir) if self.dist.is_main else None

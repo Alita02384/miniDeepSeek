@@ -137,10 +137,14 @@ class OptimizerSettings(BaseConfig):
     adamw_lr: float | None = None
     weight_decay: float = 0.1
     betas: tuple[float, float] = (0.9, 0.95)
-    eps: float = 1e-8
+    # V4 report: AdamW epsilon 1e-20.
+    eps: float = 1e-20
     momentum: float = 0.95
     nesterov: bool = True
-    ns_steps: int = 5
+    ns_steps: int = 10
+    ns_late_steps: int = 2
+    # V4 Algorithm 1 rescales UV^T by sqrt(max(n, m)) * gamma with gamma=0.18.
+    muon_update_scale: float = 0.18
     grad_clip: float = 1.0
 
 
@@ -149,6 +153,9 @@ class ScheduleSettings(BaseConfig):
     warmup_steps: int = 500
     decay: str = "cosine"  # cosine | linear | constant
     min_lr_ratio: float = 0.1
+    # V4 keeps the peak LR for most of training and decays near the end.
+    # 0.0 reproduces the older "cosine right after warmup" schedule.
+    decay_start_ratio: float = 0.0
 
 
 @dataclass

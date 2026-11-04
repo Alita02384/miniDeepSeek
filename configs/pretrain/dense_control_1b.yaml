@@ -17,6 +17,7 @@ schedule:
   warmup_steps: 200
   decay: cosine
   min_lr_ratio: 0.1
+  decay_start_ratio: 0.8
 data:
   tokenized_path: data/tokenized/pretrain_1b.npz
   batch_tokens: 16384

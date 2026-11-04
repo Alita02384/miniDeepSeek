@@ -19,26 +19,41 @@ from torch.distributed.tensor import DTensor
 
 from ..config import OptimizerSettings
 
+# V4 Algorithm 1: 8 fast-convergence steps followed by 2 stabilization steps.
 _NS_COEFFICIENTS = (3.4445, -4.7750, 2.0315)
+_NS_LATE_COEFFICIENTS = (2.0, -1.5, 0.5)
 
 
 def zeropower_via_newtonschulz5(
     gradient: Tensor,
     *,
-    steps: int = 5,
+    steps: int = 10,
+    late_steps: int = 2,
     eps: float = 1e-7,
     coefficients: tuple[float, float, float] = _NS_COEFFICIENTS,
+    late_coefficients: tuple[float, float, float] = _NS_LATE_COEFFICIENTS,
 ) -> Tensor:
-    """Newton-Schulz iteration approximating the orthogonal factor of ``gradient``."""
+    """Hybrid Newton-Schulz orthogonalization (V4 Algorithm 1).
+
+    ``steps - late_steps`` iterations use the fast coefficients from the
+    original Muon paper; the final ``late_steps`` switch to the stabilizing
+    coefficients.  ``late_steps=0`` reproduces the plain NS-5 variant.
+    """
     if gradient.ndim != 2:
         raise ValueError(f"expected a 2-D matrix, got {tuple(gradient.shape)}")
-    a, b, c = coefficients
+    if steps <= 0:
+        raise ValueError("steps must be positive")
+    if not 0 <= late_steps <= steps:
+        raise ValueError("late_steps must be in [0, steps]")
     x = gradient.float()
     transposed = x.size(0) > x.size(1)
     if transposed:
         x = x.T
     x = x / (x.norm() + eps)
-    for _ in range(steps):
+    for index in range(steps):
+        a, b, c = (
+            late_coefficients if index >= steps - late_steps else coefficients
+        )
         gram = x @ x.T
         update = b * gram + c * (gram @ gram)
         x = a * x + update @ x
@@ -58,7 +73,9 @@ class Muon(torch.optim.Optimizer):
         momentum: float = 0.95,
         nesterov: bool = True,
         weight_decay: float = 0.1,
-        ns_steps: int = 5,
+        ns_steps: int = 10,
+        ns_late_steps: int = 2,
+        update_scale: float = 0.18,
         eps: float = 1e-7,
     ):
         defaults = dict(
@@ -67,6 +84,8 @@ class Muon(torch.optim.Optimizer):
             nesterov=nesterov,
             weight_decay=weight_decay,
             ns_steps=ns_steps,
+            ns_late_steps=ns_late_steps,
+            update_scale=update_scale,
             eps=eps,
         )
         super().__init__(params, defaults)
@@ -86,6 +105,8 @@ class Muon(torch.optim.Optimizer):
             momentum = float(group["momentum"])
             weight_decay = float(group["weight_decay"])
             ns_steps = int(group["ns_steps"])
+            ns_late_steps = int(group.get("ns_late_steps", 2))
+            update_scale = float(group.get("update_scale", 0.18))
             eps = float(group["eps"])
             nesterov = bool(group["nesterov"])
             for parameter in group["params"]:
@@ -116,12 +137,17 @@ class Muon(torch.optim.Optimizer):
                 matrix = update.reshape(-1, update.shape[-2], update.shape[-1])
                 orthogonal = torch.stack(
                     [
-                        zeropower_via_newtonschulz5(slice_, steps=ns_steps, eps=eps)
+                        zeropower_via_newtonschulz5(
+                            slice_,
+                            steps=ns_steps,
+                            late_steps=ns_late_steps,
+                            eps=eps,
+                        )
                         for slice_ in matrix
                     ]
                 ).reshape_as(update)
                 rows, cols = update.shape[-2], update.shape[-1]
-                scale = math.sqrt(max(1.0, rows / cols))
+                scale = math.sqrt(max(rows, cols)) * update_scale
                 if full_parameter is not None:
                     new_full = full_parameter.float() * (1.0 - lr * weight_decay)
                     new_full = new_full - orthogonal.float() * (lr * scale)
@@ -225,8 +251,8 @@ def _is_adamw_parameter(name: str, parameter: Tensor) -> bool:
         return True
     if any(marker in name for marker in ("tok_embeddings", "lm_head", "router.gate")):
         return True
-    # mHC static parameters are small and use AdamW in the V4 recipe.
-    if "hc_" in name:
+    # mHC static biases / gating factors use AdamW; hc_fn is a learned matrix.
+    if "hc_base" in name or "hc_scale" in name:
         return True
     return parameter.numel() < 64
 
@@ -265,6 +291,8 @@ def build_optimizer(model, settings: OptimizerSettings) -> HybridOptimizer:
             nesterov=settings.nesterov,
             weight_decay=settings.weight_decay,
             ns_steps=settings.ns_steps,
+            ns_late_steps=settings.ns_late_steps,
+            update_scale=settings.muon_update_scale,
         )
     adamw = None
     if adamw_params:

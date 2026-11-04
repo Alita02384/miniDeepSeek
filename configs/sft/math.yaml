@@ -19,6 +19,7 @@ schedule:
   warmup_steps: 50
   decay: cosine
   min_lr_ratio: 0.1
+  decay_start_ratio: 0.8
 data:
   tokenized_path: data/tokenized/sft_math.npz
   batch_tokens: 32768
