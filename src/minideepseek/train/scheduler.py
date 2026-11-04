@@ -1,4 +1,4 @@
-"""Learning-rate schedules for the single-process trainer."""
+"""Learning-rate and sparse-index schedules."""
 
 from __future__ import annotations
 

@@ -77,7 +77,9 @@ def export_hf(
 
     # The rollout engine needs the exact project tokenizer (6,400 vocab +
     # MiniMind chat template), not a generic one.
-    tokenizer_dir = Path(__file__).resolve().parents[4] / "tokenizer"
+    from minideepseek.paths import TOKENIZER_DIR
+
+    tokenizer_dir = TOKENIZER_DIR
     for name in ("tokenizer.json", "tokenizer_config.json"):
         source = tokenizer_dir / name
         if source.exists():
