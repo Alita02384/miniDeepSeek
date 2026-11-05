@@ -78,6 +78,26 @@ def test_hash_router_table_is_persistent(debug_model):
     assert "layers.0.feed_forward.router.tid2eid" in buffer_names
 
 
+def test_hash_table_is_deterministic(make_debug_model):
+    first = dict(iter_routers(make_debug_model(seed=0).model))
+    second = dict(iter_routers(make_debug_model(seed=12345).model))
+    for name in ("layers.0.feed_forward.router", "layers.1.feed_forward.router"):
+        # Independent of the global RNG: only (HASH_SEED, layer_id) matters.
+        assert torch.equal(first[name].tid2eid, second[name].tid2eid)
+    assert not torch.equal(
+        first["layers.0.feed_forward.router"].tid2eid,
+        first["layers.1.feed_forward.router"].tid2eid,
+    )
+
+
+def test_init_weights_does_not_rebuild_hash_table(debug_model):
+    router = dict(iter_routers(debug_model.model))["layers.0.feed_forward.router"]
+    loaded = torch.zeros_like(router.tid2eid)  # stands in for a restored table
+    router.tid2eid.copy_(loaded)
+    debug_model.model.init_weights()
+    assert torch.equal(router.tid2eid, loaded)
+
+
 def test_domain_routing_metrics(debug_model, small_batch):
     from minideepseek.model.routing import domain_routing_metrics
 

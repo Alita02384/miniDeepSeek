@@ -108,22 +108,28 @@ def iter_moe_layers(model):
 
 @torch.no_grad()
 def update_expert_biases(model) -> int:
-    """Auxiliary-loss-free bias update; call once before every optimizer step."""
+    """Auxiliary-loss-free bias update; call once before every optimizer step.
+
+    Only learned routers are steered: a hash layer picks experts from
+    ``tid2eid`` and never reads ``expert_bias_E``, so it has no bias at all.
+    Counters are reset on every layer, hash or not, because the usage histogram
+    is per-step; leaving hash counters uncleared would let the reported expert
+    load drift upwards forever.
+    """
     moe_layers = list(iter_moe_layers(model))
     updated = 0
     for _name, moe in moe_layers:
-        if moe.load_balance_coeff is None or moe.expert_bias_E is None:
-            continue
         counts = moe.router.tokens_per_expert_E
         if counts.numel() == 0:
             continue
-        counts = counts.float()
         bias = moe.expert_bias_E
-        delta = moe.load_balance_coeff * torch.sign(counts.mean() - counts)
-        delta = delta - delta.mean()
-        bias.add_(delta)
+        if not moe.router.hash and bias is not None and moe.load_balance_coeff is not None:
+            counts = counts.float()
+            delta = moe.load_balance_coeff * torch.sign(counts.mean() - counts)
+            delta = delta - delta.mean()
+            bias.add_(delta)
+            updated += 1
         moe.router.tokens_per_expert_E.zero_()
-        updated += 1
     return updated
 
 

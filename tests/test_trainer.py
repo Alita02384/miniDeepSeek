@@ -109,20 +109,33 @@ def test_expert_bias_update(debug_model, small_batch):
     with torch.no_grad():
         outputs = debug_model.forward(small_batch, use_mtp=False)
         assert outputs
-    biases_before = [
-        moe.expert_bias_E.detach().clone()
-        for _name, moe in iter_moe_layers(debug_model.model)
-    ]
-    counts_before = [
-        int(moe.router.tokens_per_expert_E.sum().item())
-        for _name, moe in iter_moe_layers(debug_model.model)
-    ]
-    assert any(count > 0 for count in counts_before)
+    layers = list(iter_moe_layers(debug_model.model))
+    learned = [(name, moe) for name, moe in layers if not moe.router.hash]
+    hashed = [(name, moe) for name, moe in layers if moe.router.hash]
+    assert learned and hashed
+    biases_before = [moe.expert_bias_E.detach().clone() for _name, moe in learned]
+    assert any(int(moe.router.tokens_per_expert_E.sum().item()) > 0 for _name, moe in hashed)
     updated = update_expert_biases(debug_model.model)
-    assert updated > 0
-    for (_name, moe), before in zip(iter_moe_layers(debug_model.model), biases_before):
-        assert torch.equal(moe.router.tokens_per_expert_E, torch.zeros_like(moe.router.tokens_per_expert_E))
+    assert updated == len(learned)
+    for (_name, moe), before in zip(learned, biases_before):
         assert not torch.equal(moe.expert_bias_E, before)
+    for _name, moe in layers:
+        # Counters are per-step and must be cleared on every layer.
+        assert torch.equal(
+            moe.router.tokens_per_expert_E,
+            torch.zeros_like(moe.router.tokens_per_expert_E),
+        )
+
+
+def test_hash_layers_have_no_expert_bias(debug_model):
+    buffer_names = dict(debug_model.model.named_buffers())
+    for name, moe in iter_moe_layers(debug_model.model):
+        if moe.router.hash:
+            assert moe.expert_bias_E is None
+            assert f"{name}.expert_bias_E" not in buffer_names
+        else:
+            assert moe.expert_bias_E is not None
+            assert f"{name}.expert_bias_E" in buffer_names
 
 
 def test_anticipatory_routing_trainer(tmp_path):

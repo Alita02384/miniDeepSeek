@@ -11,15 +11,35 @@ from torch import nn
 from .config import MoEConfig
 from .nn import LimitedSwiGLU, depth_scaled_std, init_linear
 
+#: Base seed of the "predefined hash function" (V4 section 2.1).  The table is
+#: a pure function of ``(HASH_SEED, layer_id)``: every rank and every process
+#: rebuilds exactly the same table, without consuming the global RNG.
+HASH_SEED = 0
+_LAYER_HASH_STRIDE = 7919
 
-def _build_hash_table(vocab: int, experts: int, top_k: int) -> torch.Tensor:
+
+def hash_table_seed(layer_id: int) -> int:
+    return (HASH_SEED + layer_id * _LAYER_HASH_STRIDE) % (2**63)
+
+
+def _build_hash_table(
+    vocab: int, experts: int, top_k: int, *, seed: int
+) -> torch.Tensor:
+    """Build the ``token id -> top-k experts`` table for one hash layer.
+
+    Generation is deterministic: same arguments give the same table on every
+    process and device, and it does not advance the global RNG (so parameter
+    init is unaffected by the table size).
+    """
     if top_k > experts:
         raise ValueError("top_k must be <= num_experts")
+    generator = torch.Generator().manual_seed(seed)
     table = torch.empty(vocab, top_k, dtype=torch.long)
     chunk = 8192
     for start in range(0, vocab, chunk):
         stop = min(start + chunk, vocab)
-        table[start:stop] = torch.rand(stop - start, experts).topk(top_k, dim=-1).indices
+        draws = torch.rand(stop - start, experts, generator=generator)
+        table[start:stop] = draws.topk(top_k, dim=-1).indices
     return table
 
 
@@ -39,7 +59,13 @@ class DeepSeekV4Router(nn.Module):
         self.gate = nn.Linear(config.dim, config.num_experts, bias=False)
         if self.hash:
             self.register_buffer(
-                "tid2eid", _build_hash_table(config.vocab_size, config.num_experts, config.top_k)
+                "tid2eid",
+                _build_hash_table(
+                    config.vocab_size,
+                    config.num_experts,
+                    config.top_k,
+                    seed=hash_table_seed(config.layer_id),
+                ),
             )
         self.register_buffer(
             "tokens_per_expert_E",
@@ -49,10 +75,10 @@ class DeepSeekV4Router(nn.Module):
 
     def init_weights(self) -> None:
         init_linear(self.gate, depth_scaled_std(0.02, self.layer_id))
-        if self.hash:
-            self.tid2eid = _build_hash_table(self.vocab_size, self.num_experts, self.top_k).to(
-                self.tid2eid.device
-            )
+        # ``tid2eid`` is data, not an initialized parameter: it is built once in
+        # ``__init__`` from ``hash_table_seed(layer_id)`` and afterwards owned by
+        # the checkpoint.  Rebuilding it here would silently reroute every hash
+        # layer after a load (finite loss, different model), so leave it alone.
 
     def forward(
         self,
@@ -182,7 +208,10 @@ class MoE(nn.Module):
         self.shared_experts = (
             SharedExperts(config) if config.num_shared_experts > 0 else None
         )
-        if config.load_balance_coeff is not None:
+        # The loss-free bias only steers *learned* routing.  Hash layers select
+        # experts from ``tid2eid`` and never read a bias, so they get none: a
+        # buffer that is updated but never read is dead checkpoint state.
+        if config.load_balance_coeff is not None and not self.router.hash:
             self.register_buffer(
                 "expert_bias_E", torch.zeros(config.num_experts, dtype=torch.float32)
             )

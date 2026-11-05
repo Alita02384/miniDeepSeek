@@ -367,3 +367,27 @@
   各跑 1 step 并保存；`tests/test_rl_distributed.py` world=1 FSDP2 覆盖。
 - **限制**：vLLM backend 与 FSDP2 RL 未接线（显式拒绝）；teacher 仍每 rank
   复制；各 rank 局部 loss 等权平均，不等 token 数加权。
+
+### D34. hash 层不保留 balance bias；哈希表改为确定性生成
+
+- **原方案**：所有 MoE 层都注册 `expert_bias_E`，`update_expert_biases` 统一
+  更新；`tid2eid` 每次 `init_weights()` 用全局 RNG 重建。
+- **新方案**：
+  - hash 层不注册 `expert_bias_E`（属性为 `None`）。`update_expert_biases`
+    只更新 learned 层，但**所有层**的 `tokens_per_expert_E` 照常清零；
+  - `tid2eid` 由 `(HASH_SEED=0, layer_id)` 经局部 `torch.Generator` 生成，
+    同参数必得同表，跨进程/rank/设备一致，且不消耗全局 RNG；
+  - `init_weights()` 不再重建 `tid2eid`：它是数据，不是初始化参数。
+- **依据**：`_select_experts` 的 hash 分支不读 bias，更新它是无人读取的死状态；
+  `init_weights()` 在 load 之后被调用会静默换表——loss 正常、行为全变。
+- **验证**：`tests/test_trainer.py::test_hash_layers_have_no_expert_bias`、
+  `test_expert_bias_update`（计数清零 + 只更新 learned 层）、
+  `tests/test_routing.py::test_hash_table_is_deterministic`、
+  `test_init_weights_does_not_rebuild_hash_table`。
+- **影响**：
+  - 旧 checkpoint 里 hash 层的 `expert_bias_E` 成为多余键，`strict=True` 加载
+    会报 unexpected key，需重新生成或手动删除这些键；`tid2eid` 仍在
+    checkpoint 中，不受影响；
+  - 新建模型的哈希表与改前不同（旧的走全局 RNG）；已有 checkpoint 加载后
+    行为不变；
+  - 建表不再消耗全局 RNG，同 seed 下其余参数的初始化序列与改前不同。
