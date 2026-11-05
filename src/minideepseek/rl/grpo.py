@@ -39,6 +39,7 @@ from ..train.distributed import (
     init_distributed,
     load_model_state_dict,
 )
+from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
@@ -238,6 +239,15 @@ class GRPOTrainer:
         }
         return policy_loss, stats
 
+    def _update_expert_biases(self) -> None:
+        # RL also increments the router usage counters in the actor/student
+        # forward; settle them before the optimizer step just like the
+        # pretrain/SFT trainer does.
+        if self.dist.enabled:
+            for _name, moe in iter_moe_layers(self.model.model):
+                self.dist.all_reduce_sum(moe.router.tokens_per_expert_E)
+        update_expert_biases(self.model.model)
+
     def step(self) -> dict[str, Any]:
         records = self._sample_records()
         groups = self.engine.rollout(
@@ -273,6 +283,7 @@ class GRPOTrainer:
                 list(self.model.parameters()), self.config.optim.grad_clip
             )
         )
+        self._update_expert_biases()
         self.scheduler.step(self.step_index)
         self.optimizer.step()
         stats.rollout_weight_version = self.engine.sync_weights(

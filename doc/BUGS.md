@@ -198,8 +198,8 @@
 ## P2 — 配置空转 / 低优先级
 
 - B25 `RLSettings.kl_coeff`、`min_response_tokens`、RL `grad_accum`/`val_path` 由 `_validate_rl_settings` 显式拒绝；`decay_start_ratio` 已接入 GRPO/OPD scheduler（状态：已修；RL 验证集仍未实现）。
-- B26 GRPO/OPD 不更新 expert bias；`tokens_per_expert_E` 只涨不清（状态：需设计决策）。
-- B27 `DistributedSettings.broadcast_buffers`、`DataSettings.max_records/max_tokens/tokenizer_dir/domain` 等配置未被消费（状态：待修/文档）。
+- B26 GRPO/OPD 不更新 expert bias；`tokens_per_expert_E` 只涨不清（状态：已修，见 FIXES.md）。
+- B27 `DistributedSettings.broadcast_buffers` 已生效；`DataSettings.max_records/max_tokens/tokenizer_dir/domain` 是 prepare 侧/预留字段，训练入口未消费（状态：部分修复/文档）。
 - B28 `MetricsLogger.summary` 的 `tokens` 只统计 log step（状态：已修，见 FIXES.md）。
 - B29 `from_padded` 丢一行内多文档边界（状态：已修）。
 - B30 `data/grpo.validate_record` 用 `reference in rendered_prompt` 做泄漏判断，短数字答案易误杀（状态：待设计决策）。

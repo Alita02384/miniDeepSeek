@@ -35,6 +35,7 @@ from ..train.distributed import (
     init_distributed,
     load_model_state_dict,
 )
+from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
@@ -179,6 +180,15 @@ class OPDTrainer:
         kl = (student_prob * (student_logp - teacher_logp)).sum(dim=-1).mean()
         return kl, float(kl.detach()), int(positions.numel())
 
+    def _update_expert_biases(self) -> None:
+        # RL also increments the router usage counters in the actor/student
+        # forward; settle them before the optimizer step just like the
+        # pretrain/SFT trainer does.
+        if self.dist.enabled:
+            for _name, moe in iter_moe_layers(self.student.model):
+                self.dist.all_reduce_sum(moe.router.tokens_per_expert_E)
+        update_expert_biases(self.student.model)
+
     def step(self) -> dict[str, Any]:
         samples = self._rollout()
         sync_diff = 0.0
@@ -217,6 +227,7 @@ class OPDTrainer:
             raise RuntimeError(f"non-finite OPD loss at step {self.step_index}")
         loss_total.backward()
         grad_norm = clip_grad_norm(self.student.model, self.config.optim.grad_clip)
+        self._update_expert_biases()
         self.scheduler.step(self.step_index)
         self.optimizer.step()
         rollout_version = self.engine.sync_weights(self.student.state_dict())

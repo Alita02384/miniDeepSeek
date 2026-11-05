@@ -285,6 +285,12 @@ def test_grpo_syncs_generator_after_update(tmp_path, stub_tokenizer):
     stats = trainer.step()
     assert generator.version == 1
     assert stats["rollout_weight_version"] == 1
+    from minideepseek.train.losses import iter_moe_layers
+
+    assert all(
+        float(moe.router.tokens_per_expert_E.sum()) == 0.0
+        for _name, moe in iter_moe_layers(trainer.model.model)
+    )
 
 
 def test_rollout_prompt_opens_thinking_and_format_bonus_is_reachable():

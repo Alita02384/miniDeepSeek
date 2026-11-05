@@ -30,6 +30,8 @@
 | B22 | tied safetensors 别名 key 写 clone | `model/checkpoint.py:198` |
 | B23 | verify_reference 过滤旧 hash-bias key | `scripts/verify_reference.py:66` |
 | B24 | grpo_math manifest 预算自洽 | `data/manifests/grpo_math.yaml:4` |
+| B26 | RL 前更新 expert bias/清零计数器 | `rl/grpo.py:242,286`、`rl/opd.py:183,230` |
+| B27 | `broadcast_buffers` 配置生效 | `train/distributed.py:166,199` |
 | B29 | from_padded 保留一行内多文档 | `model/batch.py:141`（`from_padded`） |
 | B39 | 阶段切换 resume 不继承 step/optimizer/data | `config.py`（三个 resume 开关）、`train/trainer.py::resume`、`rl/grpo.py::resume`、`rl/opd.py::resume` |
 | B28 | summary tokens 统计所有 step | `train/trainer.py:147,433,508` |
@@ -304,3 +306,18 @@
   - curriculum stage：`resume_data=false`，保留 optimizer 与累计 step。
 - 验证：新增 `test_stage_transition_keeps_fresh_optimizer_and_data`；debug SFT → GRPO → OPD 实跑通过。
 - 位置：`src/minideepseek/config.py:226-232`、`src/minideepseek/train/trainer.py:583-626`、`src/minideepseek/rl/grpo.py:346`、`src/minideepseek/rl/opd.py:299`、`configs/sft/*.yaml:31-34`、`configs/{grpo,opd}/*.yaml`。
+
+## B26 — RL 阶段 expert bias / 计数器
+
+- 状态：已修
+- 改动：GRPO/OPD 在裁剪梯度后、optimizer.step 前同步 `tokens_per_expert_E`（分布式 all-reduce SUM）并调用 `update_expert_biases`；计数器每步清零。
+- 验证：`test_grpo_syncs_generator_after_update` 额外断言所有 MoE 计数器为 0；完整测试通过。
+- 位置：`src/minideepseek/rl/grpo.py:242,286`、`src/minideepseek/rl/opd.py:183,230`。
+- 风险：RL 的 routing bias 现在会随 rollout actor 的负载变化；与 pretrain/SFT 机制一致。
+
+## B27 — 空转配置
+
+- 状态：部分修复
+- 改动：`DistributedSettings.broadcast_buffers=false` 现在会跳过 buffer 广播（默认 true 行为不变）；`DataSettings.max_records/max_tokens/tokenizer_dir/domain` 是 prepare 侧/预留字段，训练入口未消费，已在 BUGS.md 标注。
+- 验证：FSDP2 2 进程默认路径通过。
+- 位置：`src/minideepseek/train/distributed.py:166,199`。

@@ -163,7 +163,8 @@ def apply_parallelism(
         # Manual data parallelism: gradients are averaged once per optimizer
         # step (after accumulation).  Keeping the raw module means the wrapper
         # API (set_index_topk / parameter_report / routing) stays unchanged.
-        broadcast_buffers(model, src=0)
+        if settings.broadcast_buffers:
+            broadcast_buffers(model, src=0)
         return model
     if settings.mode != "fsdp2":
         raise ValueError(f"unknown distributed mode {settings.mode!r}")
@@ -194,7 +195,8 @@ def apply_parallelism(
         mp_policy=mp_policy,
         reshard_after_forward=settings.reshard_after_forward,
     )
-    broadcast_buffers(model, src=0)
+    if settings.broadcast_buffers:
+        broadcast_buffers(model, src=0)
     return model
 
 
