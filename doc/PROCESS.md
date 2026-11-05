@@ -350,3 +350,28 @@
   `checkpoint_verified=true, checkpoint_max_abs_diff=0.0`。
 - **未完成 / 风险**: 旧 checkpoint 的 hash 层 bias 键会让 strict 加载报错，
   需重新生成；多卡 `broadcast_buffers` 仍是必要保险（确定性未在 CUDA 上验）。
+
+## 2026-11-05 审计确认问题的分批修复
+
+- **commit**: `837a3da` fix: 修复审计确认的训练/数据/RL 逻辑问题
+- **做了什么**:
+  - 数据/训练：`load_dataset` 改为可重建 batch factory；验证集每次重置；`batch_tokens`/`prompts_per_step` 按 world_size 全局平分；resume 的 data/optimizer/step 三开关；dataset tokenizer/seq_len 校验；flat dataset 改 `.npy` sidecar 真 mmap（旧 npz 回退）。
+  - 配置链：SFT 从 pretrain base 初始化；GRPO/OPD 加载时忽略 MTP 头且只加载模型权重；curriculum 8K top-k=2048；运行期 top-k 写入 checkpoint meta，eval/export/teacher 优先读取。
+  - 模型/RL：context 上限与生成截断；indexer aux loss 去掉额外 `/world`；MiniMind tool 数据解析与透传；AR snapshot 时序；Muon/AdamW 分组；tied safetensors；数学答案解析/format bonus；采样 logprob；GRPO vLLM 同步；verl 的 rollout n/val/reward import。
+  - 工具链/配置：consistency 传递运行时配置、HF export meta 回退、reference parity 过滤旧 hash-bias key、grpo manifest 预算、SFT/GRPO/OPD/eval config。
+  - 文档：新增 `doc/BUGS.md`（问题与证据）与 `doc/FIXES.md`（修复内容、验证、具体位置）；`doc/decisions.md` 增加 D35–D45。
+- **实现了什么**:
+  - 训练/验证 loader 不再在 generator 耗尽时崩溃；val loss 不再 NaN；多卡 global batch 与配置注释一致；从 base 初始化 SFT/RL 不再继承旧 step/LR。
+  - 155 个 CPU 测试通过（新增 25 个回归测试）；debug smoke、debug SFT→GRPO→OPD、FSDP2 2-proc、reference parity 均实跑通过。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → **155 passed**
+  - `bash scripts/debug_smoke.sh` → smoke + consistency + 155 passed
+  - `.venv/bin/python scripts/test_distributed.py --world-size 2 --mode fsdp2 --steps 1` → PASS
+  - `scripts/test_rl_distributed.py --method grpo/opd` → PASS
+  - `scripts/verify_reference.py --seq-len 160 --mtp` → worst block 1.5e-4
+  - debug SFT→GRPO→OPD→eval 实跑通过
+- **未完成 / 风险**:
+  - 未提交/未验证的剩余项见 `doc/BUGS.md` P2：GRPO/OPD expert bias 更新、部分配置空转、污染/manifest 未接训练入口、HF remote-code 非自包含、grad accumulation token 等权等；
+  - vLLM/verl GPU 实机、bf16/NCCL、真实 mini-60M 数据与训练仍未验证；
+  - `.npy` sidecar 改变了新建数据集的物理格式（逻辑路径仍为 `.npz`）；旧 `.npz` 仍可读。
