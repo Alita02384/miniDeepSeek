@@ -375,3 +375,21 @@
   - 未提交/未验证的剩余项见 `doc/BUGS.md` P2：GRPO/OPD expert bias 更新、部分配置空转、污染/manifest 未接训练入口、HF remote-code 非自包含、grad accumulation token 等权等；
   - vLLM/verl GPU 实机、bf16/NCCL、真实 mini-60M 数据与训练仍未验证；
   - `.npy` sidecar 改变了新建数据集的物理格式（逻辑路径仍为 `.npz`）；旧 `.npz` 仍可读。
+
+## 2026-11-05 审计修复收尾（RL bias / 配置 / 泄漏检测）
+
+- **commit**: `7e93371` fix: RL 阶段更新 expert bias 并让 broadcast_buffers 配置生效；`3b49339` fix: 收紧 GRPO reference 泄漏检测
+- **做了什么**:
+  - GRPO/OPD 在 optimizer.step 前 all-reduce usage counts 并执行 loss-free expert-bias 更新，计数器清零；
+  - `DistributedSettings.broadcast_buffers=false` 现在真正跳过 buffer 广播；
+  - GRPO reference 泄漏检查改为 answer marker/长串判断，避免 `1+2` 这类问题数字误杀；
+  - 更新 BUGS/FIXES/README/testing。
+- **验证**:
+  - `pytest -q` → **156 passed**
+  - `bash scripts/debug_smoke.sh` → 通过
+  - FSDP2 2-proc → PASS
+  - RL GRPO/OPD 2-proc → PASS
+  - `verify_reference.py` → worst block 1.5e-4
+- **剩余 / 设计决策**:
+  - B31（code license 未知 header 策略）、B32（污染检查/manifest 强制接入）、B35（HF remote-code 自包含）、B37（grad accumulation token 加权）仍需产品/数据策略决定，不是当前可复现的静默逻辑错误；
+  - vLLM/verl/NCCL/bf16 实机与真实 60M 训练仍未验证。
