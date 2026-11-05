@@ -238,9 +238,13 @@
 - 验证：默认 top-k/p（无过滤）行为不变；完整测试通过。
 - 风险：非默认过滤只在 vLLM/额外配置中使用，尚未专门测试。
 
-## 待办
+## 待办 / 明确不作为代码 bug 修的项
 
-- B25–B37 中剩余配置空转、RL expert bias、`from_padded` 多文档、metrics token 统计等尚未逐项处理。
+- B31：code 数据的未知 license header 是否拒绝，属于数据策略；当前保持“无 header 放行”并在 BUGS.md 标注。
+- B32：13-gram 污染检查/manifest epoch 校验接入训练入口，属于数据门禁设计；当前只在 prepare CLI 提供。
+- B35：HF 导出 remote-code 依赖 `minideepseek.model.*`，要真正自包含需要导出模型实现副本，属于打包策略。
+- B37：grad accumulation 按 micro-batch 等权而非 token 等权；当前 batch 大小接近，改动会触及 FSDP 梯度归一化，待专门设计。
+- B25：RL 验证集尚未实现，但配置会显式拒绝 `val_path`，不会静默忽略。
 - 需要补的测试：B18 的 fake generator、B19 teacher 运行时、B7 的多进程验证脚本固化、B17 数值测试。
 
 ## B28 — summary token 统计
