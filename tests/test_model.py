@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from minideepseek.model import build_model, from_sequences
 from minideepseek.model.config import MODEL_FLAVORS, build_model_config
 from minideepseek.model.model import DeepSeekV4Model
 from minideepseek.train.metrics import iter_limited_swiglu, swiglu_monitor
@@ -111,3 +112,44 @@ def test_flavor_parameter_counts_are_calibrated():
         )
         params = sum(p.numel() for p in DeepSeekV4Model(config).parameters())
         assert abs(params - target) / target < 0.001, (flavor, params, target)
+
+
+def test_forward_rejects_sequence_longer_than_context():
+    import pytest
+
+    model = build_model("debugmodel", seq_len=16, n_mtp_layers=0, device="cpu")
+    batch = from_sequences([list(range(1, 21))])
+    with pytest.raises(ValueError, match="exceeds"):
+        model.forward(batch, use_mtp=False)
+
+
+def test_generate_caps_new_tokens_to_context():
+    model = build_model("debugmodel", seq_len=16, n_mtp_layers=0, device="cpu")
+    output = model.generate([[1, 2, 3]], max_new_tokens=100, greedy=True)
+    assert len(output.response_ids[0]) <= 13
+
+
+def test_token_logprobs_are_zero_only_at_document_start(debug_model):
+    batch = from_sequences([[1, 2, 3]])
+    logprobs = debug_model.token_logprobs(batch)
+    assert logprobs[0].item() == 0.0
+    assert torch.all(logprobs[1:] < 0)
+
+
+def test_sampling_logprob_uses_unfiltered_policy():
+    import torch.nn.functional as F
+
+    from minideepseek.model.wrapper import _sample_tokens
+
+    logits = torch.tensor([[0.0, 10.0, 1.0]])
+    ids, logprobs = _sample_tokens(
+        logits,
+        temperature=1.0,
+        top_k=1,
+        top_p=1.0,
+        greedy=False,
+        generator=torch.Generator().manual_seed(0),
+    )
+    assert int(ids.item()) == 1
+    expected = F.log_softmax(logits, dim=-1)[0, 1]
+    assert torch.allclose(logprobs[0], expected)

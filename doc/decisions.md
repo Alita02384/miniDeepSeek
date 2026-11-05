@@ -391,3 +391,105 @@
   - 新建模型的哈希表与改前不同（旧的走全局 RNG）；已有 checkpoint 加载后
     行为不变；
   - 建表不再消耗全局 RNG，同 seed 下其余参数的初始化序列与改前不同。
+
+## 2026-11-05 审计修复带来的配置/行为修正
+
+### D35. `batch_tokens` 与 `prompts_per_step` 明确为 global 语义
+
+- **原方案**：配置和文档按 global（例如 `full_6b` 注释 0.5M tokens/step）描述，
+  但 loader/RL 实际按每 rank 使用；8 卡时 batch 与 token 预算被放大 8 倍。
+- **新方案**：`train/run` 按 `shard_world_size` 平分 `batch_tokens` /
+  `batch_tokens_final`；GRPO/OPD 按 DP size 平分 `prompts_per_step`。world=1
+  行为不变。
+- **影响**：所有既有配置无需逐卡改数；若 `batch_tokens < world*seq_len`，
+  每 rank 至少保留 1 个 pack，global 会略高于配置（可训练性下限）。
+
+### D36. 阶段切换的 resume 语义
+
+- **新增** `TrainSettings.resume_data` / `resume_optimizer` / `resume_step`：
+  - 同一次训练中断后恢复：三者默认 `true`；
+  - pretrain → SFT、SFT/pretrain → GRPO/OPD：三者均为 `false`（新数据、新优化器、新 step）；
+  - curriculum 的每个 stage：`resume_data=false`，但保留 optimizer 与累计 step。
+- **依据**：直接在 pretrain checkpoint 上 resume SFT 会把 pretrain 的 step
+  (约 12000) 带进 SFT，导致 `while step < 500` 直接跳过训练；同时会继承
+  pretrain 的 `base_lr` 和已消费 batch 数。
+- **影响**：从 base 初始化 specialist/RL 时必须使用这三项 false；同 run
+  续训保持默认 true。
+
+### D37. 运行期 index top-k 写入 checkpoint metadata
+
+- **实际**：Trainer/GRPO/OPD 保存时在 `extra.index_topk` 记录当前运行期
+  top-k；eval、HF export、teacher 加载优先使用该值，再回退静态配置。
+- **依据**：`index_topk` 不在 state_dict 中；SFT 末期调度到 64，而静态
+  config 可能仍是 1024，直接按 config 重建会静默改变模型行为。
+- **影响**：旧 checkpoint 没有该字段时仍回退 config；配置中显式写 top-k
+  用于没有运行时元数据的场景。
+
+### D38. MTP 头在 RL/eval/teacher 加载时显式忽略
+
+- **实际**：`load_checkpoint` 增加 `ignore_prefixes`，RL resume、teacher、
+  eval 显式传 `("mtp_layers.",)`；主权重仍 strict。
+- **依据**：pretrain/SFT 保留 MTP，RL/eval 为 `n_mtp_layers=0`；strict load
+  会因 MTP key 报错。
+- **影响**：只忽略该前缀，其他 key 不匹配仍报错；RL resume 不再加载旧优化器
+  （D22），避免覆盖 RL 学习率。
+
+### D39. 数据文件改为 `.npy` sidecar + mmap
+
+- **原方案**：`np.savez_compressed` + `np.load(mmap_mode="r")`。
+- **实际**：compressed/uncompressed npz 成员都不能真正 mmap；6B 数据会整块
+  解压进内存（约 54GB/rank）。改为 `<stem>.{input_ids,positions,target_mask,offsets}.npy`
+  + JSON meta；旧 `.npz` 仍可读取。
+- **影响**：新建数据集的逻辑路径仍是 `*.npz`，但实际文件是 sidecar；外部
+  直接 `np.load(path)` 的脚本需要改用 `load_flat_dataset`。
+
+### D40. MiniMind tool 数据解析与透传
+
+- **实际**：`normalize_conversation` 解析字符串形式的 `tools`/`tool_calls`；
+  SFT 从 system message 提取 tools；GRPO/eval rollout 透传 `resolved_tools()`。
+- **依据**：MiniMind `sft_t2t_mini.jsonl` 的 `tool_calls` 是 JSON 字符串，
+  旧代码会被 Jinja 当字符串逐字符迭代而崩溃；system tools 也会丢失。
+- **影响**：非法 tool JSON 在 SFT build 中跳过；合法记录保留完整 tool schema。
+
+### D41. Rollout/eval 打开 think 块；format bonus 检查闭合标签
+
+- **实际**：rollout/eval 的 generation prompt 使用 `open_thinking=True`，
+  让模型在 `<think>` 内生成推理；`math_reward` 的 format bonus 检查响应里
+  是否出现 `</think>`。
+- **依据**：SFT 数据包含 think；原 generation prompt 预先闭合空 think，
+  模型无法在该位置生成推理，`format_bonus` 恒为 0。
+- **影响**：GRPO/eval 的 prompt 与响应格式变化；格式奖励现在可达。
+
+### D42. 优化器分组按官方 recipe 修正
+
+- **实际**：`router.gate.weight` 归 Muon；`compressor.ape` /
+  `indexer.compressor.ape` 归 AdamW。
+- **依据**：官方 torchtitan recipe 的 Muon 正则包含 router gate，且注释明确
+  “additive gate-logit biases (ape) stay with AdamW”。
+- **影响**：与旧训练的优化器轨迹不同；参数集合不变。
+
+### D43. Anticipatory Routing snapshot 时序
+
+- **实际**：`observe_step` 在 `optimizer.step()` 之前记录 θ_t；自动 AR 的
+  持续步数同时受 `loss_spike_ar_steps` 与 `AnticipatoryRoutingSettings.max_steps` 限制。
+- **依据**：原先记录更新后的 θ_{t+1} 却按 `step-delta` 读取，delta=1 的
+  fallback 实际没有 stale；max_steps 是未读取配置。
+- **影响**：AR fallback 现在使用真正的历史 gate；显式 `enabled=True` 的 AR
+  仍持续开启（max_steps 只限制 spike 触发的自动 AR）。
+
+### D44. D27 的 indexer aux loss 除以 world_size 已撤销
+
+- **修正**：删除 `MiniDeepSeekModel.aux_loss_world_size` 及 `compute_loss`
+  中的额外除法。
+- **依据**：indexer loss 已按 local tokens 归一化；FSDP/DDP 的梯度平均本身
+  就是 global per-token，再除 world 会让 aux 项缩小 W 倍。
+- **验证**：2 进程 `build_trainer`，world=1/2 权重 digest 一致，indexer loss
+  日志一致（4.0274e-6）。
+
+### D45. 训练/验证 loader 使用可重建 factory
+
+- **实际**：`load_dataset` 返回 factory；Trainer 每轮重建 iterator，验证集
+  每次从同一 factory 重置；resume 通过 checkpoint `extra.data_batches` 跳过
+  已消费 micro-batch。
+- **依据**：原 generator 耗尽会抛 StopIteration；val iterator 耗尽后返回 NaN，
+  且每次验证的是不同子集。

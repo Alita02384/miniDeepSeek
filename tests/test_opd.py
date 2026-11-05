@@ -104,3 +104,36 @@ def test_opd_resume_loads_base_checkpoint(tmp_path, stub_tokenizer):
     batch = from_sequences([[1, 2, 3, 4]])
     with torch.no_grad():
         assert torch.equal(base.forward(batch)[0], student.forward(batch)[0])
+
+
+def test_load_teacher_ignores_mtp_and_uses_runtime_topk(tmp_path):
+    from minideepseek.config import TeacherSettings
+    from minideepseek.model.checkpoint import save_checkpoint
+    from minideepseek.rl.opd import load_teacher
+
+    source = build_model("debugmodel", seq_len=32, n_mtp_layers=1, device="cpu")
+    checkpoint = tmp_path / "teacher"
+    save_checkpoint(
+        checkpoint,
+        source,
+        step=0,
+        extra={"index_topk": 16},
+    )
+    settings = TeacherSettings(
+        name="t",
+        key="math",
+        checkpoint=str(checkpoint),
+        flavor="debugmodel",
+        seq_len=32,
+    )
+    loaded = load_teacher(
+        settings,
+        tokenizer=type("T", (), {"sha256": source.state_dict() and "x"})(),
+        device="cpu",
+    )
+    batch = from_sequences([[1, 2, 3, 4]])
+    with torch.no_grad():
+        assert torch.equal(
+            source.forward(batch, use_mtp=False)[0],
+            loaded.forward(batch, use_mtp=False)[0],
+        )

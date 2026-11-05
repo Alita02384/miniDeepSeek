@@ -98,13 +98,9 @@ def duplicate_indices(texts: list[str], *, threshold: float = 0.8) -> set[int]:
     """Return indices that are duplicates of an earlier document."""
     lsh = MinHashLSH()
     pairs = lsh.duplicate_pairs(texts, threshold=threshold)
-    duplicates: set[int] = set()
-    for left, right, _ in pairs:
-        if left not in duplicates:
-            duplicates.add(right)
-        elif right not in duplicates:
-            duplicates.add(left)
-    return duplicates
+    # ``pairs`` is sorted by (left, right); the later document is the one
+    # removed, so every right endpoint is a duplicate of an earlier document.
+    return {right for _left, right, _score in pairs}
 
 
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n")

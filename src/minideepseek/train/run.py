@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable, Iterator
 
 from ..config import TrainConfig, load_config
 from ..data.pretrain import PackedPretrainDataset
 from ..data.sft import SFTDataset
+from ..model.batch import PackedBatch
 from ..tokenizer import load_tokenizer
 from .distributed import init_distributed
 from .trainer import build_trainer
@@ -23,6 +25,13 @@ def _load_single_dataset(mode: str, path: str):
     return SFTDataset(path) if mode == "sft" else PackedPretrainDataset(path)
 
 
+def _per_rank_tokens(value: int | None, world_size: int) -> int | None:
+    """Split a configured global micro-batch token budget across DP ranks."""
+    if value is None:
+        return None
+    return max(1, int(value) // max(int(world_size), 1))
+
+
 def _batch_factory(
     config: TrainConfig,
     mode: str,
@@ -30,17 +39,24 @@ def _batch_factory(
     *,
     shard_rank: int,
     shard_world_size: int,
-):
+) -> Callable[[], Iterator[PackedBatch]]:
     total_steps = max(config.train.steps * max(config.train.grad_accum, 1), 1)
+    # ``batch_tokens`` is a global (all-rank) micro-batch budget in the
+    # shipped configs; each rank gets its shard.  ``total_steps`` stays in
+    # optimizer/micro-batch units, so only the per-micro token count changes.
+    batch_tokens = _per_rank_tokens(config.data.batch_tokens, shard_world_size)
+    batch_tokens_final = _per_rank_tokens(
+        config.data.batch_tokens_final, shard_world_size
+    )
 
-    def factory():
+    def factory() -> Iterator[PackedBatch]:
         if mode == "sft":
             from ..data.sft import iter_batches
 
             return iter_batches(
                 dataset,
-                batch_tokens=config.data.batch_tokens,
-                batch_tokens_final=config.data.batch_tokens_final,
+                batch_tokens=batch_tokens,
+                batch_tokens_final=batch_tokens_final,
                 batch_warmup_ratio=config.data.batch_warmup_ratio,
                 total_steps=total_steps,
                 shuffle=config.data.shuffle,
@@ -52,8 +68,8 @@ def _batch_factory(
 
         return iter_batches(
             dataset,
-            batch_tokens=config.data.batch_tokens,
-            batch_tokens_final=config.data.batch_tokens_final,
+            batch_tokens=batch_tokens,
+            batch_tokens_final=batch_tokens_final,
             batch_warmup_ratio=config.data.batch_warmup_ratio,
             total_steps=total_steps,
             seq_len=config.model.seq_len,
@@ -73,7 +89,7 @@ def load_dataset(
     shard_rank: int = 0,
     shard_world_size: int = 1,
     path: str | None = None,
-):
+) -> tuple[object, Callable[[], Iterator[PackedBatch]]]:
     explicit_path = path
     path = path or config.data.tokenized_path
     if config.data.sources and explicit_path is None:
@@ -111,21 +127,47 @@ def load_dataset(
             seed=config.data.seed,
             shuffle=config.data.shuffle,
         )
-        return {"meta": {"sources": meta_sources}}, mixer
+        return {"meta": {"sources": meta_sources}}, (lambda: iter(mixer))
     if not path:
         raise SystemExit(
             "data.tokenized_path or data.sources is required; "
             "run `python -m minideepseek.data.prepare` first"
         )
     dataset = _load_single_dataset(mode, path)
-    batches = _batch_factory(
+    factory = _batch_factory(
         config,
         mode,
         dataset,
         shard_rank=shard_rank,
         shard_world_size=shard_world_size,
-    )()
-    return dataset, batches
+    )
+    return dataset, factory
+
+
+
+def _validate_dataset(dataset, tokenizer, config: TrainConfig, *, label: str) -> None:
+    """Fail early on tokenizer/sequence-length drift between data and model."""
+    meta = getattr(dataset, "meta", None)
+    if not isinstance(meta, dict):
+        return
+    expected_hash = meta.get("tokenizer_hash")
+    if expected_hash and expected_hash != tokenizer.sha256:
+        raise ValueError(
+            f"{label} dataset tokenizer hash mismatch: "
+            f"{expected_hash} != {tokenizer.sha256}"
+        )
+    expected_vocab = meta.get("tokenizer_vocab")
+    if expected_vocab and int(expected_vocab) != tokenizer.vocab_size:
+        raise ValueError(
+            f"{label} dataset tokenizer vocab {expected_vocab} does not match "
+            f"loaded tokenizer {tokenizer.vocab_size}"
+        )
+    dataset_seq_len = meta.get("seq_len")
+    if dataset_seq_len and int(dataset_seq_len) > int(config.model.seq_len):
+        raise ValueError(
+            f"{label} dataset packs up to {dataset_seq_len} tokens but the model "
+            f"context is {config.model.seq_len}"
+        )
 
 
 def run(config: TrainConfig, mode: str = "pretrain") -> dict:
@@ -137,15 +179,17 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
         shard_rank=context.rank,
         shard_world_size=context.world_size,
     )
+    _validate_dataset(dataset, tokenizer, config, label="train")
     val_batches = None
     if config.train.val_path:
-        _, val_batches = load_dataset(
+        val_dataset, val_batches = load_dataset(
             config,
             mode,
             path=config.train.val_path,
             shard_rank=0,
             shard_world_size=1,
         )
+        _validate_dataset(val_dataset, tokenizer, config, label="val")
     trainer, model = build_trainer(
         config,
         batches,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 import torch
 
 from minideepseek.config import (
@@ -147,3 +148,104 @@ def test_anticipatory_routing_trainer(tmp_path):
     assert summary["steps_run"] == 2
     assert trainer._ar_state is not None
     assert trainer._ar_state.stale_snapshot() is not None
+
+
+def test_factory_loader_cycles_and_validation_is_stable(tmp_path):
+    first = from_sequences([[1, 2, 3, 4]])
+    second = from_sequences([[5, 6, 7]])
+    val = from_sequences([[9, 10, 11]])
+
+    def train_factory():
+        yield first
+        yield second
+
+    def val_factory():
+        yield val
+
+    config = _config(tmp_path, steps=4, val_every=1, val_steps=1)
+    trainer, _model = build_trainer(
+        config,
+        train_factory,
+        val_batches=val_factory,
+        tokenizer_hash="stub",
+    )
+    trainer.train(4)
+    val_losses = [
+        record["val_loss"]
+        for record in trainer.logger.history
+        if "val_loss" in record
+    ]
+    assert len(val_losses) == 4
+    assert all(torch.isfinite(torch.tensor(value)) for value in val_losses)
+
+
+def test_resume_skips_consumed_batches(tmp_path):
+    batches = [from_sequences([[index + 1, index + 2]]) for index in range(6)]
+    config = _config(tmp_path, steps=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+    checkpoint = trainer.save("final")
+
+    resumed_config = _config(tmp_path, steps=4)
+    resumed_config.train.resume = str(checkpoint)
+    resumed, _model = build_trainer(
+        resumed_config, batches, tokenizer_hash="stub"
+    )
+    resumed.resume(checkpoint)
+    assert resumed.step == 2
+    assert resumed._batches_consumed == 2
+    assert next(resumed._batch_iter).input_ids.tolist() == [3, 4]
+
+
+def test_resume_rejects_tokenizer_hash_mismatch(tmp_path):
+    batches = [from_sequences([[1, 2, 3]])]
+    config = _config(tmp_path, steps=1)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="AAA")
+    trainer.train(1)
+    checkpoint = trainer.save("final")
+
+    other_config = _config(tmp_path, steps=1)
+    other, _model = build_trainer(other_config, batches, tokenizer_hash="BBB")
+    with pytest.raises(ValueError, match="tokenizer hash mismatch"):
+        other.resume(checkpoint)
+
+
+def test_periodic_checkpoint_step_matches_name(tmp_path):
+    batches = [from_sequences([[1, 2, 3]]), from_sequences([[4, 5, 6]])]
+    config = _config(tmp_path, steps=2, ckpt_every=1)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+    assert json.loads(
+        (tmp_path / "run" / "step_000001" / "meta.json").read_text()
+    )["step"] == 1
+
+
+def test_summary_tokens_count_all_steps(tmp_path):
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    config = _config(tmp_path, steps=4, log_every=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    summary = trainer.train(4)
+    assert summary["tokens"] == 4 * 5  # 3 main + 2 MTP targets per step
+
+
+def test_stage_transition_keeps_fresh_optimizer_and_data(tmp_path):
+    batches = [from_sequences([[1, 2, 3]]), from_sequences([[4, 5, 6]])]
+    source_config = _config(tmp_path, steps=1)
+    source_config.optim.lr = 2e-5
+    source, _model = build_trainer(source_config, batches, tokenizer_hash="stub")
+    source.train(1)
+    checkpoint = source.save("final")
+
+    target_config = _config(tmp_path, steps=2)
+    target_config.optim.lr = 2e-6
+    target_config.train.resume = str(checkpoint)
+    target_config.train.resume_data = False
+    target_config.train.resume_optimizer = False
+    target_config.train.resume_step = False
+    target, _model = build_trainer(target_config, batches, tokenizer_hash="stub")
+    target.resume(checkpoint)
+    assert target.step == 0
+    assert target._batches_consumed == 0
+    assert all(
+        group["base_lr"] == 2e-6 for group in target.optimizer.param_groups
+    )

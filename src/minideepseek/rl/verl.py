@@ -26,9 +26,9 @@ from typing import Any
 
 import yaml
 
-from ..config import RewardSettings
-from ..data.grpo import GRPORecord
-from .reward import dispatch_reward
+from minideepseek.config import RewardSettings
+from minideepseek.data.grpo import GRPORecord
+from minideepseek.rl.reward import dispatch_reward
 
 _REWARD_FILE = str(Path(__file__).resolve())
 
@@ -118,6 +118,7 @@ def build_verl_config(
     ppo_mini_batch_size: int = 32,
     max_prompt_length: int = 1024,
     max_response_length: int = 1024,
+    rollout_n: int = 8,
     actor_lr: float = 1e-6,
     rollout: str = "hf",
     rollout_tp: int = 1,
@@ -166,7 +167,7 @@ def build_verl_config(
             "rollout": {
                 "name": rollout,
                 "mode": "sync",
-                "n": 1,
+                "n": int(rollout_n),
                 "tensor_model_parallel_size": int(rollout_tp),
                 "gpu_memory_utilization": float(gpu_memory_utilization),
                 "max_model_len": int(max_prompt_length + max_response_length),

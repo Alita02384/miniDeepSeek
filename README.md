@@ -33,7 +33,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`127 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`155 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -150,7 +150,7 @@ src/minideepseek/
 ├── rl/           # torch rollout、reward、GRPO、多教师 OPD
 ├── consistency/  # logprob / routing / checkpoint 一致性门禁
 └── eval/         # math / code / world 评估与报告
-tests/            # 127 个 CPU 测试，全部使用 debug model
+tests/            # 155 个 CPU 测试，全部使用 debug model
 doc/              # decisions / sources / PROCESS / testing
 scripts/          # 环境、数据、训练、评估脚本
 ```

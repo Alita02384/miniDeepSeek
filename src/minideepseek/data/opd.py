@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..tokenizer import normalize_conversation
 from .io import iter_jsonl, write_jsonl
 
 
@@ -37,10 +38,14 @@ def load_opd_prompts(path: str | Path) -> list[OPDPrompt]:
         prompt = item.get("prompt") or item.get("messages")
         if not prompt:
             continue
+        try:
+            prompt = normalize_conversation({"messages": prompt})
+        except ValueError:
+            continue
         key = item.get("teacher_key") or item.get("domain") or "general"
         prompts.append(
             OPDPrompt(
-                prompt=list(prompt),
+                prompt=prompt,
                 teacher_key=str(key),
                 domain=str(item.get("domain", key)),
                 source=str(item.get("source", "unknown")),

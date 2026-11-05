@@ -86,3 +86,39 @@ def test_tied_embeddings_export_is_untied(tmp_path, make_debug_model):
         logits = hf(input_ids=ids).logits
         internal = model.forward(from_sequences([[1, 2, 3]]), use_mtp=False)[0]
     assert torch.allclose(logits[0, :3], internal, atol=1e-5)
+
+
+def test_export_checkpoint_uses_meta_runtime_settings(tmp_path, debug_model):
+    import json
+
+    from minideepseek.model.checkpoint import save_checkpoint
+    from minideepseek.model.hf.export import export_checkpoint
+
+    checkpoint = tmp_path / "ckpt"
+    save_checkpoint(
+        checkpoint,
+        debug_model,
+        step=0,
+        config={
+            "model": {
+                "flavor": "debugmodel",
+                "seq_len": 64,
+                "n_mtp_layers": 0,
+                "swiglu_limit": 10.0,
+                "index_topk": 16,
+                "indexer_loss_coeff": 0.01,
+            }
+        },
+    )
+    out = export_checkpoint(
+        checkpoint,
+        tmp_path / "hf-meta",
+        flavor="debugmodel",
+        seq_len=64,
+        swiglu_limit=None,
+        index_topk=None,
+        indexer_loss_coeff=None,
+    )
+    config = json.loads((out / "config.json").read_text())
+    assert config["swiglu_limit"] == 10.0
+    assert config["index_topk"] == 16

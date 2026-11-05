@@ -28,6 +28,10 @@ data:
   domain: world
 train:
   steps: 500
+  resume: checkpoints/pretrain_full/final
+  resume_data: false
+  resume_optimizer: false
+  resume_step: false
   grad_accum: 8
   log_every: 10
   ckpt_every: 100

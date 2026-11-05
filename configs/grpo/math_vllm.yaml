@@ -5,6 +5,7 @@
 model:
   flavor: mini_60m
   seq_len: 4096
+  index_topk: 1024
   n_mtp_layers: 0
   swiglu_limit: 10.0
   device: auto
@@ -32,6 +33,7 @@ train:
   log_every: 1
   ckpt_every: 20
   resume: checkpoints/sft_math/final
+  resume_step: false
   out_dir: checkpoints/grpo_math
 rl:
   method: grpo

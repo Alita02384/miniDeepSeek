@@ -63,6 +63,11 @@ def normalize_whitespace(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _sidecar_path(path: str | Path, name: str) -> Path:
+    path = Path(path)
+    return path.with_suffix(f".{name}.npy")
+
+
 def save_flat_dataset(
     path: str | Path,
     *,
@@ -72,16 +77,20 @@ def save_flat_dataset(
     offsets: np.ndarray,
     meta: dict[str, Any],
 ) -> Path:
-    """Save a flat token dataset plus per-pack/per-example offsets."""
+    """Save decoded arrays as memmappable ``.npy`` sidecars plus JSON meta.
+
+    ``.npz`` members cannot be memory-mapped through ``np.load`` (even when
+    uncompressed), which would force a 6B-token corpus into RAM.  The logical
+    dataset path is kept for configs; the arrays live next to it as
+    ``<stem>.input_ids.npy`` etc.  ``load_flat_dataset`` still reads legacy
+    ``.npz`` files for existing debug data.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        path,
-        input_ids=np.asarray(input_ids, dtype=np.int32),
-        positions=np.asarray(positions, dtype=np.int32),
-        target_mask=np.asarray(target_mask, dtype=bool),
-        offsets=np.asarray(offsets, dtype=np.int64),
-    )
+    np.save(_sidecar_path(path, "input_ids"), np.asarray(input_ids, dtype=np.int32))
+    np.save(_sidecar_path(path, "positions"), np.asarray(positions, dtype=np.int32))
+    np.save(_sidecar_path(path, "target_mask"), np.asarray(target_mask, dtype=bool))
+    np.save(_sidecar_path(path, "offsets"), np.asarray(offsets, dtype=np.int64))
     path.with_suffix(".json").write_text(
         json.dumps(meta, indent=2, ensure_ascii=False)
     )
@@ -89,14 +98,26 @@ def save_flat_dataset(
 
 
 def load_flat_dataset(path: str | Path):
-    """Load a flat dataset in memory-mapped mode.
+    """Load a flat dataset without copying the arrays into RAM.
 
-    ``np.load`` with ``mmap_mode`` works for ``.npz``; the returned arrays are
-    read-only memmaps, which keeps 6B-token datasets out of RAM.
+    New datasets are a set of ``.npy`` sidecars loaded with ``mmap_mode="r"``.
+    Legacy ``.npz`` files are still read (they decompress into memory, so they
+    are only suitable for the small debug corpora).
     """
     path = Path(path)
-    archive = np.load(path, mmap_mode="r")
-    return archive["input_ids"], archive["positions"], archive["target_mask"], archive["offsets"]
+    names = ("input_ids", "positions", "target_mask", "offsets")
+    sidecars = [_sidecar_path(path, name) for name in names]
+    if all(sidecar.exists() for sidecar in sidecars):
+        arrays = [np.load(sidecar, mmap_mode="r") for sidecar in sidecars]
+    else:
+        if not path.exists():
+            expected = ", ".join(str(sidecar) for sidecar in sidecars)
+            raise FileNotFoundError(
+                f"flat dataset not found: {path} (expected sidecars: {expected})"
+            )
+        archive = np.load(path, mmap_mode="r")
+        arrays = [archive[name] for name in names]
+    return tuple(arrays)
 
 
 def sha256_file(path: str | Path) -> str:

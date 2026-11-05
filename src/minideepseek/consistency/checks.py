@@ -198,6 +198,10 @@ def check_checkpoint_consistency(
     flavor: str,
     seq_len: int,
     n_mtp_layers: int = 0,
+    index_topk: int | None = None,
+    tie_word_embeddings: bool | None = None,
+    swiglu_limit: float | None = 10.0,
+    indexer_loss_coeff: float = 0.01,
 ) -> CheckpointReport:
     """Save, rebuild, reload, and compare logits bit-for-bit (CPU/float32)."""
     from ..model.wrapper import build_model
@@ -207,11 +211,26 @@ def check_checkpoint_consistency(
         tempdir,
         model,
         step=0,
-        config={"flavor": flavor, "seq_len": seq_len, "n_mtp_layers": n_mtp_layers},
+        config={
+            "flavor": flavor,
+            "seq_len": seq_len,
+            "n_mtp_layers": n_mtp_layers,
+            "index_topk": index_topk,
+            "tie_word_embeddings": tie_word_embeddings,
+            "swiglu_limit": swiglu_limit,
+            "indexer_loss_coeff": indexer_loss_coeff,
+        },
         tokenizer_hash=tokenizer.sha256,
     )
     reloaded = build_model(
-        flavor, seq_len=seq_len, n_mtp_layers=n_mtp_layers, device=model.device
+        flavor,
+        seq_len=seq_len,
+        n_mtp_layers=n_mtp_layers,
+        device=model.device,
+        index_topk=index_topk,
+        tie_word_embeddings=tie_word_embeddings,
+        swiglu_limit=swiglu_limit,
+        indexer_loss_coeff=indexer_loss_coeff,
     )
     load_checkpoint(tempdir, reloaded)
     batch = from_sequences([list(prompt) for prompt in prompts]).to(model.device)
@@ -235,6 +254,10 @@ def run_all_checks(
     flavor: str,
     seq_len: int,
     n_mtp_layers: int = 0,
+    index_topk: int | None = None,
+    tie_word_embeddings: bool | None = None,
+    swiglu_limit: float | None = 10.0,
+    indexer_loss_coeff: float = 0.01,
     max_new_tokens: int = 8,
     logprob_threshold: float = 1e-3,
     routing_threshold: float = 0.999,
@@ -252,6 +275,10 @@ def run_all_checks(
         flavor=flavor,
         seq_len=seq_len,
         n_mtp_layers=n_mtp_layers,
+        index_topk=index_topk,
+        tie_word_embeddings=tie_word_embeddings,
+        swiglu_limit=swiglu_limit,
+        indexer_loss_coeff=indexer_loss_coeff,
     )
     return {
         "logprob": logprob.as_dict(),

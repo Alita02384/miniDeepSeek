@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from minideepseek.data.grpo import load_records  # noqa: E402
+from minideepseek.data.grpo import load_records, split_records  # noqa: E402
 from minideepseek.rl.verl import (  # noqa: E402
     build_verl_config,
     flatten_overrides,
@@ -45,8 +45,12 @@ def main() -> int:
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     records = load_records(args.train)
-    train_path = write_verl_dataset(records, out / "train.jsonl")
-    val_records = load_records(args.val) if args.val else records[: min(len(records), 16)]
+    if args.val:
+        train_records = records
+        val_records = load_records(args.val)
+    else:
+        train_records, val_records = split_records(records, val_ratio=0.1, seed=1234)
+    train_path = write_verl_dataset(train_records, out / "train.jsonl")
     val_path = write_verl_dataset(val_records, out / "val.jsonl")
 
     config = build_verl_config(

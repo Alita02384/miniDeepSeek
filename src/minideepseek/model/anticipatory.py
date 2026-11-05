@@ -58,7 +58,7 @@ class AnticipatoryState:
     step: int = 0
 
     def observe_step(self, model) -> None:
-        """Store the router weights at the end of a step."""
+        """Store the router weights that produced step ``self.step``."""
         self.snapshots.append({"step": self.step, "gates": router_gate_snapshot(model)})
         self.step += 1
 

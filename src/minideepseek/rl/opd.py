@@ -23,7 +23,7 @@ from torch import Tensor
 from ..config import RLConfig, TeacherSettings, resolve_device, set_seed
 from ..data.grpo import GRPORecord
 from ..data.opd import OPDPrompt
-from ..model.checkpoint import load_checkpoint, save_checkpoint
+from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.distributed import (
@@ -34,7 +34,6 @@ from ..train.distributed import (
     gather_optimizer_state_dict,
     init_distributed,
     load_model_state_dict,
-    load_optimizer_state_dict,
 )
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
@@ -87,6 +86,7 @@ class OPDTrainer:
             raise ValueError("OPD requires at least one prompt")
         if not teachers:
             raise ValueError("OPD requires at least one teacher")
+        _validate_rl_settings(config)
         self.config = config
         self.student = student
         self.tokenizer = tokenizer
@@ -98,9 +98,10 @@ class OPDTrainer:
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
             warmup_steps=config.schedule.warmup_steps,
-            total_steps=max(config.train.steps, 1),
+            total_steps=max(config.train.schedule_steps or config.train.steps, 1),
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
+            decay_start_ratio=config.schedule.decay_start_ratio,
         )
         configured = dict(config.rl.teacher_weights)
         for teacher in config.teachers:
@@ -121,7 +122,11 @@ class OPDTrainer:
         import random
 
         rng = random.Random(self.config.model.seed + self.step_index)
-        count = min(max(int(self.config.rl.prompts_per_step), 1), len(self.prompts))
+        # Global prompt budget split across DP ranks; unchanged at world=1.
+        world = max(int(self.dist.world_size), 1)
+        count = min(
+            max(int(self.config.rl.prompts_per_step) // world, 1), len(self.prompts)
+        )
         indices = list(range(len(self.prompts)))
         rng.shuffle(indices)
         return [self.prompts[index] for index in indices[:count]]
@@ -242,15 +247,16 @@ class OPDTrainer:
                 self.config.train.ckpt_every > 0
                 and (self.step_index + 1) % self.config.train.ckpt_every == 0
             ):
-                self.save(f"step_{self.step_index + 1:06d}")
+                self.save(f"step_{self.step_index + 1:06d}", step=self.step_index + 1)
             self.step_index += 1
         self.save("final")
         summary = self.logger.summary() if self.logger is not None else {}
         summary["steps_run"] = self.step_index
         return summary
 
-    def save(self, name: str = "final") -> Path:
+    def save(self, name: str = "final", *, step: int | None = None) -> Path:
         path = Path(self.config.train.out_dir) / name
+        save_step = self.step_index if step is None else int(step)
         if self.dist.enabled:
             state = gather_model_state_dict(self.student.model)
             optim_state = gather_optimizer_state_dict(self.student.model, self.optimizer)
@@ -260,11 +266,15 @@ class OPDTrainer:
                     path,
                     self.student,
                     optimizer=self.optimizer,
-                    step=self.step_index,
+                    step=save_step,
                     config=self.config.to_dict(),
                     tokenizer_hash=self.tokenizer.sha256,
                     seed=self.config.model.seed,
-                    extra={"method": "opd", "teachers": sorted(self.teachers)},
+                    extra={
+                        "method": "opd",
+                        "teachers": sorted(self.teachers),
+                        "index_topk": self.student.current_index_topk(),
+                    },
                     state_dict=state,
                     optimizer_state=optim_state,
                 )
@@ -274,39 +284,54 @@ class OPDTrainer:
                 path,
                 self.student,
                 optimizer=self.optimizer,
-                step=self.step_index,
+                step=save_step,
                 config=self.config.to_dict(),
                 tokenizer_hash=self.tokenizer.sha256,
                 seed=self.config.model.seed,
-                extra={"method": "opd", "teachers": sorted(self.teachers)},
+                extra={
+                    "method": "opd",
+                    "teachers": sorted(self.teachers),
+                    "index_topk": self.student.current_index_topk(),
+                },
             )
         return path
 
     def resume(self, directory: str | Path) -> dict[str, Any]:
+        # D22: load model weights only; see GRPOTrainer.resume.
         if not self.dist.enabled:
-            optimizer = (
-                self.optimizer
-                if (Path(directory) / "optimizer.pt").exists()
-                else None
-            )
             meta = load_checkpoint(
-                directory, self.student, optimizer=optimizer, map_location="cpu"
+                directory,
+                self.student,
+                optimizer=None,
+                map_location="cpu",
+                ignore_prefixes=("mtp_layers.",),
             )
         else:
             import torch as _torch
 
-            from ..model.checkpoint import read_metadata
+            from ..model.checkpoint import filter_state_dict_prefixes, read_metadata
 
             path = Path(directory)
             state = _torch.load(path / "model.pt", map_location="cpu", weights_only=True)
+            state = filter_state_dict_prefixes(state, ("mtp_layers.",))
             load_model_state_dict(self.student.model, state)
-            optim_path = path / "optimizer.pt"
-            if optim_path.exists():
-                optim_state = _torch.load(optim_path, map_location="cpu", weights_only=True)
-                load_optimizer_state_dict(self.student.model, self.optimizer, optim_state)
             meta = read_metadata(path)
-        self.step_index = int(meta.get("step", 0))
+        self.step_index = (
+            int(meta.get("step", 0)) if self.config.train.resume_step else 0
+        )
         return meta
+
+
+def _validate_rl_settings(config: RLConfig) -> None:
+    """Reject options that the local OPD trainer would otherwise ignore."""
+    if config.rl.kl_coeff != 0:
+        raise ValueError("OPD does not implement an extra KL reference penalty")
+    if config.rl.min_response_tokens != 2:
+        raise ValueError("OPD does not implement min_response_tokens filtering")
+    if config.train.grad_accum != 1:
+        raise ValueError("OPD does not implement gradient accumulation")
+    if config.train.val_path:
+        raise ValueError("OPD does not implement a validation split")
 
 
 def _group_by_teacher(samples: Sequence[RolloutSample]) -> dict[str, list[RolloutSample]]:
@@ -324,16 +349,25 @@ def load_teacher(
     device: torch.device | str = "cpu",
 ) -> MiniDeepSeekModel:
     tokenizer = tokenizer or load_tokenizer()
+    index_topk = settings.index_topk
+    if settings.checkpoint and index_topk is None:
+        index_topk = read_metadata(settings.checkpoint).get("extra", {}).get("index_topk")
     model = build_model(
         settings.flavor,
         seq_len=settings.seq_len,
         n_mtp_layers=settings.n_mtp_layers,
         device=device,
         swiglu_limit=10.0,
+        index_topk=index_topk,
         dtype=settings.dtype,
     )
     if settings.checkpoint:
-        meta = load_checkpoint(settings.checkpoint, model, map_location="cpu")
+        meta = load_checkpoint(
+            settings.checkpoint,
+            model,
+            map_location="cpu",
+            ignore_prefixes=("mtp_layers.",),
+        )
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError(
@@ -404,4 +438,6 @@ def build_opd_trainer(
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError("OPD student checkpoint tokenizer hash mismatch")
+        # Refresh a sampler built before the resume load (torch engine is a no-op).
+        trainer.engine.sync_weights(student.state_dict())
     return trainer, student

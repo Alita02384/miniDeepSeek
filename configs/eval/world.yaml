@@ -2,7 +2,7 @@ model:
   flavor: mini_60m
   seq_len: 4096
   n_mtp_layers: 0
-  index_topk: 64
+  index_topk: 1024
   device: auto
   dtype: bfloat16
   seed: 1234

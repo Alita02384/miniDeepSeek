@@ -1,7 +1,7 @@
 # GRPO prompt budget (not token budget in the pretraining sense).
 name: grpo_math
 seq_len: 4096
-total_tokens: 20000000
+total_tokens: 10000000
 sources:
   - name: gsm8k_train
     path: data/raw/gsm8k_train

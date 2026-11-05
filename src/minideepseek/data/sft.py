@@ -21,7 +21,7 @@ import torch
 
 from ..model.batch import PackedBatch, concat_batches
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer, normalize_conversation
-from .io import iter_jsonl, save_flat_dataset
+from .io import iter_jsonl, load_flat_dataset, save_flat_dataset
 
 
 @dataclass
@@ -30,11 +30,9 @@ class SFTDataset:
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
-        archive = np.load(self.path, mmap_mode="r")
-        self.input_ids = archive["input_ids"]
-        self.positions = archive["positions"]
-        self.target_mask = archive["target_mask"]
-        self.offsets = archive["offsets"]
+        self.input_ids, self.positions, self.target_mask, self.offsets = (
+            load_flat_dataset(self.path)
+        )
         self.meta: dict[str, Any] = {}
         meta_path = self.path.with_suffix(".json")
         if meta_path.exists():
@@ -53,9 +51,13 @@ class SFTDataset:
 
     def __getitem__(self, index: int) -> PackedBatch:
         start, end = int(self.offsets[index]), int(self.offsets[index + 1])
-        input_ids = torch.from_numpy(np.asarray(self.input_ids[start:end], dtype=np.int64))
+        input_ids = torch.from_numpy(
+            np.array(self.input_ids[start:end], dtype=np.int64, copy=True)
+        )
         positions = torch.arange(end - start, dtype=torch.long)
-        mask = torch.from_numpy(np.asarray(self.target_mask[start:end], dtype=bool))
+        mask = torch.from_numpy(
+            np.array(self.target_mask[start:end], dtype=bool, copy=True)
+        )
         cu_seqlens = torch.tensor([0, end - start], dtype=torch.int32)
         return PackedBatch(
             input_ids=input_ids, positions=positions, target_mask=mask, cu_seqlens=cu_seqlens
@@ -76,6 +78,17 @@ def encode_sft_record(
             tools = json.loads(tools)
         except json.JSONDecodeError:
             tools = None
+    if not isinstance(tools, list):
+        # MiniMind stores the tool schema on the system message, not at the
+        # record top level.
+        tools = next(
+            (
+                message["tools"]
+                for message in messages
+                if message.get("role") == "system" and message.get("tools")
+            ),
+            None,
+        )
     encoded = tokenizer.encode_chat(
         messages,
         add_generation_prompt=add_generation_prompt,
@@ -109,12 +122,16 @@ def build_sft_dataset(
         for record in iter_jsonl(path):
             if max_records is not None and used >= max_records:
                 break
-            encoded = encode_sft_record(
-                record,
-                tokenizer,
-                seq_len=seq_len,
-                add_generation_prompt=add_generation_prompt,
-            )
+            try:
+                encoded = encode_sft_record(
+                    record,
+                    tokenizer,
+                    seq_len=seq_len,
+                    add_generation_prompt=add_generation_prompt,
+                )
+            except ValueError:
+                skipped += 1
+                continue
             if encoded is None:
                 skipped += 1
                 continue

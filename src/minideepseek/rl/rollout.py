@@ -70,7 +70,12 @@ class TorchRolloutEngine:
         self.generator = generator
 
     def encode_prompt(self, record: GRPORecord) -> list[int]:
-        text = self.tokenizer.render_chat(record.prompt, add_generation_prompt=True)
+        text = self.tokenizer.render_chat(
+            record.prompt,
+            add_generation_prompt=True,
+            tools=record.resolved_tools(),
+            open_thinking=True,
+        )
         return self.tokenizer.encode(text)
 
     def rollout(

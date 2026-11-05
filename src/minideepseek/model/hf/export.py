@@ -101,10 +101,21 @@ def export_checkpoint(checkpoint: str | Path, out_dir: str | Path, **kwargs) -> 
     meta = json.loads((checkpoint / "meta.json").read_text())
     config = meta.get("config", {})
     model_cfg = config.get("model", {})
-    kwargs.setdefault("flavor", model_cfg.get("flavor"))
-    kwargs.setdefault("seq_len", model_cfg.get("seq_len"))
-    kwargs.setdefault("swiglu_limit", model_cfg.get("swiglu_limit"))
-    kwargs.setdefault("index_topk", model_cfg.get("index_topk"))
+    if kwargs.get("flavor") is None:
+        kwargs["flavor"] = model_cfg.get("flavor")
+    if kwargs.get("seq_len") is None:
+        kwargs["seq_len"] = model_cfg.get("seq_len")
+    if kwargs.get("swiglu_limit") is None:
+        kwargs["swiglu_limit"] = model_cfg.get("swiglu_limit", 10.0)
+    if kwargs.get("index_topk") is None:
+        # The trainer records the *runtime* top-k (the static config may hold
+        # the pre-schedule value).  Prefer it when present.
+        runtime_topk = meta.get("extra", {}).get("index_topk")
+        kwargs["index_topk"] = (
+            runtime_topk if runtime_topk is not None else model_cfg.get("index_topk")
+        )
+    if kwargs.get("indexer_loss_coeff") is None:
+        kwargs["indexer_loss_coeff"] = model_cfg.get("indexer_loss_coeff", 0.01)
     if kwargs["flavor"] is None or kwargs["seq_len"] is None:
         raise ValueError(
             "checkpoint meta lacks model.flavor/seq_len; pass them explicitly"

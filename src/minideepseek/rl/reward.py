@@ -25,7 +25,7 @@ from ..data.grpo import GRPORecord
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
 _ANSWER_RE = re.compile(
-    r"(?i)(?:final\s+answer|answer\s*[:：]|答案是|答案为|因此|所以)\s*[:：]? *([^\n]{1,120})"
+    r"(?i)(?:final\s+answer|answer\s*[:：]|答案是|答案为)\s*[:：]? *([^\n]{1,120})"
 )
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?")
 
@@ -50,7 +50,13 @@ def extract_answer(text: str) -> str | None:
         return match.group(1).strip()
     match = _ANSWER_RE.search(text)
     if match:
-        return match.group(1).strip()
+        captured = match.group(1).strip()
+        # The capture may include units/words ("42 元", "x = 42"); prefer the
+        # last numeric token when one is present.
+        numbers = _NUMBER_RE.findall(captured)
+        if numbers:
+            return numbers[-1].strip()
+        return captured
     numbers = _NUMBER_RE.findall(text)
     if numbers:
         return numbers[-1].strip()
@@ -104,7 +110,8 @@ def length_penalty(text: str, settings: RewardSettings) -> float:
 
 def math_reward(response: str, record: GRPORecord, settings: RewardSettings) -> RewardResult:
     correct, extracted = math_correct(response, record.reference_answer)
-    has_think = "<think>" in response and "</think>" in response
+    # Rollout opens the think block in the prompt; a proper response closes it.
+    has_think = "</think>" in response
     components = {
         "correctness": 1.0 if correct else 0.0,
         "format": settings.format_bonus if has_think else 0.0,

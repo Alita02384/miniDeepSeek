@@ -16,7 +16,7 @@ from typing import Any
 
 from ..config import EvalConfig, resolve_device
 from ..data.grpo import GRPORecord, load_records
-from ..model.checkpoint import load_checkpoint
+from ..model.checkpoint import load_checkpoint, read_metadata
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..rl.reward import RewardResult, code_reward, math_reward, world_reward
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
@@ -50,6 +50,9 @@ class EvalReport:
 
 def _load_model(config: EvalConfig, tokenizer: MiniDeepSeekTokenizer) -> MiniDeepSeekModel:
     device = resolve_device(config.model.device)
+    runtime_topk = None
+    if config.checkpoint:
+        runtime_topk = read_metadata(config.checkpoint).get("extra", {}).get("index_topk")
     model = build_model(
         config.model.flavor,
         seq_len=config.model.seq_len,
@@ -57,12 +60,19 @@ def _load_model(config: EvalConfig, tokenizer: MiniDeepSeekTokenizer) -> MiniDee
         device=device,
         tie_word_embeddings=config.model.tie_word_embeddings,
         swiglu_limit=config.model.swiglu_limit,
-        index_topk=config.model.index_topk,
+        index_topk=(
+            runtime_topk if runtime_topk is not None else config.model.index_topk
+        ),
         indexer_loss_coeff=config.model.indexer_loss_coeff,
         dtype=config.model.dtype,
     )
     if config.checkpoint:
-        meta = load_checkpoint(config.checkpoint, model, map_location="cpu")
+        meta = load_checkpoint(
+            config.checkpoint,
+            model,
+            map_location="cpu",
+            ignore_prefixes=("mtp_layers.",),
+        )
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError(
@@ -82,7 +92,14 @@ def _generate_responses(
     seed: int,
 ) -> list[str]:
     prompts = [
-        tokenizer.encode(tokenizer.render_chat(record.prompt, add_generation_prompt=True))
+        tokenizer.encode(
+            tokenizer.render_chat(
+                record.prompt,
+                add_generation_prompt=True,
+                tools=record.resolved_tools(),
+                open_thinking=True,
+            )
+        )
         for record in records
     ]
     if temperature <= 0:

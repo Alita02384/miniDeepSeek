@@ -72,3 +72,39 @@ def test_distributed_checkpoint_roundtrip(debug_model, tmp_path):
     batch = from_sequences([[1, 2, 3, 4]])
     with torch.no_grad():
         assert torch.equal(debug_model.forward(batch)[0], reloaded.forward(batch)[0])
+
+
+def test_load_checkpoint_can_ignore_mtp_heads(tmp_path):
+    import pytest
+
+    from minideepseek.model.checkpoint import load_checkpoint, save_checkpoint
+
+    source = build_model("debugmodel", seq_len=32, n_mtp_layers=1, device="cpu")
+    checkpoint = tmp_path / "mtp"
+    save_checkpoint(checkpoint, source, step=1)
+    target = build_model("debugmodel", seq_len=32, n_mtp_layers=0, device="cpu")
+    with pytest.raises(RuntimeError, match="mtp_layers"):
+        load_checkpoint(checkpoint, target)
+    load_checkpoint(
+        checkpoint, target, ignore_prefixes=("mtp_layers.",)
+    )
+    batch = from_sequences([[1, 2, 3, 4]])
+    with torch.no_grad():
+        expected = source.forward(batch, use_mtp=False)[0]
+        actual = target.forward(batch, use_mtp=False)[0]
+    assert torch.equal(expected, actual)
+
+
+def test_safetensors_roundtrip_tied(tmp_path):
+    model = build_model(
+        "debugmodel", seq_len=32, n_mtp_layers=0, device="cpu", tie_word_embeddings=True
+    )
+    path = tmp_path / "tied.safetensors"
+    export_safetensors(model, path)
+    reloaded = build_model(
+        "debugmodel", seq_len=32, n_mtp_layers=0, device="cpu", tie_word_embeddings=True
+    )
+    import_safetensors(path, reloaded)
+    batch = from_sequences([[1, 2, 3]])
+    with torch.no_grad():
+        assert torch.equal(model.forward(batch)[0], reloaded.forward(batch)[0])

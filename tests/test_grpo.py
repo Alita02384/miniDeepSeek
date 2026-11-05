@@ -196,3 +196,114 @@ def test_grpo_domain_routing_metrics(tmp_path, stub_tokenizer):
     metrics = trainer.train(1)
     assert any(key.startswith("routing_domain_math") for key in metrics)
     assert metrics["routing_domain_math_tokens_first"] > 0
+
+
+def test_math_extraction_handles_connective_prefixes():
+    assert extract_answer("因此答案是 42") == "42"
+    assert extract_answer("所以答案是 42") == "42"
+    assert extract_answer("因此 x = 42") == "42"
+    assert extract_answer("答案是 42 元") == "42"
+    assert math_correct("因此答案是 42", "42")[0]
+
+
+def test_grpo_resume_does_not_override_rl_lr(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model
+    from minideepseek.model.checkpoint import save_checkpoint
+    from minideepseek.train.optimizer import build_optimizer
+
+    source = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    optimizer = build_optimizer(source, OptimizerSettings(lr=2e-5))
+    checkpoint = tmp_path / "sft"
+    save_checkpoint(checkpoint, source, optimizer=optimizer, step=1)
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math")]
+    config = _rl_config(tmp_path)
+    config.optim.lr = 2e-6
+    config.train.resume = str(checkpoint)
+    trainer, _model = build_grpo_trainer(
+        config,
+        records,
+        lambda text, _record: RewardResult(total=0.0),
+        tokenizer=stub_tokenizer,
+    )
+    assert all(
+        group["base_lr"] == 2e-6 for group in trainer.optimizer.param_groups
+    )
+
+
+def test_grpo_prompt_budget_is_global(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model
+    from minideepseek.rl.rollout import TorchRolloutEngine
+    from minideepseek.train.distributed import DistributedContext
+
+    records = [
+        GRPORecord(prompt=[{"role": "user", "content": str(index)}], domain="math")
+        for index in range(4)
+    ]
+    config = _rl_config(tmp_path)
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    trainer = GRPOTrainer(
+        config,
+        model,
+        stub_tokenizer,
+        records,
+        lambda text, _record: RewardResult(total=0.0),
+        engine=TorchRolloutEngine(model, stub_tokenizer),
+        distributed=DistributedContext(world_size=2),
+    )
+    assert len(trainer._sample_records()) == 1
+
+
+def test_grpo_syncs_generator_after_update(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model
+    from minideepseek.rl.rollout import TorchRolloutEngine
+
+    class FakeGenerator:
+        def __init__(self, model):
+            self.model = model
+            self.version = 0
+
+        def generate(self, prompts, **kwargs):
+            return self.model.generate(prompts, **kwargs)
+
+        def update_weights(self, state_dict, out_dir):
+            del state_dict, out_dir
+            self.version += 1
+
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math")]
+    config = _rl_config(tmp_path)
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    generator = FakeGenerator(model)
+    engine = TorchRolloutEngine(model, stub_tokenizer, generator=generator)
+    trainer = GRPOTrainer(
+        config,
+        model,
+        stub_tokenizer,
+        records,
+        lambda text, _record: RewardResult(total=0.0),
+        engine=engine,
+    )
+    stats = trainer.step()
+    assert generator.version == 1
+    assert stats["rollout_weight_version"] == 1
+
+
+def test_rollout_prompt_opens_thinking_and_format_bonus_is_reachable():
+    from minideepseek.rl.rollout import TorchRolloutEngine
+    from minideepseek.tokenizer import load_tokenizer
+
+    tokenizer = load_tokenizer()
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "1+1"}],
+        domain="math",
+        reference_answer="2",
+        verifier="math_exact_match",
+    )
+    engine = TorchRolloutEngine(None, tokenizer)
+    prompt_text = tokenizer.decode(engine.encode_prompt(record))
+    assert "<think>" in prompt_text
+    assert "</think>" not in prompt_text
+
+    result = math_reward(
+        "42</think>", record, RewardSettings(kind="math", format_bonus=0.1)
+    )
+    assert result.components["format"] == 0.1

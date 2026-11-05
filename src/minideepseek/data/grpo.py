@@ -7,6 +7,7 @@ prompt (roadmap section 4.4).
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,21 @@ class GRPORecord:
             **({"tools": self.tools} if self.tools else {}),
         }
 
+    def resolved_tools(self) -> list[dict[str, Any]] | None:
+        """Return top-level tools or the system-message tool schema."""
+        tools = self.tools
+        if not tools:
+            for message in self.prompt:
+                tools = message.get("tools")
+                if tools:
+                    break
+        if isinstance(tools, str):
+            try:
+                tools = json.loads(tools)
+            except json.JSONDecodeError:
+                return None
+        return tools if isinstance(tools, list) else None
+
 
 def validate_record(record: GRPORecord, tokenizer: MiniDeepSeekTokenizer) -> None:
     if not record.prompt:
@@ -52,7 +68,9 @@ def validate_record(record: GRPORecord, tokenizer: MiniDeepSeekTokenizer) -> Non
         raise ValueError(f"unknown verifier {record.verifier!r}")
     if record.domain not in DOMAINS:
         raise ValueError(f"unknown domain {record.domain!r}")
-    rendered = tokenizer.render_chat(record.prompt, add_generation_prompt=True)
+    rendered = tokenizer.render_chat(
+        record.prompt, add_generation_prompt=True, tools=record.resolved_tools()
+    )
     reference = record.reference_answer
     if reference and reference.strip() and reference.strip() in rendered:
         # A reference answer leaking into the prompt is the classic GRPO bug.

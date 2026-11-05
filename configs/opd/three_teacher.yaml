@@ -2,6 +2,7 @@
 model:
   flavor: mini_60m
   seq_len: 4096
+  index_topk: 1024
   n_mtp_layers: 0
   swiglu_limit: 10.0
   device: auto
@@ -25,6 +26,7 @@ train:
   log_every: 1
   ckpt_every: 50
   resume: checkpoints/pretrain_full/final
+  resume_step: false
   out_dir: checkpoints/opd_three_teacher
 rl:
   method: opd
@@ -41,18 +43,21 @@ teachers:
     checkpoint: checkpoints/grpo_math/final
     flavor: mini_60m
     seq_len: 4096
+    index_topk: 1024
     weight: 0.3333333333
   - name: code_teacher
     key: code
     checkpoint: checkpoints/grpo_code/final
     flavor: mini_60m
     seq_len: 4096
+    index_topk: 1024
     weight: 0.3333333333
   - name: world_teacher
     key: world
     checkpoint: checkpoints/sft_world/final
     flavor: mini_60m
     seq_len: 4096
+    index_topk: 64
     weight: 0.3333333334
 distributed:
   mode: fsdp2

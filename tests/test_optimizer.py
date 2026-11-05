@@ -76,3 +76,21 @@ def test_scheduler_flat_then_cosine():
     assert schedule.factor(2) == 1.0
     assert schedule.factor(4) == 1.0
     assert schedule.factor(9) < 1.0
+
+
+def test_router_gate_and_compressor_ape_grouping(debug_model):
+    optimizer = build_optimizer(debug_model, OptimizerSettings(lr=1e-3))
+    muon_ids = {
+        id(parameter)
+        for group in optimizer.muon.param_groups
+        for parameter in group["params"]
+    }
+    checked_gate = checked_ape = False
+    for name, parameter in debug_model.named_parameters():
+        if name.endswith("feed_forward.router.gate.weight"):
+            assert id(parameter) in muon_ids
+            checked_gate = True
+        if name.endswith(".ape"):
+            assert id(parameter) not in muon_ids
+            checked_ape = True
+    assert checked_gate and checked_ape

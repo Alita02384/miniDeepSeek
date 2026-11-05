@@ -249,7 +249,11 @@ def _distribute_like(full: Tensor, like: DTensor) -> DTensor:
 def _is_adamw_parameter(name: str, parameter: Tensor) -> bool:
     if parameter.ndim < 2:
         return True
-    if any(marker in name for marker in ("tok_embeddings", "lm_head", "router.gate")):
+    if "tok_embeddings" in name or "lm_head" in name:
+        return True
+    # Compressor positional/gate biases are static-looking vectors; the
+    # reference recipe keeps them on AdamW (only wkv/wgate are Muon).
+    if name.endswith(".ape"):
         return True
     # mHC static biases / gating factors use AdamW; hc_fn is a learned matrix.
     if "hc_base" in name or "hc_scale" in name:

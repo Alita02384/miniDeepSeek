@@ -21,6 +21,7 @@ train:
   steps: 1
   log_every: 1
   resume: checkpoints/debug_sft/final
+  resume_step: false
   out_dir: checkpoints/debug_grpo
 rl:
   method: grpo

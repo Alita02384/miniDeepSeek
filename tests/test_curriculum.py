@@ -56,3 +56,20 @@ def test_curriculum_stage_config_overrides(tmp_path):
     assert config.train.schedule_steps == 1000
     assert config.train.resume == "prev/final"
     assert config.train.out_dir.endswith("stage_01_seq4096")
+
+
+def test_curriculum_stage_overrides_index_topk(tmp_path):
+    base = _config()
+    stage = CurriculumStage(
+        seq_len=8192,
+        tokenized_path="stage8k.npz",
+        until_step=100,
+        index_topk=2048,
+    )
+    config = _stage_config(
+        base, stage, out_dir=tmp_path, index=2, resume="prev/final", schedule_steps=100
+    )
+    assert config.model.index_topk == 2048
+    # A new stage has its own dataset; do not skip its batches using the
+    # previous stage's data counter.
+    assert config.train.resume_data is False

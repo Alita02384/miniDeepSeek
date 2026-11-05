@@ -59,20 +59,6 @@ class DeepSeekV4TransformerBlock(nn.Module):
         )
         self.hc_post = HcPost()
 
-    def collect_indexer_loss(self) -> torch.Tensor | None:
-        """Sum the CSA indexer distillation losses from the last forward."""
-        losses = [
-            layer.attention.last_indexer_loss
-            for layer in self.layers.values()
-            if getattr(layer.attention, "last_indexer_loss", None) is not None
-        ]
-        if not losses:
-            return None
-        total = losses[0]
-        for loss in losses[1:]:
-            total = total + loss
-        return total
-
     def init_weights(self) -> None:
         self.attention.init_weights()
         nn.init.ones_(self.attention_norm.weight)
@@ -114,20 +100,6 @@ class MTPBlock(DeepSeekV4TransformerBlock):
         self.h_proj = nn.Linear(dim, dim, bias=False)
         self.mtp_norm = RMSNorm(dim, config.norm_eps)
         self.hc_head = HcHead(dim, config.hc_mult, config.norm_eps, config.hc_eps)
-
-    def collect_indexer_loss(self) -> torch.Tensor | None:
-        """Sum the CSA indexer distillation losses from the last forward."""
-        losses = [
-            layer.attention.last_indexer_loss
-            for layer in self.layers.values()
-            if getattr(layer.attention, "last_indexer_loss", None) is not None
-        ]
-        if not losses:
-            return None
-        total = losses[0]
-        for loss in losses[1:]:
-            total = total + loss
-        return total
 
     def init_weights(self) -> None:
         super().init_weights()

@@ -241,3 +241,81 @@ def test_extended_quality_filters():
     good_reasons = score_text(good_math, domain="math", config=config).reasons
     assert "low_formula_density" not in good_reasons
     assert "missing_answer_marker" not in good_reasons
+
+
+def test_global_batch_tokens_are_split_by_world():
+    from minideepseek.train.run import _per_rank_tokens
+
+    assert _per_rank_tokens(256, 1) == 256
+    assert _per_rank_tokens(256, 2) == 128
+    assert _per_rank_tokens(3, 8) == 1
+    assert _per_rank_tokens(None, 8) is None
+
+
+def test_flat_dataset_sidecars_are_memmapped(tmp_path):
+    import numpy as np
+
+    from minideepseek.data.io import load_flat_dataset, save_flat_dataset
+
+    path = tmp_path / "data.npz"
+    save_flat_dataset(
+        path,
+        input_ids=np.arange(16, dtype=np.int32),
+        positions=np.arange(16, dtype=np.int32),
+        target_mask=np.ones(16, dtype=bool),
+        offsets=np.asarray([0, 16], dtype=np.int64),
+        meta={"format": "test"},
+    )
+    arrays = load_flat_dataset(path)
+    assert all(isinstance(array, np.memmap) for array in arrays)
+    assert arrays[0].dtype == np.int32
+
+
+def test_sft_tool_record_keeps_tool_schema(tmp_path):
+    from minideepseek.data.sft import SFTDataset, build_sft_dataset, encode_sft_record
+
+    tools = json.dumps(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_exchange_rate",
+                    "description": "query rate",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+    tool_calls = json.dumps(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_exchange_rate",
+                    "arguments": "{\"from\": \"USD\"}",
+                },
+            }
+        ]
+    )
+    record = {
+        "conversations": [
+            {"role": "system", "content": "", "tools": tools},
+            {"role": "user", "content": "rate?"},
+            {"role": "assistant", "content": "", "tool_calls": tool_calls},
+            {"role": "tool", "content": "7.2"},
+            {"role": "assistant", "content": "7.2"},
+        ]
+    }
+    tokenizer = load_tokenizer()
+    encoded = encode_sft_record(record, tokenizer, seq_len=2048)
+    assert encoded is not None
+    text = tokenizer.decode(encoded[0])
+    assert "# Tools" in text
+    assert "get_exchange_rate" in text
+
+    source = tmp_path / "tool.jsonl"
+    source.write_text(json.dumps(record, ensure_ascii=False) + "\n")
+    output = tmp_path / "tool.npz"
+    meta = build_sft_dataset([source], output, seq_len=2048)
+    assert meta["examples"] == 1
+    assert len(SFTDataset(output)) == 1

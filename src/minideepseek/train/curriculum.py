@@ -40,6 +40,7 @@ class CurriculumStage(BaseConfig):
     batch_tokens: int | None = None
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
+    index_topk: int | None = None
 
 
 @dataclass
@@ -75,6 +76,8 @@ def validate_stages(stages: list[CurriculumStage], *, max_context: int = 8192) -
             raise ValueError(f"stage {index}: batch_tokens must be positive")
         if stage.batch_warmup_ratio is not None and not 0 <= stage.batch_warmup_ratio <= 1:
             raise ValueError(f"stage {index}: batch_warmup_ratio must be in [0, 1]")
+        if stage.index_topk is not None and stage.index_topk <= 0:
+            raise ValueError(f"stage {index}: index_topk must be positive")
         previous_step = stage.until_step
         previous_len = stage.seq_len
 
@@ -90,6 +93,8 @@ def _stage_config(
 ) -> TrainConfig:
     config = TrainConfig.from_dict(base.to_dict())
     config.model.seq_len = int(stage.seq_len)
+    if stage.index_topk is not None:
+        config.model.index_topk = int(stage.index_topk)
     config.data.tokenized_path = stage.tokenized_path
     if stage.batch_tokens is not None:
         config.data.batch_tokens = int(stage.batch_tokens)
@@ -106,6 +111,8 @@ def _stage_config(
     config.train.schedule_steps = int(schedule_steps)
     config.train.out_dir = str(out_dir / f"stage_{index:02d}_seq{stage.seq_len}")
     config.train.resume = resume
+    # Each stage has its own packed dataset/order.
+    config.train.resume_data = False
     return config
 
 

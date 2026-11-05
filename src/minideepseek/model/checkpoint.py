@@ -121,6 +121,24 @@ def save_checkpoint(
     return meta
 
 
+def filter_state_dict_prefixes(
+    state: dict[str, torch.Tensor], prefixes: tuple[str, ...]
+) -> dict[str, torch.Tensor]:
+    """Drop keys matching an explicit prefix (used to load main weights only).
+
+    The V4 MTP heads are training-only; RL/eval checkpoints deliberately build
+    the model with ``n_mtp_layers=0`` and must ignore those keys.  Only
+    explicitly listed prefixes are dropped; all other mismatches stay errors.
+    """
+    if not prefixes:
+        return state
+    return {
+        key: value
+        for key, value in state.items()
+        if not key.startswith(prefixes)
+    }
+
+
 def load_checkpoint(
     directory: str | Path,
     model,
@@ -128,10 +146,12 @@ def load_checkpoint(
     optimizer=None,
     strict: bool = True,
     map_location: str | torch.device = "cpu",
+    ignore_prefixes: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Load a checkpoint saved by :func:`save_checkpoint`."""
     directory = Path(directory)
     state = torch.load(directory / MODEL_FILE, map_location=map_location, weights_only=True)
+    state = filter_state_dict_prefixes(state, ignore_prefixes)
     model.load_state_dict(state, strict=strict)
     if optimizer is not None:
         optimizer_path = directory / OPTIMIZER_FILE
@@ -173,7 +193,9 @@ def export_safetensors(
         tensor = value.detach().cpu().contiguous()
         pointer = tensor.data_ptr()
         if pointer in shared:
-            # safetensors rejects aliased storage; keep one canonical copy.
+            # safetensors rejects aliased storage.  Keep a real copy so tied
+            # embeddings still satisfy a strict state-dict load on import.
+            tensors[key] = tensor.clone()
             continue
         shared[pointer] = key
         tensors[key] = tensor

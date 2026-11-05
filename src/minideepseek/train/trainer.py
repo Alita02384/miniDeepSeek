@@ -102,7 +102,7 @@ class Trainer:
         model: MiniDeepSeekModel,
         train_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]],
         *,
-        val_batches: Iterable[PackedBatch] | None = None,
+        val_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]] | None = None,
         tokenizer_hash: str | None = None,
         run_name: str | None = None,
         distributed: DistributedContext | None = None,
@@ -143,7 +143,15 @@ class Trainer:
             train_batches if callable(train_batches) else (lambda: iter(train_batches))
         )
         self._batch_iter: Iterator[PackedBatch] = iter(self._batch_factory())
-        self._val_iter = iter(val_batches) if val_batches is not None else None
+        self._batches_consumed = 0
+        self._tokens_seen = 0
+        self._val_factory: Callable[[], Iterable[PackedBatch]] | None = (
+            val_batches
+            if callable(val_batches)
+            else (lambda: iter(val_batches))
+            if val_batches is not None
+            else None
+        )
         self._ar_state = (
             AnticipatoryState(
                 AnticipatoryConfig(
@@ -174,10 +182,12 @@ class Trainer:
     # -- data -----------------------------------------------------------------
     def _next_batch(self) -> PackedBatch:
         try:
-            return next(self._batch_iter)
+            batch = next(self._batch_iter)
         except StopIteration:
             self._batch_iter = iter(self._batch_factory())
-            return next(self._batch_iter)
+            batch = next(self._batch_iter)
+        self._batches_consumed += 1
+        return batch
 
     # -- distributed ----------------------------------------------------------
     @contextlib.contextmanager
@@ -252,9 +262,13 @@ class Trainer:
             return record
         self._spike_count += 1
         if self.config.train.loss_spike_auto_ar and self._ar_state is not None:
+            ar_steps = min(
+                int(self.config.train.loss_spike_ar_steps),
+                int(self._ar_state.config.max_steps),
+            )
             self._ar_force_until = max(
                 self._ar_force_until,
-                self.step + int(self.config.train.loss_spike_ar_steps),
+                self.step + ar_steps,
             )
         if (
             self.config.train.loss_spike_rollback
@@ -420,6 +434,7 @@ class Trainer:
                 micro_metrics.append(
                     self._forward_backward(batch, mtp_weight, routing_record)
                 )
+        self._tokens_seen += sum(m.tokens for m in micro_metrics)
         # θ_t is still current here; prefetch step t+1's batches with it.
         self._prefetch_step(accum)
         if self.dist.enabled and self.dist.mode == "ddp":
@@ -428,9 +443,12 @@ class Trainer:
         self._sync_expert_usage()
         update_expert_biases(self.model.model)
         lr_factor = self.scheduler.step(self.step)
-        self.optimizer.step()
+        # Record theta_t *before* the optimizer update: AnticipatoryState
+        # labels this snapshot with the completed step and later reads
+        # ``step - delta`` as the stale gate set.
         if self._ar_state is not None:
             self._ar_state.observe_step(self.model.model)
+        self.optimizer.step()
 
         averaged = StepMetrics(
             loss=_mean(m.loss + m.balance_loss for m in micro_metrics),
@@ -471,13 +489,15 @@ class Trainer:
                 self.config.train.ckpt_every > 0
                 and (self.step + 1) % self.config.train.ckpt_every == 0
             ):
-                self.save(name=f"step_{self.step + 1:06d}")
+                self.save(name=f"step_{self.step + 1:06d}", step=self.step + 1)
             if (
                 self.config.train.val_every > 0
-                and self._val_iter is not None
+                and self._val_factory is not None
                 and (self.step + 1) % self.config.train.val_every == 0
             ):
-                val = self.evaluate(self._val_iter, max_steps=self.config.train.val_steps)
+                val = self.evaluate(
+                    self._val_factory(), max_steps=self.config.train.val_steps
+                )
                 if self.logger is not None:
                     self.logger.log(self.step, {"val_loss": val["loss"]}, echo=True)
             self.step += 1
@@ -489,11 +509,7 @@ class Trainer:
                 "first_loss": self._first_loss,
                 "last_loss": self._last_loss,
                 "wall_seconds": round(time.time() - started, 3),
-                "tokens": (
-                    sum(entry.get("tokens", 0) for entry in self.logger.history)
-                    if self.logger is not None
-                    else 0
-                ),
+                "tokens": self._tokens_seen,
             }
         )
         return summary
@@ -518,8 +534,15 @@ class Trainer:
         return {"loss": sum(losses) / len(losses), "tokens": tokens}
 
     # -- checkpoints ----------------------------------------------------------
-    def save(self, name: str = "final", *, directory: str | Path | None = None) -> Path:
+    def save(
+        self,
+        name: str = "final",
+        *,
+        directory: str | Path | None = None,
+        step: int | None = None,
+    ) -> Path:
         path = Path(directory or self.config.train.out_dir) / name
+        save_step = self.step if step is None else int(step)
         if self.dist.enabled:
             state = gather_model_state_dict(self.model.model)
             optim_state = gather_optimizer_state_dict(self.model.model, self.optimizer)
@@ -529,11 +552,16 @@ class Trainer:
                     path,
                     self.model,
                     optimizer=self.optimizer,
-                    step=self.step,
+                    step=save_step,
                     config=self.config.to_dict(),
                     tokenizer_hash=self.tokenizer_hash,
                     seed=self.config.model.seed,
-                    extra={"run_name": self.run_name, "flavor": self.config.model.flavor},
+                    extra={
+                        "run_name": self.run_name,
+                        "flavor": self.config.model.flavor,
+                        "index_topk": self.model.current_index_topk(),
+                        "data_batches": self._batches_consumed,
+                    },
                     state_dict=state,
                     optimizer_state=optim_state,
                 )
@@ -543,11 +571,16 @@ class Trainer:
                 path,
                 self.model,
                 optimizer=self.optimizer,
-                step=self.step,
+                step=save_step,
                 config=self.config.to_dict(),
                 tokenizer_hash=self.tokenizer_hash,
                 seed=self.config.model.seed,
-                extra={"run_name": self.run_name, "flavor": self.config.model.flavor},
+                extra={
+                    "run_name": self.run_name,
+                    "flavor": self.config.model.flavor,
+                    "index_topk": self.model.current_index_topk(),
+                    "data_batches": self._batches_consumed,
+                },
             )
         return path
 
@@ -561,7 +594,7 @@ class Trainer:
             )
             load_model_state_dict(self.model.model, state)
             optimizer_path = directory / "optimizer.pt"
-            if optimizer_path.exists():
+            if self.config.train.resume_optimizer and optimizer_path.exists():
                 optim_state = torch.load(
                     optimizer_path, map_location="cpu", weights_only=True
                 )
@@ -570,10 +603,30 @@ class Trainer:
 
             meta = read_metadata(directory)
         else:
+            optimizer = self.optimizer if self.config.train.resume_optimizer else None
             meta = load_checkpoint(
-                directory, self.model, optimizer=self.optimizer, map_location="cpu"
+                directory, self.model, optimizer=optimizer, map_location="cpu"
             )
-        self.step = int(meta.get("step", 0))
+        expected_tokenizer = meta.get("tokenizer_hash")
+        if (
+            expected_tokenizer
+            and self.tokenizer_hash
+            and expected_tokenizer != self.tokenizer_hash
+        ):
+            raise ValueError(
+                "checkpoint tokenizer hash mismatch: "
+                f"{expected_tokenizer} != {self.tokenizer_hash}"
+            )
+        self.step = int(meta.get("step", 0)) if self.config.train.resume_step else 0
+        # Recreate the deterministic order and skip already-consumed
+        # micro-batches; batch-token warmup then continues where it left off.
+        consumed = (
+            int(meta.get("extra", {}).get("data_batches", 0))
+            if self.config.train.resume_data
+            else 0
+        )
+        while self._batches_consumed < consumed:
+            self._next_batch()
         return meta
 
     def close(self) -> dict[str, Any]:
@@ -584,7 +637,7 @@ def build_trainer(
     config: TrainConfig,
     train_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]],
     *,
-    val_batches: Iterable[PackedBatch] | None = None,
+    val_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]] | None = None,
     tokenizer_hash: str | None = None,
     distributed: DistributedContext | None = None,
 ) -> tuple[Trainer, MiniDeepSeekModel]:
@@ -603,7 +656,6 @@ def build_trainer(
         indexer_loss_coeff=config.model.indexer_loss_coeff,
         dtype=config.model.dtype,
     )
-    model.aux_loss_world_size = context.world_size
     if context.enabled:
         model.model = apply_parallelism(
             model.model, context, config.distributed, device=device

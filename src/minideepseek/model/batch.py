@@ -156,21 +156,39 @@ def from_padded(
     b, t = input_ids.shape
     if attention_mask is None:
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+    if target_mask is not None and target_mask.shape != input_ids.shape:
+        raise ValueError("target_mask must have the same shape as input_ids")
     sequences: list[list[int]] = []
-    masks: list[list[bool]] | None = [] if (target_mask is not None or positions is not None) else None
+    masks: list[list[bool]] | None = (
+        [] if (target_mask is not None or positions is not None) else None
+    )
     for row in range(b):
         keep = attention_mask[row].bool()
         if not keep.any():
             continue
-        ids = input_ids[row][keep].tolist()
-        sequences.append(ids)
-        if masks is not None:
-            if target_mask is not None:
-                masks.append(target_mask[row][keep].tolist())
-            else:
-                # Default: first token of each document is not a target.
-                doc_positions = positions[row][keep]
-                masks.append([bool(p > 0) for p in doc_positions.tolist()])
+        row_ids = input_ids[row][keep]
+        doc_positions = positions[row][keep] if positions is not None else None
+        # A row may contain several packed documents (position resets at 0).
+        if doc_positions is None:
+            starts = [0]
+        else:
+            starts = [
+                index
+                for index, value in enumerate(doc_positions.tolist())
+                if value == 0
+            ]
+            if not starts or starts[0] != 0:
+                starts = [0] + starts
+        starts.append(len(row_ids))
+        for start, end in zip(starts, starts[1:], strict=False):
+            if end <= start:
+                continue
+            sequences.append(row_ids[start:end].tolist())
+            if masks is not None:
+                if target_mask is not None:
+                    masks.append(target_mask[row][keep][start:end].tolist())
+                else:
+                    masks.append([False] + [True] * (end - start - 1))
     return from_sequences(sequences, target_masks=masks)
 
 

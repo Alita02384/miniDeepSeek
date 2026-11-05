@@ -38,7 +38,6 @@ from ..train.distributed import (
     gather_optimizer_state_dict,
     init_distributed,
     load_model_state_dict,
-    load_optimizer_state_dict,
 )
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
@@ -102,6 +101,7 @@ class GRPOTrainer:
             raise ValueError("GRPO requires at least one prompt record")
         if config.rl.group_size < 2:
             raise ValueError("GRPO needs group_size >= 2 to compute advantages")
+        _validate_rl_settings(config)
         self.config = config
         self.model = model
         self.tokenizer = tokenizer
@@ -113,9 +113,10 @@ class GRPOTrainer:
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
             warmup_steps=config.schedule.warmup_steps,
-            total_steps=max(config.train.steps, 1),
+            total_steps=max(config.train.schedule_steps or config.train.steps, 1),
             decay=config.schedule.decay,
             min_lr_ratio=config.schedule.min_lr_ratio,
+            decay_start_ratio=config.schedule.decay_start_ratio,
         )
         self.logger = (
             MetricsLogger(config.train.out_dir) if self.dist.is_main else None
@@ -126,7 +127,13 @@ class GRPOTrainer:
         set_seed(config.model.seed)
 
     def _sample_records(self) -> list[GRPORecord]:
-        count = min(max(int(self.config.rl.prompts_per_step), 1), len(self.records))
+        # ``prompts_per_step`` is the global (all-rank) prompt budget.  Each
+        # rank shards it, so the global number of rollouts per optimizer step
+        # stays constant when the DP size changes.
+        world = max(int(self.dist.world_size), 1)
+        count = min(
+            max(int(self.config.rl.prompts_per_step) // world, 1), len(self.records)
+        )
         indices = list(range(len(self.records)))
         self.rng.shuffle(indices)
         return [self.records[index] for index in indices[:count]]
@@ -268,6 +275,9 @@ class GRPOTrainer:
         )
         self.scheduler.step(self.step_index)
         self.optimizer.step()
+        stats.rollout_weight_version = self.engine.sync_weights(
+            self.model.state_dict()
+        )
         stats.lr = float(self.optimizer.param_groups[0]["lr"])
         return stats.as_dict()
 
@@ -284,15 +294,16 @@ class GRPOTrainer:
                 self.config.train.ckpt_every > 0
                 and (self.step_index + 1) % self.config.train.ckpt_every == 0
             ):
-                self.save(f"step_{self.step_index + 1:06d}")
+                self.save(f"step_{self.step_index + 1:06d}", step=self.step_index + 1)
             self.step_index += 1
         self.save("final")
         summary = self.logger.summary() if self.logger is not None else {}
         summary["steps_run"] = self.step_index
         return summary
 
-    def save(self, name: str = "final") -> Path:
+    def save(self, name: str = "final", *, step: int | None = None) -> Path:
         path = Path(self.config.train.out_dir) / name
+        save_step = self.step_index if step is None else int(step)
         if self.dist.enabled:
             state = gather_model_state_dict(self.model.model)
             optim_state = gather_optimizer_state_dict(self.model.model, self.optimizer)
@@ -302,11 +313,15 @@ class GRPOTrainer:
                     path,
                     self.model,
                     optimizer=self.optimizer,
-                    step=self.step_index,
+                    step=save_step,
                     config=self.config.to_dict(),
                     tokenizer_hash=self.tokenizer.sha256,
                     seed=self.config.model.seed,
-                    extra={"run_name": self.run_name, "method": "grpo"},
+                    extra={
+                        "run_name": self.run_name,
+                        "method": "grpo",
+                        "index_topk": self.model.current_index_topk(),
+                    },
                     state_dict=state,
                     optimizer_state=optim_state,
                 )
@@ -316,38 +331,43 @@ class GRPOTrainer:
                 path,
                 self.model,
                 optimizer=self.optimizer,
-                step=self.step_index,
+                step=save_step,
                 config=self.config.to_dict(),
                 tokenizer_hash=self.tokenizer.sha256,
                 seed=self.config.model.seed,
-                extra={"run_name": self.run_name, "method": "grpo"},
+                extra={
+                    "run_name": self.run_name,
+                    "method": "grpo",
+                    "index_topk": self.model.current_index_topk(),
+                },
             )
         return path
 
     def resume(self, directory: str | Path) -> dict[str, Any]:
+        # D22: RL starts from the model weights only.  Loading the SFT/pretrain
+        # optimizer state would also restore its ``base_lr`` and silently
+        # override the RL learning rate.
         if not self.dist.enabled:
-            optimizer = (
-                self.optimizer
-                if (Path(directory) / "optimizer.pt").exists()
-                else None
-            )
             meta = load_checkpoint(
-                directory, self.model, optimizer=optimizer, map_location="cpu"
+                directory,
+                self.model,
+                optimizer=None,
+                map_location="cpu",
+                ignore_prefixes=("mtp_layers.",),
             )
         else:
             import torch as _torch
 
-            from ..model.checkpoint import read_metadata
+            from ..model.checkpoint import filter_state_dict_prefixes, read_metadata
 
             path = Path(directory)
             state = _torch.load(path / "model.pt", map_location="cpu", weights_only=True)
+            state = filter_state_dict_prefixes(state, ("mtp_layers.",))
             load_model_state_dict(self.model.model, state)
-            optim_path = path / "optimizer.pt"
-            if optim_path.exists():
-                optim_state = _torch.load(optim_path, map_location="cpu", weights_only=True)
-                load_optimizer_state_dict(self.model.model, self.optimizer, optim_state)
             meta = read_metadata(path)
-        self.step_index = int(meta.get("step", 0))
+        self.step_index = (
+            int(meta.get("step", 0)) if self.config.train.resume_step else 0
+        )
         return meta
 
 
@@ -405,7 +425,22 @@ def build_grpo_trainer(
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
+        # The rollout engine may have been built from the initial weights;
+        # refresh it after the resume load.
+        trainer.engine.sync_weights(model.state_dict())
     return trainer, model
+
+
+def _validate_rl_settings(config: RLConfig) -> None:
+    """Reject options that the local GRPO trainer would otherwise ignore."""
+    if config.rl.kl_coeff != 0:
+        raise ValueError("GRPO does not implement a KL reference penalty")
+    if config.rl.min_response_tokens != 2:
+        raise ValueError("GRPO does not implement min_response_tokens filtering")
+    if config.train.grad_accum != 1:
+        raise ValueError("GRPO does not implement gradient accumulation")
+    if config.train.val_path:
+        raise ValueError("GRPO does not implement a validation split")
 
 
 def _std(values: list[float]) -> float:

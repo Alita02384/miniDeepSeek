@@ -74,10 +74,6 @@ class MiniDeepSeekModel:
             self.model.init_weights()
         self.model.to(device)
         self.device = torch.device(device)
-        # FSDP averages gradients across data-parallel ranks; the indexer loss
-        # is normalised by local tokens, so divide by world size to recover the
-        # global per-token value.
-        self.aux_loss_world_size = 1
         self.autocast_dtype = _resolve_autocast_dtype(dtype, self.device)
 
     # -- nn.Module delegation -------------------------------------------------
@@ -147,12 +143,11 @@ class MiniDeepSeekModel:
 
     # -- forward --------------------------------------------------------------
     def attention_metadata(self, batch: PackedBatch):
-        max_length = int(batch.positions.max().item()) + 1 if batch.num_tokens else 1
         return self.model._get_attention_metadata(  # noqa: SLF001 - upstream hook
             batch.positions,
             padding_mask=batch.padding_mask,
             max_num_documents=batch.num_documents,
-            max_context_length=max_length,
+            max_context_length=self.max_context_length,
         )
 
     def _indexer_aux_enabled(self) -> bool:
@@ -221,7 +216,10 @@ class MiniDeepSeekModel:
                 mtp_counts[depth] = count
                 total = total + loss * per_depth
         if indexer_loss is not None:
-            indexer_loss = indexer_loss / max(int(self.aux_loss_world_size), 1)
+            # The indexer loss is normalised by local tokens.  FSDP/DDP
+            # averages parameter gradients across DP ranks, which already
+            # turns that into the global per-token value; dividing by the DP
+            # size here would under-weight it by another factor of world_size.
             total = total + indexer_loss
         return LossOutput(
             total=total,
@@ -300,6 +298,17 @@ class MiniDeepSeekModel:
             raise ValueError("at least one prompt is required")
         if any(len(p) == 0 for p in prompts):
             raise ValueError("prompts must not be empty")
+        longest_prompt = max(len(p) for p in prompts)
+        if longest_prompt >= self.max_context_length:
+            raise ValueError(
+                f"prompt length {longest_prompt} leaves no room in context "
+                f"{self.max_context_length}"
+            )
+        max_new_tokens = min(
+            int(max_new_tokens), self.max_context_length - longest_prompt
+        )
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must leave room for at least one token")
         device = self.device
         stop = set(int(t) for t in (stop_token_ids or ()))
         was_training = self.training
@@ -502,7 +511,9 @@ def _sample_tokens(
         )
     probs = F.softmax(filtered, dim=-1)
     ids = torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
-    log_probs = F.log_softmax(filtered, dim=-1)
+    # Sampling may be top-k/top-p filtered, but the policy log-probability used
+    # for GRPO ratios must come from the unfiltered model distribution.
+    log_probs = F.log_softmax(scaled, dim=-1)
     return ids, log_probs.gather(-1, ids.unsqueeze(-1)).squeeze(-1)
 
 

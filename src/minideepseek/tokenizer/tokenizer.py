@@ -229,11 +229,30 @@ def normalize_conversation(item: dict[str, Any]) -> list[dict[str, Any]]:
         reasoning = message.get("reasoning_content")
         if reasoning:
             entry["reasoning_content"] = str(reasoning)
-        tool_calls = message.get("tool_calls")
+        tools = _parse_json_field(message.get("tools"), "tools")
+        if tools:
+            entry["tools"] = tools
+        tool_calls = _parse_json_field(message.get("tool_calls"), "tool_calls")
         if tool_calls:
             entry["tool_calls"] = tool_calls
         normalized.append(entry)
     return normalized
+
+
+def _parse_json_field(value: Any, field: str) -> Any:
+    """MiniMind stores ``tools``/``tool_calls`` as JSON strings."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid {field} JSON: {error}") from error
+    if field == "tool_calls" and not isinstance(value, list):
+        raise ValueError("tool_calls must be a list")
+    if field == "tools" and not isinstance(value, list):
+        raise ValueError("tools must be a list")
+    return value
 
 
 @lru_cache(maxsize=8)

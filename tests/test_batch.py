@@ -62,3 +62,18 @@ def test_batch_validation():
         assert "start at 0" in str(error) or "end at T" in str(error)
     else:
         raise AssertionError("expected a ValueError")
+
+
+def test_from_padded_keeps_multiple_documents_in_one_row():
+    import torch
+
+    batch = from_padded(
+        torch.tensor([[1, 2, 0, 3, 4], [5, 6, 7, 8, 0]]),
+        attention_mask=torch.tensor(
+            [[1, 1, 0, 1, 1], [1, 1, 1, 1, 0]], dtype=torch.bool
+        ),
+        positions=torch.tensor([[0, 1, 0, 0, 1], [0, 1, 0, 1, 0]]),
+    )
+    assert batch.cu_seqlens.tolist() == [0, 2, 4, 6, 8]
+    assert batch.positions.tolist() == [0, 1, 0, 1, 0, 1, 0, 1]
+    assert batch.target_mask.tolist() == [False, True] * 4

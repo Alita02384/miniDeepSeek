@@ -221,6 +221,14 @@ class TrainSettings(BaseConfig):
     mtp_decay_ratio: float = 0.8
     balance_loss_coeff: float = 1e-4
     resume: str | None = None
+    # Skip already-consumed micro-batches when resuming the same dataset.  A
+    # curriculum stage uses a different dataset, so it sets this to false.
+    resume_data: bool = True
+    # Load the optimizer state when resuming the same run.  Stage changes
+    # (pretrain -> SFT) should start a fresh optimizer and set this false.
+    resume_optimizer: bool = True
+    # Stage changes (pretrain -> SFT -> RL) start their own step counter.
+    resume_step: bool = True
     val_path: str | None = None
     val_every: int = 0
     val_steps: int = 10
@@ -307,6 +315,7 @@ class TeacherSettings(BaseConfig):
     key: str | None = None
     weight: float = 1.0
     n_mtp_layers: int = 0
+    index_topk: int | None = None
     dtype: str = "bfloat16"
 
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..config import resolve_device
 from ..data.io import iter_jsonl
-from ..model.checkpoint import load_checkpoint
+from ..model.checkpoint import load_checkpoint, read_metadata
 from ..model.wrapper import build_model
 from ..tokenizer import load_tokenizer
 from .checks import run_all_checks
@@ -28,9 +28,7 @@ def _demo_prompts(tokenizer, count: int = 3) -> list[list[int]]:
             {"role": "user", "content": f"请计算 {index + 1} + {index + 2}，并给出最终答案。"}
         ]
         text = tokenizer.render_chat(prompt, add_generation_prompt=True)
-        ids = tokenizer.encode(text)
-        ids = [value if value < 2048 else value % 2048 for value in ids]
-        prompts.append(ids)
+        prompts.append(tokenizer.encode(text))
     return prompts
 
 
@@ -43,8 +41,6 @@ def _load_prompts(path: str, tokenizer, flavor: str) -> list[list[int]]:
         else:
             text = str(record.get("text", ""))
         ids = tokenizer.encode(text)
-        if flavor in ("debugmodel", "debugmodel_dense"):
-            ids = [value % 2048 for value in ids]
         if ids:
             prompts.append(ids)
     if not prompts:
@@ -69,13 +65,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     tokenizer = load_tokenizer(vocab_limit=2048 if args.flavor.startswith('debugmodel') else None)
+    index_topk = args.index_topk
+    if args.checkpoint and index_topk is None:
+        index_topk = read_metadata(args.checkpoint).get("extra", {}).get("index_topk")
     model = build_model(
         args.flavor,
         seq_len=args.seq_len,
         n_mtp_layers=args.n_mtp_layers,
         device=resolve_device(args.device),
         swiglu_limit=10.0,
-        index_topk=args.index_topk,
+        index_topk=index_topk,
     )
     if args.checkpoint:
         meta = load_checkpoint(args.checkpoint, model)
@@ -93,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
         flavor=args.flavor,
         seq_len=args.seq_len,
         n_mtp_layers=args.n_mtp_layers,
+        index_topk=index_topk,
+        swiglu_limit=10.0,
         max_new_tokens=args.max_new_tokens,
         logprob_threshold=args.logprob_threshold,
         routing_threshold=args.routing_threshold,

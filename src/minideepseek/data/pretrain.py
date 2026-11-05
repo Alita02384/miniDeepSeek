@@ -18,7 +18,7 @@ import torch
 
 from ..model.batch import PackedBatch
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
-from .io import default_text, iter_jsonl, normalize_whitespace, save_flat_dataset
+from .io import default_text, iter_jsonl, load_flat_dataset, normalize_whitespace, save_flat_dataset
 
 DEFAULT_MIN_CHARS = 32
 
@@ -31,11 +31,9 @@ class PackedPretrainDataset:
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
-        archive = np.load(self.path, mmap_mode="r")
-        self.input_ids = archive["input_ids"]
-        self.positions = archive["positions"]
-        self.target_mask = archive["target_mask"]
-        self.offsets = archive["offsets"]
+        self.input_ids, self.positions, self.target_mask, self.offsets = (
+            load_flat_dataset(self.path)
+        )
         self.meta: dict[str, Any] = {}
         meta_path = self.path.with_suffix(".json")
         if meta_path.exists():
@@ -50,9 +48,15 @@ class PackedPretrainDataset:
 
     def __getitem__(self, index: int) -> PackedBatch:
         start, end = int(self.offsets[index]), int(self.offsets[index + 1])
-        input_ids = torch.from_numpy(np.asarray(self.input_ids[start:end], dtype=np.int64))
-        positions = torch.from_numpy(np.asarray(self.positions[start:end], dtype=np.int64))
-        mask = torch.from_numpy(np.asarray(self.target_mask[start:end], dtype=bool))
+        input_ids = torch.from_numpy(
+            np.array(self.input_ids[start:end], dtype=np.int64, copy=True)
+        )
+        positions = torch.from_numpy(
+            np.array(self.positions[start:end], dtype=np.int64, copy=True)
+        )
+        mask = torch.from_numpy(
+            np.array(self.target_mask[start:end], dtype=bool, copy=True)
+        )
         cu_seqlens = _cu_seqlens_from_positions(positions)
         return PackedBatch(
             input_ids=input_ids, positions=positions, target_mask=mask, cu_seqlens=cu_seqlens
