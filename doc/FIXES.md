@@ -14,11 +14,11 @@
 | B5 | RL resume 只加载模型，不加载 optimizer | `rl/grpo.py:346`（`GRPOTrainer.resume`）、`rl/opd.py:299`（`OPDTrainer.resume`） |
 | B6 | context 上限使用模型配置；generate 截断剩余 context | `model/wrapper.py:145`（`attention_metadata`）、`model/wrapper.py:301`（prompt/context 检查）、`model/wrapper.py:308`（`max_new_tokens` 截断） |
 | B7 | 去掉 indexer aux loss 的额外 `/world_size` | `model/wrapper.py:223`（`compute_loss`）；删除 `build_trainer` 中的 `aux_loss_world_size` 赋值 |
-| B8 | 解析工具 JSON、保留/透传 tools、工具 prompt 进 SFT/GRPO/eval | `tokenizer/tokenizer.py:215`（`normalize_conversation`）、`tokenizer/tokenizer.py:242`（`_parse_json_field`）、`data/sft.py:67`（`encode_sft_record`）、`data/sft.py:103`（`build_sft_dataset`）、`data/grpo.py:47`（`resolved_tools`）、`rl/rollout.py`（`encode_prompt`）、`eval/evaluate.py`（生成 prompt）、`data/opd.py`（prompt normalize） |
+| B8 | 解析工具 JSON、保留/透传 tools、工具 prompt 进 SFT/GRPO/eval | `tokenizer/tokenizer.py:215`（`normalize_conversation`）、`tokenizer/tokenizer.py:242`（`_parse_json_field`）、`data/sft.py:67`（`encode_sft_record`）、`data/sft.py:103`（`build_sft_dataset`）、`data/grpo.py:48`（`resolved_tools`）、`rl/rollout.py:72-79`（`encode_prompt`）、`eval/evaluate.py:96-100`、`data/opd.py`（prompt normalize） |
 | B9 | 数据改存 `.npy` sidecar 并真正 mmap；旧 npz 回退 | `data/io.py:71`（`save_flat_dataset`）、`data/io.py:100`（`load_flat_dataset`）、`data/pretrain.py:35`、`data/sft.py:34` |
 | B10 | top-k 配置对齐/curriculum 覆盖/运行期 top-k 入 meta 并被 eval/export/teacher 使用 | `train/curriculum.py:43,96`、`config.py:129`（TeacherSettings）、`train/trainer.py:559,578`（`index_topk` extra）、`rl/grpo.py:321,339`、`rl/opd.py:274,292`、`model/hf/export.py:110`、`eval/evaluate.py:55`、`rl/opd.py:343`、`configs/{grpo,eval,opd}/*.yaml:5`、`configs/pretrain/length_curriculum.yaml:26` |
 | B11 | HF export 从 meta 回退可选参数，优先运行期 top-k | `model/hf/export.py:97`（`export_checkpoint`）、`model/hf/export.py:110-115` |
-| B12 | 周期 checkpoint 记录已完成步数 | `train/trainer.py:486`（周期 save）、`train/trainer.py:533`（`save(step=...)`）、`rl/grpo.py:278`/`rl/opd.py`（同步） |
+| B12 | 周期 checkpoint 记录已完成步数 | `train/trainer.py:486`（周期 save）、`train/trainer.py:533`（`save(step=...)`）、`rl/grpo.py:297`、`rl/opd.py:250` |
 | B13 | resume 校验 tokenizer hash；训练入口校验 dataset meta | `train/trainer.py:583`（`resume`）、`train/run.py:148`（`_validate_dataset`）、`train/run.py`（run 中调用） |
 | B14 | 数学答案解析：移除“因此/所以”，优先具体标记并取最后数字 | `rl/reward.py:27`（`_ANSWER_RE`）、`rl/reward.py:47`（`extract_answer`） |
 | B15 | rollout/eval 打开 think；format bonus 检查 `</think>` | `rl/rollout.py:73-78`、`eval/evaluate.py:96-100`、`rl/reward.py:114` |
@@ -30,7 +30,7 @@
 | B22 | tied safetensors 别名 key 写 clone | `model/checkpoint.py:198` |
 | B23 | verify_reference 过滤旧 hash-bias key | `scripts/verify_reference.py:66` |
 | B24 | grpo_math manifest 预算自洽 | `data/manifests/grpo_math.yaml:4` |
-| B29 | from_padded 保留一行内多文档 | `model/batch.py`（`from_padded`） |
+| B29 | from_padded 保留一行内多文档 | `model/batch.py:141`（`from_padded`） |
 | B39 | 阶段切换 resume 不继承 step/optimizer/data | `config.py`（三个 resume 开关）、`train/trainer.py::resume`、`rl/grpo.py::resume`、`rl/opd.py::resume` |
 | B28 | summary tokens 统计所有 step | `train/trainer.py:147,433,508` |
 | B33 | 删除 block 级不存在的 `collect_indexer_loss` | `model/model.py`（block/MTP 方法删除，仅保留 model 级实现） |
