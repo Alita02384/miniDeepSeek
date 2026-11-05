@@ -33,6 +33,7 @@
 | B26 | RL 前更新 expert bias/清零计数器 | `rl/grpo.py:242,286`、`rl/opd.py:183,230` |
 | B27 | `broadcast_buffers` 配置生效 | `train/distributed.py:166,199` |
 | B29 | from_padded 保留一行内多文档 | `model/batch.py:141`（`from_padded`） |
+| B30 | reference 泄漏检查改为 answer marker/长串 | `data/grpo.py`（`_reference_leaked`/`validate_record`） |
 | B39 | 阶段切换 resume 不继承 step/optimizer/data | `config.py`（三个 resume 开关）、`train/trainer.py::resume`、`rl/grpo.py::resume`、`rl/opd.py::resume` |
 | B28 | summary tokens 统计所有 step | `train/trainer.py:147,433,508` |
 | B33 | 删除 block 级不存在的 `collect_indexer_loss` | `model/model.py`（block/MTP 方法删除，仅保留 model 级实现） |
@@ -321,3 +322,11 @@
 - 改动：`DistributedSettings.broadcast_buffers=false` 现在会跳过 buffer 广播（默认 true 行为不变）；`DataSettings.max_records/max_tokens/tokenizer_dir/domain` 是 prepare 侧/预留字段，训练入口未消费，已在 BUGS.md 标注。
 - 验证：FSDP2 2 进程默认路径通过。
 - 位置：`src/minideepseek/train/distributed.py:166,199`。
+
+## B30 — reference 泄漏误杀
+
+- 状态：已修
+- 改动：短 reference 只有出现在 `final answer` / `answer is/[:]` / `答案是` / `答案为` / `\boxed{` 等 answer marker 之后才判泄漏；长度 ≥8 的 reference 仍按整串出现判断。
+- 验证：新增 `test_reference_leak_does_not_reject_question_digits`；原 `"Answer is 2"` 泄漏测试仍通过。
+- 位置：`src/minideepseek/data/grpo.py`（`_reference_leaked`、`validate_record`）。
+- 风险：没有 marker 的短答案泄漏可能漏检，但避免大量 `1+2` 类问题被误杀。

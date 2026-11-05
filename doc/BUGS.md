@@ -202,7 +202,7 @@
 - B27 `DistributedSettings.broadcast_buffers` 已生效；`DataSettings.max_records/max_tokens/tokenizer_dir/domain` 是 prepare 侧/预留字段，训练入口未消费（状态：部分修复/文档）。
 - B28 `MetricsLogger.summary` 的 `tokens` 只统计 log step（状态：已修，见 FIXES.md）。
 - B29 `from_padded` 丢一行内多文档边界（状态：已修）。
-- B30 `data/grpo.validate_record` 用 `reference in rendered_prompt` 做泄漏判断，短数字答案易误杀（状态：待设计决策）。
+- B30 `data/grpo.validate_record` 用 `reference in rendered_prompt` 做泄漏判断，短数字答案易误杀（状态：已修，改为 answer marker/长串判断）。
 - B31 `data/quality.code_license_ok` 对无 header 文件直接放行，与“剔除未知 header”描述不一致（状态：文档/策略）。
 - B32 13-gram 污染检查、manifest epoch 校验未接训练入口（状态：设计缺口）。
 - B33 `MTPBlock.collect_indexer_loss` 引用不存在的 `self.layers`（状态：已修，删除死方法）。

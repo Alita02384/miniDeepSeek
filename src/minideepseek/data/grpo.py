@@ -8,6 +8,7 @@ prompt (roadmap section 4.4).
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,6 +62,27 @@ class GRPORecord:
         return tools if isinstance(tools, list) else None
 
 
+def _reference_leaked(rendered: str, reference: str | None) -> bool:
+    """Detect an answer leak without rejecting every question containing a digit.
+
+    Short numeric references commonly occur inside the problem statement
+    ("1+2"); only treat them as leaked when they follow an answer marker.  A
+    long reference appearing verbatim is suspicious on its own.
+    """
+    if not reference:
+        return False
+    reference = reference.strip()
+    if not reference or reference not in rendered:
+        return False
+    if len(reference) >= 8:
+        return True
+    marker = re.compile(
+        r"(?i)(?:final\s+answer|answer\s*(?:is|[:：])|答案是|答案为|\\boxed\{)\s*"
+        + re.escape(reference)
+    )
+    return bool(marker.search(rendered))
+
+
 def validate_record(record: GRPORecord, tokenizer: MiniDeepSeekTokenizer) -> None:
     if not record.prompt:
         raise ValueError("GRPO prompt is empty")
@@ -71,8 +93,7 @@ def validate_record(record: GRPORecord, tokenizer: MiniDeepSeekTokenizer) -> Non
     rendered = tokenizer.render_chat(
         record.prompt, add_generation_prompt=True, tools=record.resolved_tools()
     )
-    reference = record.reference_answer
-    if reference and reference.strip() and reference.strip() in rendered:
+    if _reference_leaked(rendered, record.reference_answer):
         # A reference answer leaking into the prompt is the classic GRPO bug.
         raise ValueError("reference answer appears in the rendered prompt")
     for message in record.prompt:

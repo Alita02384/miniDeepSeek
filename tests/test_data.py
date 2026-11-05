@@ -319,3 +319,15 @@ def test_sft_tool_record_keeps_tool_schema(tmp_path):
     meta = build_sft_dataset([source], output, seq_len=2048)
     assert meta["examples"] == 1
     assert len(SFTDataset(output)) == 1
+
+
+def test_reference_leak_does_not_reject_question_digits():
+    from minideepseek.data.grpo import validate_record
+
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "What is 1+2?"}],
+        reference_answer="2",
+        domain="math",
+        verifier="math_exact_match",
+    )
+    validate_record(record, load_tokenizer())
