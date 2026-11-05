@@ -333,3 +333,20 @@
 - **未完成 / 风险**:
   - vLLM/verl GPU 路径未验证；teacher 每 rank 复制；局部 loss 等权平均；
   - teacher hidden-state cache、FIM/长文档仍未做。
+
+## 2026-11-05 修复 hash 层 bias 与哈希表重建
+
+- **commit**: `7d9e5ce` fix: hash 层不再保留负载均衡 bias，哈希表改为确定性生成
+- **做了什么**:
+  - hash 层不再注册 `expert_bias_E`；`update_expert_biases` 只更新 learned
+    层，所有层计数器照常清零；
+  - `tid2eid` 改为由 `(HASH_SEED, layer_id)` + 局部 Generator 确定性生成；
+    `init_weights()` 不再重建表；
+  - 新增/调整 4 个测试；`doc/decisions.md` 记 D34。
+- **实现了什么**: hash 层不再有会漂移的死 bias；同一配置任意进程重建出
+  位级相同的哈希表；load 后调 `init_weights()` 不再改变路由。
+- **验证**: pytest **130 passed**；`ruff check src tests` 通过；
+  `python -m minideepseek.train.smoke --flavor debugmodel --steps 2` →
+  `checkpoint_verified=true, checkpoint_max_abs_diff=0.0`。
+- **未完成 / 风险**: 旧 checkpoint 的 hash 层 bias 键会让 strict 加载报错，
+  需重新生成；多卡 `broadcast_buffers` 仍是必要保险（确定性未在 CUDA 上验）。
