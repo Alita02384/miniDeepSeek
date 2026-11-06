@@ -472,3 +472,41 @@
     fused kernel / activation checkpointing / 分块重算；
   - 旧的“dense attention 对照”（compress_ratios 全 0）未保留；
   - vLLM/verl GPU、NCCL、真实数据训练仍未验证。
+
+## 2026-11-06 训练监控、可视化与实验基建（P0+P1）
+
+- **commit**: `9f44ce0` feat: 增加训练监控、可视化与实验基建；`9a019d6` docs: 增加训练执行计划与监控/基准工具说明
+- **做了什么**:
+  - 扩展 `StepMetrics`/`metrics.jsonl`：`tokens_seen`、`tokens_per_sec`、
+    `step_time_s`、`eta_seconds`、`loss_ema`、`mem_allocated/reserved/peak_mb`、
+    `mtp_loss_d{depth}`、`val_ppl`/`val_main_loss`/`val_mtp_loss` 等；
+    控制台输出从 JSON 改为人类可读单行。
+  - 新增 `src/minideepseek/viz/`：无依赖 SVG 折线图 + 静态 HTML 报告
+    （loss/EMA/val、学习曲线、ppl、lr、grad norm、吞吐、显存、MoE 负载、
+    路由健康、SwiGLU clamp、辅助 loss），`train.report_every` 训练中自动刷新。
+  - NaN/Inf：写 `nan_step_*/`（模型、优化器、`nan_report.json`）后退出；
+    val 最优写 `best/`；`keep_last_ckpt` 清理旧 `step_*`。
+  - 新增 `scripts/benchmark.py`（单卡 / torchrun FSDP2，warmup + CUDA event +
+    峰值显存）、`scripts/scaling_law.py`（幂律拟合 α/R² + Chinchilla 线）、
+    `scripts/plot_training.py`。
+  - 模型/优化器 docstring 补 V4 论文章节号（§2.1/2.2/2.3/2.4/4.2.3）。
+- **实现了什么**:
+  - `pytest -q`：**197 passed**（新增 22 个：metrics 5、viz 7、scaling 5、
+    benchmark 1、trainer 4）。
+  - debug 模型 4 步训练产出 `metrics.jsonl` + `report.html`（11 个面板），
+    打印 tok/s、峰值显存（CPU 无）、ETA；`best/` 与 keep-last 清理生效。
+  - 单进程 benchmark：debugmodel/seq16/batch2 → 246 ms/step、122 tok/s；
+    2 进程 CPU torchrun + FSDP2 路径跑通（1 step，world_size=2）。
+  - NaN 注入测试：`nan_step_000000/nan_report.json` 落盘后按预期抛
+    `NonFiniteLossError`。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → 197 passed, 2 warnings（~40s）
+  - `.venv/bin/torchrun --nproc_per_node=2 scripts/benchmark.py ... --distributed fsdp2`
+    → exit 0（CPU Gloo，1 step）
+  - `python scripts/plot_training.py` / `scaling_law.py` 生成 HTML 并人工检查渲染
+- **未完成 / 风险**:
+  - 多卡 CUDA（NCCL）benchmark 与 `report_every` 长时间训练未实测；
+  - 分布式 NaN 快照需要所有 rank 同时进入 `save()`，单 rank 失败时仍可能
+    等待集合通信（与现有 DDP/FSDP 失败语义一致，未额外处理）；
+  - 可视化刻意不引入 matplotlib，复杂交互（缩放/悬停数值）暂不支持。
