@@ -693,8 +693,8 @@ class Trainer:
                 )
                 mtp_tokens += mtp_count
                 for depth, value in output.mtp.items():
-                    mtp_by_depth[depth] = mtp_by_depth.get(depth, 0.0) + float(
-                        value.detach()
+                    mtp_by_depth[depth] = mtp_by_depth.get(depth, 0.0) + (
+                        float(value.detach()) * mtp_count
                     )
             if output.indexer is not None:
                 totals["indexer"] += float(output.indexer.detach()) * count
