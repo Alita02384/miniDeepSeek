@@ -87,6 +87,8 @@ torchrun --nproc_per_node=8 scripts/benchmark.py \
 
 ### 阶段 1：0.5–1B token 试点
 
+- **先补验证集**：`configs/pretrain/full_6b.yaml` 目前没有 `val_path`/`val_every`，
+  正式跑之前必须准备 `val_path` 并设置 `val_every`，否则 scaling law 没有数据；
 - 至少 8 个 val 点（`val_every` ≤ 总步数的 1/10）；
 - 用 `scripts/scaling_law.py` 拟合，`R² > 0.95`；
 - 若 `α > -0.02`，说明还在数据/学习率主导区，先别外推；

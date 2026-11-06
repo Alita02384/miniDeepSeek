@@ -32,6 +32,8 @@ train:
   grad_accum: 8
   log_every: 10
   ckpt_every: 100
+  keep_last_ckpt: 4
+  report_every: 50
   out_dir: checkpoints/pretrain_pilot
   mtp_weight: 0.3
   mtp_weight_final: 0.1
