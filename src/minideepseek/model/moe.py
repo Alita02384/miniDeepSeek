@@ -1,6 +1,10 @@
 # Copyright (c) 2026 miniDeepSeek contributors.
 # Router/load-balancing design refactored from torchtitan (BSD-3-Clause, Meta).
-"""DeepSeek-V4 MoE: hash/learned router, 6 routed experts, 1 shared expert."""
+"""DeepSeek-V4 MoE: hash/learned router, routed + shared experts.
+
+Implements V4 report §2.1 (MoE, hash routing, sqrt-softplus gate and the
+auxiliary-loss-free bias update).
+"""
 
 from __future__ import annotations
 

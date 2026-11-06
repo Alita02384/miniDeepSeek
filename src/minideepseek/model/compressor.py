@@ -1,6 +1,10 @@
 # Copyright (c) 2026 miniDeepSeek contributors.
 # Refactored from torchtitan/models/deepseek_v4/compressor.py (BSD-3-Clause, Meta).
-"""KV compression and the CSA indexer."""
+"""KV compression and the CSA indexer.
+
+Implements V4 report §2.3.1 (compressed KV state, overlap/non-overlap blocks)
+and the lightning indexer trained through the KL distillation loss.
+"""
 
 from __future__ import annotations
 

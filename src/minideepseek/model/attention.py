@@ -1,7 +1,11 @@
 # Copyright (c) 2026 miniDeepSeek contributors.
 # Attention math refactored from torchtitan/models/deepseek_v4/attention.py
 # and attn_gym sparse gather-attention reference (BSD-3-Clause / Apache-2.0).
-"""DeepSeek-V4 hybrid attention: SWA / CSA / HCA + mHC-compatible projections."""
+"""DeepSeek-V4 hybrid attention: SWA / CSA / HCA + mHC-compatible projections.
+
+Implements V4 report §2.3: sliding-window layers plus compressed attention
+(CSA, §2.3.1) and the low-rank query/output projections shared by both.
+"""
 
 from __future__ import annotations
 

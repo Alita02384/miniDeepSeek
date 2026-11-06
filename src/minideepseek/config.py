@@ -346,6 +346,12 @@ class TrainSettings(BaseConfig):
     grad_accum: int = 1
     log_every: int = 1
     ckpt_every: int = 0
+    #: Number of most-recent ``step_*`` checkpoints to keep; 0 keeps all.
+    keep_last_ckpt: int = 0
+    #: Save ``best/`` whenever validation loss improves.
+    save_best: bool = True
+    #: Rewrite ``report.html`` every N steps (0 disables the live report).
+    report_every: int = 0
     out_dir: str = "checkpoints/debug"
     mtp_weight: float = 0.3
     mtp_weight_final: float | None = None

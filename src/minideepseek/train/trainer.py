@@ -13,6 +13,10 @@ data contracts are the same.
 from __future__ import annotations
 
 import contextlib
+import json
+import math
+import re
+import shutil
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
@@ -57,7 +61,11 @@ from .losses import (
     sequence_balance_loss,
     update_expert_biases,
 )
-from .metrics import MetricsLogger, swiglu_monitor
+from .metrics import (
+    MetricsLogger,
+    memory_stats,
+    swiglu_monitor,
+)
 from .optimizer import build_optimizer
 from .scheduler import IndexTopKSchedule, WarmupDecaySchedule
 from .spike import RollbackSnapshot, SpikeDetector, restore, snapshot
@@ -74,23 +82,68 @@ class StepMetrics:
     grad_norm: float = 0.0
     lr: float = 0.0
     mtp_weight: float = 0.0
+    #: Per-depth MTP losses (``{depth: loss}``); the aggregate ``mtp_loss`` is
+    #: still logged so older dashboards keep working.
+    mtp_losses: dict[int, float] = field(default_factory=dict)
+    #: Cumulative main-head targets consumed by this run.
+    tokens_seen: int = 0
+    step_time_s: float = 0.0
+    tokens_per_sec: float = 0.0
+    eta_seconds: float = 0.0
+    loss_ema: float = 0.0
+    mem_allocated_mb: float | None = None
+    mem_reserved_mb: float | None = None
+    mem_peak_mb: float | None = None
     router: dict[str, float] = field(default_factory=dict)
     swiglu: dict[str, float] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "loss": self.loss,
             "main_loss": self.main_loss,
             "mtp_loss": self.mtp_loss,
             "balance_loss": self.balance_loss,
             "indexer_loss": self.indexer_loss,
             "tokens": self.tokens,
+            "tokens_seen": self.tokens_seen,
             "grad_norm": self.grad_norm,
             "lr": self.lr,
             "mtp_weight": self.mtp_weight,
+            "step_time_s": self.step_time_s,
+            "tokens_per_sec": self.tokens_per_sec,
+            "eta_seconds": self.eta_seconds,
+            "loss_ema": self.loss_ema,
             **self.router,
             **self.swiglu,
         }
+        for depth, value in sorted(self.mtp_losses.items()):
+            payload[f"mtp_loss_d{depth}"] = value
+        # Memory counters are absent on CPU; omit them instead of logging a
+        # misleading zero.
+        for key in ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb"):
+            value = getattr(self, key)
+            if value is not None:
+                payload[key] = value
+        return payload
+
+
+class NonFiniteLossError(RuntimeError):
+    """A microbatch produced a NaN/Inf loss; the trainer saves a snapshot."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        step: int,
+        micro: int,
+        loss: float,
+        metrics: StepMetrics,
+    ):
+        super().__init__(message)
+        self.step = step
+        self.micro = micro
+        self.loss = loss
+        self.metrics = metrics
 
 
 class Trainer:
@@ -178,6 +231,10 @@ class Trainer:
         self._autocast_dtype = torch.bfloat16
         self._first_loss: float | None = None
         self._last_loss: float | None = None
+        self._loss_ema: float | None = None
+        self._step_times: deque[float] = deque(maxlen=50)
+        self.best_val_loss: float = float("inf")
+        self._best_val_step: int | None = None
 
     # -- data -----------------------------------------------------------------
     def _pull_batch(self) -> PackedBatch:
@@ -349,6 +406,8 @@ class Trainer:
         batch: PackedBatch,
         mtp_weight: float,
         routing_record=None,
+        *,
+        micro_index: int = 0,
     ) -> StepMetrics:
         batch = batch.to(self.device)
         accum = max(int(self.config.train.grad_accum), 1)
@@ -385,9 +444,13 @@ class Trainer:
                     )
                 total = loss_output.total + balance_loss
             metrics.main_loss = float(loss_output.main.detach())
+            metrics.mtp_losses = {
+                int(depth): float(value.detach())
+                for depth, value in loss_output.mtp.items()
+            }
             metrics.mtp_loss = (
-                float(sum(value.detach() for value in loss_output.mtp.values()) / max(len(loss_output.mtp), 1))
-                if loss_output.mtp
+                float(sum(metrics.mtp_losses.values()) / len(metrics.mtp_losses))
+                if metrics.mtp_losses
                 else 0.0
             )
             metrics.loss = float(loss_output.total.detach())
@@ -420,15 +483,24 @@ class Trainer:
             total, metrics = run_forward()
 
         assert total is not None
+        loss_value = float(total.detach())
         if not torch.isfinite(total):
-            raise RuntimeError(
-                f"non-finite loss at step {self.step}: loss={float(total.detach())}"
+            # Keep the last finite weights on disk: the caller catches this and
+            # writes a snapshot before re-raising.
+            raise NonFiniteLossError(
+                f"non-finite loss at step {self.step} micro {micro_index}: "
+                f"loss={loss_value}",
+                step=self.step,
+                micro=micro_index,
+                loss=loss_value,
+                metrics=metrics,
             )
         (total / accum).backward()
         return metrics
 
     # -- one training step ----------------------------------------------------
     def train_step(self) -> dict[str, Any]:
+        step_started = time.perf_counter()
         self.model.train()
         self._apply_index_topk()
         self._maybe_snapshot()
@@ -441,7 +513,12 @@ class Trainer:
             batch, routing_record = self._next_training_batch()
             with self._gradient_sync(micro == accum - 1):
                 micro_metrics.append(
-                    self._forward_backward(batch, mtp_weight, routing_record)
+                    self._forward_backward(
+                        batch,
+                        mtp_weight,
+                        routing_record,
+                        micro_index=micro,
+                    )
                 )
         self._tokens_seen += sum(m.tokens for m in micro_metrics)
         # θ_t is still current here; prefetch step t+1's batches with it.
@@ -459,6 +536,11 @@ class Trainer:
             self._ar_state.observe_step(self.model.model)
         self.optimizer.step()
 
+        mtp_losses: dict[int, float] = {}
+        for metric in micro_metrics:
+            for depth, value in metric.mtp_losses.items():
+                mtp_losses[depth] = mtp_losses.get(depth, 0.0) + value / len(micro_metrics)
+
         averaged = StepMetrics(
             loss=_mean(m.loss + m.balance_loss for m in micro_metrics),
             main_loss=_mean(m.main_loss for m in micro_metrics),
@@ -469,16 +551,37 @@ class Trainer:
             grad_norm=grad_norm,
             lr=float(self.optimizer.param_groups[0]["lr"]) if self.optimizer.param_groups else 0.0,
             mtp_weight=mtp_weight,
+            mtp_losses=mtp_losses,
             router=_merge_dicts([m.router for m in micro_metrics]),
             swiglu=_merge_dicts([m.swiglu for m in micro_metrics]),
         )
         if self._first_loss is None:
             self._first_loss = averaged.loss
+
+        # -- timing / throughput / memory (per optimizer step) ---------------
+        elapsed = time.perf_counter() - step_started
+        self._step_times.append(elapsed)
+        total_steps = int(self.config.train.schedule_steps or self.config.train.steps)
+        remaining = max(total_steps - self.step - 1, 0)
+        mean_step = sum(self._step_times) / len(self._step_times)
+        world = self.dist.world_size if self.dist.enabled else 1
+        averaged.tokens_seen = self._tokens_seen
+        averaged.step_time_s = elapsed
+        averaged.tokens_per_sec = (averaged.tokens * world / elapsed) if elapsed > 0 else 0.0
+        averaged.eta_seconds = mean_step * remaining
+        self._loss_ema = (
+            averaged.loss
+            if self._loss_ema is None
+            else 0.98 * self._loss_ema + 0.02 * averaged.loss
+        )
+        averaged.loss_ema = self._loss_ema
+        for key, value in memory_stats(self.device).items():
+            setattr(averaged, key, value)
+
         self._last_loss = averaged.loss
         record = averaged.as_dict()
         record["index_topk"] = float(self.model.current_index_topk() or 0)
         record["lr_factor"] = lr_factor
-        record["lr"] = averaged.lr
         record.update(self._handle_spike(averaged.loss))
         return record
 
@@ -487,7 +590,17 @@ class Trainer:
         total_steps = int(steps if steps is not None else self.config.train.steps)
         started = time.time()
         while self.step < total_steps:
-            record = self.train_step()
+            try:
+                record = self.train_step()
+            except NonFiniteLossError as error:
+                snapshot = self._save_nonfinite_snapshot(error)
+                raise NonFiniteLossError(
+                    f"{error}\nnon-finite snapshot: {snapshot}",
+                    step=error.step,
+                    micro=error.micro,
+                    loss=error.loss,
+                    metrics=error.metrics,
+                ) from error
             if (
                 self.logger is not None
                 and self.step % max(self.config.train.log_every, 1) == 0
@@ -499,6 +612,7 @@ class Trainer:
                 and (self.step + 1) % self.config.train.ckpt_every == 0
             ):
                 self.save(name=f"step_{self.step + 1:06d}", step=self.step + 1)
+                self._cleanup_checkpoints()
             if (
                 self.config.train.val_every > 0
                 and self._val_factory is not None
@@ -507,10 +621,27 @@ class Trainer:
                 val = self.evaluate(
                     self._val_factory(), max_steps=self.config.train.val_steps
                 )
+                val_record = {
+                    "val_loss": val["loss"],
+                    "val_ppl": val["ppl"],
+                    "val_main_loss": val["main_loss"],
+                    "val_mtp_loss": val["mtp_loss"],
+                    "val_indexer_loss": val["indexer_loss"],
+                    "val_tokens": val["tokens"],
+                    "tokens_seen": self._tokens_seen,
+                }
                 if self.logger is not None:
-                    self.logger.log(self.step, {"val_loss": val["loss"]}, echo=True)
+                    self.logger.log(self.step, val_record, echo=True)
+                self._maybe_save_best(val["loss"])
+            if (
+                self.config.train.report_every > 0
+                and self.step % self.config.train.report_every == 0
+            ):
+                self._write_report()
             self.step += 1
         self.save(name="final")
+        if self.config.train.report_every > 0:
+            self._write_report()
         summary = self.logger.summary() if self.logger is not None else {}
         summary.update(
             {
@@ -519,28 +650,185 @@ class Trainer:
                 "last_loss": self._last_loss,
                 "wall_seconds": round(time.time() - started, 3),
                 "tokens": self._tokens_seen,
+                "best_val_loss": (
+                    self.best_val_loss if math.isfinite(self.best_val_loss) else None
+                ),
+                "best_val_step": self._best_val_step,
             }
         )
         return summary
 
     @torch.no_grad()
     def evaluate(self, batches: Iterable[PackedBatch], *, max_steps: int = 10) -> dict[str, Any]:
+        """Token-weighted validation loss plus its components.
+
+        Loss values are weighted by the number of main-head targets so short
+        documents cannot dominate the validation number.
+        """
         was_training = self.model.training
         self.model.eval()
-        losses = []
+        totals = {"loss": 0.0, "main": 0.0, "mtp": 0.0, "indexer": 0.0}
+        mtp_by_depth: dict[int, float] = {}
         tokens = 0
+        mtp_tokens = 0
+        batches_seen = 0
         for index, batch in enumerate(batches):
             if index >= max_steps:
                 break
             batch = batch.to(self.device)
             output = self.model.compute_loss(batch, mtp_weight=self._mtp_weight())
-            losses.append(float(output.total.detach()))
-            tokens += output.main_token_count
+            count = int(output.main_token_count)
+            if count <= 0:
+                continue
+            batches_seen += 1
+            tokens += count
+            totals["loss"] += float(output.total.detach()) * count
+            totals["main"] += float(output.main.detach()) * count
+            if output.mtp:
+                mtp_count = max(sum(output.mtp_token_count.values()), 1)
+                totals["mtp"] += (
+                    sum(float(value.detach()) for value in output.mtp.values())
+                    / len(output.mtp)
+                    * mtp_count
+                )
+                mtp_tokens += mtp_count
+                for depth, value in output.mtp.items():
+                    mtp_by_depth[depth] = mtp_by_depth.get(depth, 0.0) + float(
+                        value.detach()
+                    )
+            if output.indexer is not None:
+                totals["indexer"] += float(output.indexer.detach()) * count
         if was_training:
             self.model.train()
-        if not losses:
-            return {"loss": float("nan"), "tokens": 0}
-        return {"loss": sum(losses) / len(losses), "tokens": tokens}
+        if tokens == 0:
+            return {
+                "loss": float("nan"),
+                "main_loss": float("nan"),
+                "mtp_loss": float("nan"),
+                "indexer_loss": float("nan"),
+                "ppl": float("nan"),
+                "tokens": 0,
+                "batches": 0,
+                "mtp_losses": {},
+            }
+        loss = totals["loss"] / tokens
+        main_loss = totals["main"] / tokens
+        return {
+            "loss": loss,
+            # Perplexity is reported on the main LM head only: the training
+            # objective also contains MTP/indexer terms, which would make
+            # ``exp(loss)`` hard to compare with the literature.
+            "ppl": math.exp(min(main_loss, 20.0)),
+            "main_loss": main_loss,
+            "mtp_loss": totals["mtp"] / max(mtp_tokens, 1),
+            "indexer_loss": totals["indexer"] / tokens,
+            "tokens": tokens,
+            "batches": batches_seen,
+            "mtp_losses": {
+                depth: value / max(mtp_tokens, 1) for depth, value in mtp_by_depth.items()
+            },
+        }
+
+    def _write_report(self) -> None:
+        """Refresh ``report.html`` from the in-memory metric history."""
+        if self.logger is None or not self.logger.history:
+            return
+        try:
+            from ..viz.report import build_report
+
+            build_report(
+                self.logger.history,
+                Path(self.config.train.out_dir) / "report.html",
+                title=f"miniDeepSeek · {self.run_name}",
+                meta={
+                    "model": self.config.model.flavor,
+                    "step": self.step,
+                    "tokens_seen": self._tokens_seen,
+                    "device": str(self.device),
+                },
+            )
+        except Exception as error:  # pragma: no cover - report must never kill training
+            print(f"failed to write training report: {error}", flush=True)
+
+    def _maybe_save_best(self, val_loss: float) -> None:
+        """Persist ``best`` when validation improves; no-op when disabled."""
+        if not self.config.train.save_best or not math.isfinite(val_loss):
+            return
+        if val_loss >= self.best_val_loss:
+            return
+        self.best_val_loss = val_loss
+        self._best_val_step = self.step + 1
+        self.save(
+            name="best",
+            step=self.step + 1,
+            extra={
+                "val_loss": val_loss,
+                "best_val_loss": self.best_val_loss,
+                "best_val_step": self._best_val_step,
+            },
+        )
+
+    def _save_nonfinite_snapshot(self, error: NonFiniteLossError) -> Path:
+        """Write the last finite weights plus a JSON diagnostic before raising.
+
+        The optimizer state is included so a post-mortem can replay the exact
+        update history; parameters themselves are still the pre-update values
+        because the failure happens during backward.
+        """
+        name = f"nan_step_{error.step:06d}"
+        path = Path(self.config.train.out_dir) / name
+        try:
+            self.save(
+                name=name,
+                step=error.step,
+                extra={
+                    "nonfinite": {
+                        "step": error.step,
+                        "micro": error.micro,
+                        "loss": error.loss,
+                    },
+                    "best_val_loss": (
+                        self.best_val_loss if math.isfinite(self.best_val_loss) else None
+                    ),
+                },
+            )
+        except Exception as save_error:  # pragma: no cover - disk/permission failures
+            print(f"failed to save non-finite snapshot: {save_error}", flush=True)
+        report = {
+            "step": error.step,
+            "micro": error.micro,
+            "loss": error.loss,
+            "metrics": error.metrics.as_dict(),
+            "recent_history": getattr(self.logger, "history", [])[-10:],
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "nan_report.json").write_text(
+                json.dumps(report, indent=2, ensure_ascii=False, default=str)
+            )
+        except OSError as write_error:  # pragma: no cover
+            print(f"failed to write non-finite report: {write_error}", flush=True)
+        return path
+
+    def _cleanup_checkpoints(self) -> None:
+        """Keep only the most recent ``keep_last_ckpt`` periodic checkpoints."""
+        keep = int(self.config.train.keep_last_ckpt)
+        if keep <= 0 or not self.dist.is_main:
+            return
+        out_dir = Path(self.config.train.out_dir)
+        if not out_dir.is_dir():
+            return
+        periodic = sorted(
+            (
+                child
+                for child in out_dir.iterdir()
+                if child.is_dir() and re.fullmatch(r"step_\d+", child.name)
+            ),
+            key=lambda path: int(path.name.split("_")[1]),
+        )
+        for old in periodic[:-keep]:
+            shutil.rmtree(old, ignore_errors=True)
 
     # -- checkpoints ----------------------------------------------------------
     def save(
@@ -549,9 +837,21 @@ class Trainer:
         *,
         directory: str | Path | None = None,
         step: int | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> Path:
         path = Path(directory or self.config.train.out_dir) / name
         save_step = self.step if step is None else int(step)
+        payload: dict[str, Any] = {
+            "run_name": self.run_name,
+            "flavor": self.config.model.flavor,
+            "index_topk": self.model.current_index_topk(),
+            "data_batches": self._batches_consumed,
+            "best_val_loss": (
+                self.best_val_loss if math.isfinite(self.best_val_loss) else None
+            ),
+        }
+        if extra:
+            payload.update(extra)
         if self.dist.enabled:
             state = gather_model_state_dict(self.model.model)
             optim_state = gather_optimizer_state_dict(self.model.model, self.optimizer)
@@ -565,12 +865,7 @@ class Trainer:
                     config=self.config.to_dict(),
                     tokenizer_hash=self.tokenizer_hash,
                     seed=self.config.model.seed,
-                    extra={
-                        "run_name": self.run_name,
-                        "flavor": self.config.model.flavor,
-                        "index_topk": self.model.current_index_topk(),
-                        "data_batches": self._batches_consumed,
-                    },
+                    extra=payload,
                     state_dict=state,
                     optimizer_state=optim_state,
                 )
@@ -584,12 +879,7 @@ class Trainer:
                 config=self.config.to_dict(),
                 tokenizer_hash=self.tokenizer_hash,
                 seed=self.config.model.seed,
-                extra={
-                    "run_name": self.run_name,
-                    "flavor": self.config.model.flavor,
-                    "index_topk": self.model.current_index_topk(),
-                    "data_batches": self._batches_consumed,
-                },
+                extra=payload,
             )
         return path
 
@@ -627,10 +917,15 @@ class Trainer:
                 f"{expected_tokenizer} != {self.tokenizer_hash}"
             )
         self.step = int(meta.get("step", 0)) if self.config.train.resume_step else 0
+        saved_extra = meta.get("extra", {}) or {}
+        best_val = saved_extra.get("best_val_loss")
+        if best_val is not None:
+            self.best_val_loss = float(best_val)
+            self._best_val_step = saved_extra.get("best_val_step")
         # Recreate the deterministic order and skip already-consumed
         # micro-batches; batch-token warmup then continues where it left off.
         consumed = (
-            int(meta.get("extra", {}).get("data_batches", 0))
+            int(saved_extra.get("data_batches", 0))
             if self.config.train.resume_data
             else 0
         )

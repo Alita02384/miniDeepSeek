@@ -307,3 +307,70 @@ def test_stage_transition_keeps_fresh_optimizer_and_data(tmp_path):
     assert all(
         group["base_lr"] == 2e-6 for group in target.optimizer.param_groups
     )
+
+
+def test_best_checkpoint_tracks_validation(tmp_path):
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    val_batches = [from_sequences([[5, 6, 7, 8]])]
+    config = _config(tmp_path, steps=2, val_every=1, val_steps=1)
+    trainer, _model = build_trainer(
+        config, batches, val_batches=val_batches, tokenizer_hash="stub"
+    )
+    summary = trainer.train(2)
+    best = tmp_path / "run" / "best"
+    assert (best / "meta.json").exists()
+    meta = json.loads((best / "meta.json").read_text())
+    assert meta["extra"]["val_loss"] is not None
+    assert summary["best_val_loss"] == meta["extra"]["val_loss"]
+    assert summary["best_val_step"] is not None
+
+
+def test_keep_last_ckpt_prunes_old_directories(tmp_path):
+    batches = [from_sequences([[1, 2, 3]])]
+    config = _config(tmp_path, steps=4, ckpt_every=1, keep_last_ckpt=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(4)
+    retained = sorted(
+        path.name
+        for path in (tmp_path / "run").iterdir()
+        if path.is_dir() and path.name.startswith("step_")
+    )
+    assert retained == ["step_000003", "step_000004"]
+
+
+def test_nonfinite_loss_saves_snapshot(tmp_path, monkeypatch):
+    from minideepseek.train.trainer import NonFiniteLossError
+
+    class _NanLoss:
+        total = torch.tensor(float("nan"), requires_grad=True)
+        main = torch.tensor(float("nan"), requires_grad=True)
+        mtp = {}
+        main_token_count = 1
+        mtp_token_count = {}
+        indexer = None
+
+    batches = [from_sequences([[1, 2, 3]])]
+    config = _config(tmp_path, steps=1, balance_loss_coeff=0.0)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    monkeypatch.setattr(
+        trainer.model, "compute_loss", lambda batch, mtp_weight=0.3: _NanLoss()
+    )
+    with pytest.raises(NonFiniteLossError, match="non-finite"):
+        trainer.train(1)
+    snapshot = tmp_path / "run" / "nan_step_000000"
+    assert (snapshot / "meta.json").exists()
+    report = json.loads((snapshot / "nan_report.json").read_text())
+    assert report["step"] == 0
+    assert "metrics" in report
+
+
+def test_training_report_is_written_during_run(tmp_path):
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    config = _config(tmp_path, steps=2, report_every=1)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+    report = tmp_path / "run" / "report.html"
+    assert report.exists()
+    document = report.read_text(encoding="utf-8")
+    assert "<svg" in document
+    assert "miniDeepSeek" in document

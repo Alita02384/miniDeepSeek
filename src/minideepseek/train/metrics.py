@@ -1,4 +1,4 @@
-"""Training metrics: JSONL logging, gradient norms, and SwiGLU clamp stats."""
+"""Training metrics: JSONL logging, gradient norms, throughput, and SwiGLU stats."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from torch import Tensor
 
 from ..model.nn import LimitedSwiGLU
 
+_MIB = 1024.0 * 1024.0
+
 
 def gradient_norm(model) -> float:
     total = 0.0
@@ -22,6 +24,96 @@ def gradient_norm(model) -> float:
         if parameter.grad is not None:
             total += float(parameter.grad.detach().float().pow(2).sum())
     return math.sqrt(total)
+
+
+def memory_stats(device: torch.device | str) -> dict[str, float]:
+    """Return current/peak accelerator memory in MiB, or ``{}`` on CPU.
+
+    Only the CUDA numbers are reliable by construction; MPS exposes current
+    allocations but not a peak counter, so ``mem_peak_mb`` is omitted there.
+    """
+    device = torch.device(device)
+    stats: dict[str, float] = {}
+    if device.type == "cuda":
+        try:
+            stats = {
+                "mem_allocated_mb": torch.cuda.memory_allocated(device) / _MIB,
+                "mem_reserved_mb": torch.cuda.memory_reserved(device) / _MIB,
+                "mem_peak_mb": torch.cuda.max_memory_allocated(device) / _MIB,
+            }
+        except RuntimeError:  # pragma: no cover - driver/context failures
+            stats = {}
+    elif device.type == "mps" and hasattr(torch, "mps"):  # pragma: no cover - macOS only
+        try:
+            stats = {"mem_allocated_mb": torch.mps.current_allocated_memory() / _MIB}
+        except RuntimeError:
+            stats = {}
+    return {key: round(float(value), 3) for key, value in stats.items()}
+
+
+def reset_peak_memory(device: torch.device | str) -> None:
+    """Reset the CUDA peak-memory counter so a benchmark window starts clean."""
+    if torch.device(device).type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+
+def format_count(value: float) -> str:
+    """Compact human-readable count: 1.2k, 3.4M, 5.6G."""
+    if not math.isfinite(value):
+        return "?"
+    sign = "-" if value < 0 else ""
+    value = abs(float(value))
+    for scale, suffix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
+        if value >= scale:
+            return f"{sign}{value / scale:.2f}{suffix}"
+    return f"{sign}{value:.0f}"
+
+
+def format_duration(seconds: float) -> str:
+    """Compact duration: 45s, 12m, 3.4h, 2.1d."""
+    if not math.isfinite(seconds) or seconds < 0:
+        return "?"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
+def format_metrics(step: int, record: dict[str, Any]) -> str:
+    """One compact, human-first line per log record.
+
+    The JSONL file keeps every field for post-hoc analysis; the console line
+    only surfaces the values an operator actually watches during a run.
+    """
+    parts = [f"step {step:>6d}"]
+    if (loss := record.get("loss")) is not None:
+        text = f"loss {loss:.4f}"
+        if (ema := record.get("loss_ema")) is not None:
+            text += f" (ema {ema:.4f})"
+        parts.append(text)
+    if (val := record.get("val_loss")) is not None:
+        text = f"val {val:.4f}"
+        if (ppl := record.get("val_ppl")) is not None:
+            text += f" ppl {ppl:.1f}"
+        parts.append(text)
+    if (main := record.get("main_loss")) is not None:
+        parts.append(f"main {main:.4f}")
+    if (mtp := record.get("mtp_loss")) is not None and mtp:
+        parts.append(f"mtp {mtp:.4f}")
+    if (lr := record.get("lr")) is not None:
+        parts.append(f"lr {lr:.2e}")
+    if (grad := record.get("grad_norm")) is not None:
+        parts.append(f"|g| {grad:.3f}")
+    if (rate := record.get("tokens_per_sec")) is not None:
+        parts.append(f"{format_count(rate)} tok/s")
+    if (mem := record.get("mem_peak_mb")) is not None:
+        parts.append(f"{mem / 1024:.1f} GiB peak")
+    if (eta := record.get("eta_seconds")) is not None:
+        parts.append(f"ETA {format_duration(eta)}")
+    return " | ".join(parts)
 
 
 @dataclass
@@ -41,7 +133,7 @@ class MetricsLogger:
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         if echo:
-            print(json.dumps(record, ensure_ascii=False), flush=True)
+            print(format_metrics(int(step), record), flush=True)
 
     def summary(self) -> dict[str, Any]:
         if not self.history:

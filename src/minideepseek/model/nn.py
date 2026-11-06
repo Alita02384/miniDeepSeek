@@ -36,7 +36,7 @@ class RMSNorm(nn.RMSNorm):
 
 
 class LimitedSwiGLU(nn.Module):
-    """SwiGLU with the V4 clamp: gate <= limit, |up| <= limit.
+    """SwiGLU with the V4 clamp: gate <= limit, |up| <= limit (report §4.2.3).
 
     ``limit=None`` disables clamping (used by the upstream debug recipe).  The
     activation is an ``nn.Module`` so the clamp monitor can instrument it.

@@ -1,6 +1,10 @@
 # Copyright (c) 2026 miniDeepSeek contributors.
 # Refactored from torchtitan/models/deepseek_v4/mhc.py (BSD-3-Clause, Meta).
-"""Multi-branch HC mixing (mHC): pre/post mixing and Sinkhorn normalization."""
+"""Multi-branch HC mixing (mHC): pre/post mixing and Sinkhorn normalization.
+
+Implements V4 report §2.2; the Sinkhorn iteration follows the official
+reference implementation (20 iterations, log-space).
+"""
 
 from __future__ import annotations
 

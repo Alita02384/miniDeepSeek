@@ -1,11 +1,11 @@
 """Hybrid Muon + AdamW optimizer.
 
-V4 trains most hidden matrices with Muon (Newton-Schulz orthogonalization) and
-embeddings, the LM head, norms, biases, and router gates with AdamW.  torchtitan's
-``DistMuon`` is tied to FlexShard/FSDP meshes, which are unavailable on the CPU
-debug path, so this module implements the same update rule in ~80 lines.  It is
-deliberately small and testable; the large-scale path can swap in torchtitan's
-optimizer without changing the trainer interface.
+Implements the V4 report §2.4 recipe: Muon (Newton-Schulz orthogonalization)
+for hidden matrices, AdamW for embeddings, the LM head, norms, biases and router
+gates.  torchtitan's ``DistMuon`` is tied to FlexShard/FSDP meshes, which are
+unavailable on the CPU debug path, so this module implements the same update rule
+in ~80 lines.  It is deliberately small and testable; the large-scale path can
+swap in torchtitan's optimizer without changing the trainer interface.
 """
 
 from __future__ import annotations
