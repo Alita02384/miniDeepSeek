@@ -1,8 +1,8 @@
 # Domain GRPO. MTP is disabled for RL: the loss is defined on the main head.
+model_file: configs/model/mini_220m_a80m.yaml
 model:
-  flavor: mini_60m
+  flavor: mini_220m_a80m
   seq_len: 4096
-  index_topk: 1024
   n_mtp_layers: 0
   swiglu_limit: 10.0
   device: auto

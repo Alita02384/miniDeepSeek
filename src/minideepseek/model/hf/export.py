@@ -36,6 +36,7 @@ def export_hf(
     *,
     flavor: str,
     seq_len: int = 8192,
+    max_context: int | None = None,
     tie_word_embeddings: bool | None = None,
     swiglu_limit: float | None = 10.0,
     index_topk: int | None = None,
@@ -50,6 +51,7 @@ def export_hf(
     config = MiniDeepSeekConfig(
         flavor=flavor,
         seq_len=seq_len,
+        max_context=max_context,
         n_mtp_layers=0,
         tie_word_embeddings=False,
         swiglu_limit=swiglu_limit,
@@ -105,6 +107,8 @@ def export_checkpoint(checkpoint: str | Path, out_dir: str | Path, **kwargs) -> 
         kwargs["flavor"] = model_cfg.get("flavor")
     if kwargs.get("seq_len") is None:
         kwargs["seq_len"] = model_cfg.get("seq_len")
+    if kwargs.get("max_context") is None:
+        kwargs["max_context"] = model_cfg.get("max_context")
     if kwargs.get("swiglu_limit") is None:
         kwargs["swiglu_limit"] = model_cfg.get("swiglu_limit", 10.0)
     if kwargs.get("index_topk") is None:

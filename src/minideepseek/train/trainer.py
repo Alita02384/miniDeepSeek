@@ -655,14 +655,8 @@ def build_trainer(
     # Seed before construction: every rank must start from identical weights.
     set_seed(config.model.seed)
     model = build_model(
-        config.model.flavor,
-        seq_len=config.model.seq_len,
-        n_mtp_layers=config.model.n_mtp_layers,
+        config.model,
         device=device,
-        tie_word_embeddings=config.model.tie_word_embeddings,
-        swiglu_limit=config.model.swiglu_limit,
-        index_topk=config.model.index_topk,
-        indexer_loss_coeff=config.model.indexer_loss_coeff,
         dtype=config.model.dtype,
     )
     if context.enabled:

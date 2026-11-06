@@ -16,8 +16,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--out")
+    parser.add_argument(
+        "--model-config",
+        default=None,
+        help="model YAML overriding the config's model_file",
+    )
     args = parser.parse_args(argv)
-    config = load_config(EvalConfig, args.config)
+    config = load_config(EvalConfig, args.config, model_file=args.model_config)
     report = evaluate(config)
     if args.out or config.out_path:
         write_report(report, args.out or config.out_path)

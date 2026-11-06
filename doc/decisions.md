@@ -493,3 +493,95 @@
   已消费 micro-batch。
 - **依据**：原 generator 耗尽会抛 StopIteration；val iterator 耗尽后返回 NaN，
   且每次验证的是不同子集。
+
+## 2026-11-06 三个新模型档位与配置外置
+
+### D46. 用 mini_220m_a80m / mini_145m_a60m / mini_60m_dense_d768 取代旧三档
+
+- **原方案**：`mini_60m`（d=640, L=12, 6+1 experts）、`mini_110m`、
+  `mini_200m`（d=1024, L=16）；dense 对照指“去掉 compressor/indexer 的 dense
+  attention”。
+- **实际**：采用 `doc/Parameter_Setting.md` 的三个设计，统一 d=768、L=7、
+  MTP depth 1、tied embeddings、SWA+CSA+HCA：
+  - `mini_220m_a80m`：216,652,538（216.65M）总参 / 82.17M 激活；
+  - `mini_145m_a60m`：145,841,946（145.84M）总参 / 60.91M 激活；
+  - `mini_60m_dense_d768`：60,876,570（60.88M）总参 / 60.88M 激活。
+- **依据**：用户提供的参数设计；实测 `sum(p.numel())` 与设计值一致（误差
+  在舍入范围内）。固定宽度/深度使 220m、145m、dense 三档只改变 FFN/MoE
+  与稀疏度，便于消融。
+- **影响**：`mini_220m_a80m` 成为默认训练模型；旧 `mini_60m/110m/200m`
+  文件删除，`dense_control_1b.yaml` 改为 dense-FFN 对照。旧的“dense attention
+  对照”（compress_ratios 全 0）不再单独保留；需要时可在新 YAML 上改
+  `compress_ratios`。
+
+### D47. 架构数值外置到 configs/model/*.yaml
+
+- **原方案**：`model/config.py` 里的 `_MINI_PRESETS` / `_DEBUG_PRESET`
+  硬编码，训练配置只写 `model.flavor`。
+- **实际**：`configs/model/*.yaml` 是完整的 `ModelSettings`；训练配置可用
+  `model_file:` 指向任意架构文件，`model:` 下的字段覆盖本次运行。CLI
+  增加 `--model-config` 覆盖。未写 `model_file` 时，`model.flavor` 也会解析
+  到同名 YAML（debug 配置因此无需改）。
+- **依据**：以后训练不同参数设计只应改数据，不应改 Python 分支；同时保留
+  flavor 名称用于 checkpoint metadata / HF export / 一致性重载。
+- **影响**：新增架构只需新增 YAML；`build_model_config(flavor)` 仍可用于
+  CLI/测试，按文件加载。`ModelSettings` 默认值仍是 debug 规格，便于直接构造
+  小模型做单测。
+
+### D48. seq_len 与 max_context 分离
+
+- **原方案**：`build_model_config(..., seq_len=X)` 同时把训练长度和
+  RoPE/generation 上限设为 X。
+- **实际**：模型 YAML 同时写 `seq_len: 4096` 与 `max_context: 8192`；
+  `ModelConfig.max_context_length` 取 `max_context`，训练数据仍按 `seq_len`。
+  旧的按 flavor 构建路径在只给 `seq_len` 时仍让 context 跟随它（向后兼容）。
+- **依据**：`doc/Parameter_Setting.md` 的三档都要求 4K 训练、8K 最大上下文；
+  RoPE cache 按 8K 建，训练/评估可按 4K/8K 不同长度运行。
+- **影响**：训练模型生成上限为 8192；HF 导出新增 `max_context` 字段并优先
+  从 checkpoint metadata 读取。
+
+### D49. 单 expert 的 dense 控制固定权重 1.0
+
+- **问题**：原 router 对单 expert 仍返回 `softplus(gate).sqrt() * route_scale`，
+  这不是“等价 dense FFN”，会给 FFN 输出乘一个可学习的缩放。
+- **实际**：`num_experts == 1` 时权重固定为 `route_scale`（模型文件为 1.0），
+  top-k 恒为 0；`sequence_balance_loss` 在 `num_experts <= 1` 时返回 0。
+- **依据**：`doc/Parameter_Setting.md` 明确“单专家，路由权重恒为 1 / 无需
+  负载均衡”。保留 1 个 gate 参数（约 0.6K/层）以复用 MoE 结构，但不再影响
+  前向数值。
+- **影响**：dense 控制组现在严格等价于 SwiGLU FFN；参数统计中 router 仍有
+  少量参数，不影响 60.88M 的舍入结果。
+
+### D50. index top-k 由模型文件派生
+
+- **实际**：模型 YAML 的 `index_topk: null` 表示
+  `min(2048, max(seq_len // 4, 64))`；4K→1024、8K→2048。显式整数（debug
+  model=16）或 `ModelSettings.index_topk` 覆盖优先。训练末期的
+  `index_topk_final` 调度保持不变。
+- **依据**：`doc/Parameter_Setting.md` 的 “1024 @4K / 2048 @8K”；避免在
+  每个 training config 重复写同一个数，也避免 8K 课程忘记改。
+- **影响**：2K 课程阶段派生 512；旧配置里显式 `index_topk: 1024` 已删除，
+  8K stage 仍显式写 2048。
+
+### D51. head_dim=256 的显存风险（未在 GPU 验证）
+
+- **问题**：220m 档为 16 heads × 256 dim；当前 `gather_attention` 是
+  torch 参考实现，会把 `[T, window+topk, head_dim]` 的 KV gather 实体化。
+  4K token 时每层约 2.4GB（bf16），7 层约 17GB；8K 翻倍。多卡切分后可接受，
+  单卡大 batch 或 4 卡 64K tokens/micro-batch 很可能 OOM。
+- **状态**：CPU 上三个配置的 forward/backward 与 1-step 已通过；**未在多卡
+  CUDA 实测**。后续需要 fused gather attention / activation checkpointing /
+  按 token 分块重算中的至少一种，才能按 full_6b 的最终 batch 规模训练 220m。
+- **依据**：`gather_attention` 当前是 correctness-first 的 torch 实现；
+  项目阶段只验证代码逻辑。
+
+### D52. 参数统计 bucket 修复
+
+- **问题**：`parameter_report` 的 `moe_routed/router/shared` 统计了 MTP 层，
+  又从 `mtp` 桶里减一次，`mini_145m_a60m` 的 `attention_and_other` 会变成
+  负数（-4.94M）。
+- **实际**：`moe_*` 只统计主 Transformer 层，`mtp` 统计整个 MTP 栈；
+  各 bucket 相加等于 total。`active_estimate` 仍按文档口径把 MTP routed
+  experts 也按 `top_k/num_experts` 计入稀疏比例（220m=82.17M、
+  145m=60.91M），与设计值一致。
+- **影响**：仅报告数值；训练/checkpoint 不受影响。

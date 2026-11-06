@@ -13,12 +13,16 @@ from minideepseek.model.hf.export import export_hf
 
 
 def test_hf_config_roundtrip():
-    config = MiniDeepSeekConfig(flavor="mini_60m", seq_len=4096, n_mtp_layers=1)
+    config = MiniDeepSeekConfig(
+        flavor="mini_220m_a80m", seq_len=4096, max_context=8192, n_mtp_layers=1
+    )
     rebuilt = MiniDeepSeekConfig.from_dict(config.to_dict())
-    assert rebuilt.flavor == "mini_60m"
+    assert rebuilt.flavor == "mini_220m_a80m"
     assert rebuilt.seq_len == 4096
+    assert rebuilt.max_context == 8192
     assert rebuilt.vocab_size == 6400
     assert rebuilt.to_model_config().n_mtp_layers == 1
+    assert rebuilt.to_model_config().max_context_length == 8192
 
 
 def test_state_dict_prefix_roundtrip(debug_model):

@@ -8,13 +8,13 @@ Run with the V4 debug model (the project's CI model)::
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 
 import torch
 
 from ..config import (
-    ModelSettings,
     OptimizerSettings,
     ScheduleSettings,
     TrainConfig,
@@ -25,6 +25,7 @@ from ..data.pretrain import PackedPretrainDataset
 from ..data.sft import SFTDataset
 from ..model.batch import PackedBatch, from_sequences
 from ..model.checkpoint import load_checkpoint
+from ..model.config import build_model_settings
 from ..model.wrapper import build_model
 from ..tokenizer import load_tokenizer
 from ..train.trainer import build_trainer
@@ -80,22 +81,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     device = resolve_device(args.device)
-    tokenizer = load_tokenizer()
+    tokenizer = load_tokenizer(
+        vocab_limit=2048 if args.flavor == "debugmodel" else None
+    )
     batches, data_meta = build_batches(args, 2048 if args.flavor == "debugmodel" else 6400)
     if len(batches) < args.steps * args.grad_accum:
         raise SystemExit("not enough batches for the requested steps")
 
+    settings = build_model_settings(
+        args.flavor,
+        seq_len=args.seq_len,
+        n_mtp_layers=args.n_mtp_layers,
+        swiglu_limit=10.0,
+        device=args.device,
+        dtype=args.dtype,
+        seed=args.seed,
+        vocab_limit=2048 if args.flavor == "debugmodel" else None,
+    )
+    if args.index_topk is not None:
+        settings = dataclasses.replace(settings, index_topk=args.index_topk)
     config = TrainConfig(
-        model=ModelSettings(
-            flavor=args.flavor,
-            seq_len=args.seq_len,
-            n_mtp_layers=args.n_mtp_layers,
-            swiglu_limit=10.0,
-            index_topk=args.index_topk,
-            device=args.device,
-            dtype=args.dtype,
-            seed=args.seed,
-        ),
+        model=settings,
         optim=OptimizerSettings(lr=args.lr),
         schedule=ScheduleSettings(warmup_steps=1, decay="cosine", min_lr_ratio=0.1),
         train=TrainSettings(
@@ -120,15 +126,7 @@ def main(argv: list[str] | None = None) -> int:
         "data": data_meta,
     }
     if not args.no_verify:
-        reloaded = build_model(
-            args.flavor,
-            seq_len=args.seq_len,
-            n_mtp_layers=args.n_mtp_layers,
-            device=device,
-            swiglu_limit=10.0,
-            index_topk=args.index_topk,
-            dtype=args.dtype,
-        )
+        reloaded = build_model(settings, device=device, dtype=args.dtype)
         load_checkpoint(checkpoint, reloaded)
         batch = batches[0].to(device)
         with torch.no_grad():

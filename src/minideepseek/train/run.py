@@ -260,8 +260,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
     parser.add_argument("--mode", choices=["pretrain", "sft"], default="pretrain")
+    parser.add_argument(
+        "--model-config",
+        default=None,
+        help="model YAML (e.g. configs/model/mini_145m_a60m.yaml); "
+        "overrides the config's model_file",
+    )
     args = parser.parse_args(argv)
-    config = load_config(TrainConfig, args.config)
+    config = load_config(TrainConfig, args.config, model_file=args.model_config)
     report = run(config, args.mode)
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0

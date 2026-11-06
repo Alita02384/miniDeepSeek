@@ -14,7 +14,7 @@ Implementation:
   trainer falls back to a no-grad probe with the stale-gate snapshot.
 
 The probe/prefetch still runs synchronously (no EP communication overlap yet).
-The mechanism is implemented and tested but disabled by default (60M has low
+The mechanism is implemented and tested but disabled by default (small models have low
 spike risk); enable it from the training config with
 ``anticipatory_routing.enabled=true``.
 """

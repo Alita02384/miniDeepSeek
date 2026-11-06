@@ -16,12 +16,15 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from typing import Any
 
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from ..config import ModelSettings
 from .batch import PackedBatch, shift_targets  # noqa: E402
+from .config import UNSET, build_model_config, build_model_config_from_settings
 
 
 @dataclass
@@ -389,69 +392,113 @@ class MiniDeepSeekModel:
 
     # -- reporting ------------------------------------------------------------
     def parameter_report(self) -> dict[str, float]:
-        """Total and active parameter counts, split by component."""
+        """Total and active parameter counts, split by component.
+
+        ``moe_*`` covers the main transformer layers only; ``mtp`` is the whole
+        MTP depth stack, including its experts.  This keeps the buckets
+        additive (no double counting) while ``active_estimate`` follows the
+        project convention of counting MTP routed experts at the same
+        ``top_k / num_experts`` sparsity ratio as the main stack.
+        """
         total = sum(p.numel() for p in self.model.parameters())
-        routed = 0
-        router = 0
-        shared = 0
-        for module in self.model.modules():
-            if hasattr(module, "routed_experts") and hasattr(module, "router"):
+
+        def _moe_parts(modules) -> tuple[int, int, int]:
+            routed = router = shared = 0
+            for module in modules:
                 routed += sum(p.numel() for p in module.routed_experts.parameters())
                 router += sum(p.numel() for p in module.router.parameters())
                 if getattr(module, "shared_experts", None) is not None:
                     shared += sum(p.numel() for p in module.shared_experts.parameters())
+            return routed, router, shared
+
+        main_routed, main_router, main_shared = _moe_parts(
+            layer.feed_forward for layer in self.model.layers.values()
+        )
+        mtp_routed, _mtp_router, _mtp_shared = _moe_parts(
+            layer.feed_forward for layer in self.model.mtp_layers
+        )
         # Attention owns most of what remains; keep it as one bucket.
         embedding = self.model.tok_embeddings.weight.numel()
         lm_head = (
-            self.model.lm_head.weight.numel()
-            if self.model.lm_head is not None
-            and self.model.lm_head.weight is not self.model.tok_embeddings.weight
-            else 0
+            0
+            if self.model.lm_head is None or self.config.tie_word_embeddings
+            else self.model.lm_head.weight.numel()
         )
         mtp = sum(p.numel() for p in self.model.mtp_layers.parameters())
-        other = total - embedding - lm_head - routed - router - shared - mtp
+        other = total - embedding - lm_head - main_routed - main_router - main_shared - mtp
         first_ffn = self.model.layers["0"].feed_forward
         top_k = int(first_ffn.router.top_k)
         n_experts = int(first_ffn.num_experts)
-        active = total - routed * (1.0 - top_k / max(n_experts, 1))
+        active = total - (main_routed + mtp_routed) * (1.0 - top_k / max(n_experts, 1))
         return {
             "total": float(total),
             "active_estimate": float(active),
             "embedding": float(embedding),
             "lm_head": float(lm_head),
             "attention_and_other": float(other),
-            "moe_routed": float(routed),
-            "moe_router": float(router),
-            "moe_shared": float(shared),
+            "moe_routed": float(main_routed),
+            "moe_router": float(main_router),
+            "moe_shared": float(main_shared),
             "mtp": float(mtp),
         }
 
 
 def build_model(
-    flavor: str,
+    source: str | ModelSettings = "mini_220m_a80m",
     *,
-    seq_len: int = 2048,
-    n_mtp_layers: int = 0,
+    seq_len: int | None = None,
+    max_context: int | None = None,
+    n_mtp_layers: int | None = None,
     device: torch.device | str = "cpu",
     tie_word_embeddings: bool | None = None,
-    swiglu_limit: float | None = 10.0,
+    swiglu_limit: Any = UNSET,
     index_topk: int | None = None,
-    indexer_loss_coeff: float = 0.01,
+    indexer_loss_coeff: Any = UNSET,
     init_weights: bool = True,
     dtype: str | torch.dtype | None = None,
 ) -> MiniDeepSeekModel:
-    """Build a miniDeepSeek model for the requested flavor."""
-    from .config import build_model_config
+    """Build a miniDeepSeek model from a bundled flavor or a resolved spec.
 
-    config = build_model_config(
-        flavor,
-        seq_len=seq_len,
-        n_mtp_layers=n_mtp_layers,
-        tie_word_embeddings=tie_word_embeddings,
-        swiglu_limit=swiglu_limit,
-        index_topk=index_topk,
-        indexer_loss_coeff=indexer_loss_coeff,
-    )
+    Passing a :class:`~minideepseek.config.ModelSettings` is the training path:
+    the architecture and run settings were already merged from ``model_file``.
+    A flavor string is a convenience for CLIs/tests and loads
+    ``configs/model/<flavor>.yaml``.
+    """
+    if isinstance(source, ModelSettings):
+        settings = source
+        updates: dict[str, Any] = {}
+        if seq_len is not None:
+            updates["seq_len"] = int(seq_len)
+        if max_context is not None:
+            updates["max_context"] = int(max_context)
+        elif seq_len is not None:
+            updates["max_context"] = int(seq_len)
+        if n_mtp_layers is not None:
+            updates["n_mtp_layers"] = int(n_mtp_layers)
+        if tie_word_embeddings is not None:
+            updates["tie_word_embeddings"] = bool(tie_word_embeddings)
+        if swiglu_limit is not UNSET:
+            updates["swiglu_limit"] = swiglu_limit
+        if index_topk is not None:
+            updates["index_topk"] = int(index_topk)
+        if indexer_loss_coeff is not UNSET:
+            updates["indexer_loss_coeff"] = float(indexer_loss_coeff)
+        if updates:
+            settings = dataclasses.replace(settings, **updates)
+        config = build_model_config_from_settings(settings)
+        if dtype is None:
+            dtype = settings.dtype
+    else:
+        config = build_model_config(
+            source,
+            seq_len=seq_len,
+            max_context=max_context,
+            n_mtp_layers=n_mtp_layers,
+            tie_word_embeddings=tie_word_embeddings,
+            swiglu_limit=swiglu_limit,
+            index_topk=index_topk,
+            indexer_loss_coeff=indexer_loss_coeff,
+        )
     return MiniDeepSeekModel(
         config, device=device, init_weights=init_weights, dtype=dtype
     )

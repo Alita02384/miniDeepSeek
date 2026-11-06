@@ -62,6 +62,11 @@ def sequence_balance_loss(
         if reference is None:
             return torch.zeros(())
         return reference.new_zeros(())
+    if num_experts <= 1:
+        # A single expert is a dense FFN: there is no routing decision to
+        # balance, and a loss term would only perturb the (fixed) expert weight.
+        reference = next(iter(gate_scores.values()))
+        return reference.new_zeros(())
     total = None
     layer_count = 0
     boundaries = cu_seqlens

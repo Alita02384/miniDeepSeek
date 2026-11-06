@@ -1,3 +1,7 @@
+> **2026-11-06 注**：模型档位已改为 `mini_220m_a80m`（默认）、
+> `mini_145m_a60m`、`mini_60m_dense_d768`，见 `doc/decisions.md` D46-D52。
+> 下文保留对原 roadmap（60M 档）的审计结论。
+
 # 路线图实现审计（2026-11-04）
 
 > 对照 `../miniDeepSeek_technical_roadmap.md` 与

@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import torch
 
+from minideepseek.config import ModelSettings, load_config
 from minideepseek.model import build_model, from_sequences
-from minideepseek.model.config import MODEL_FLAVORS, build_model_config
+from minideepseek.model.config import (
+    MODEL_FLAVORS,
+    MoEConfig,
+    build_model_config,
+    build_model_config_from_settings,
+)
 from minideepseek.model.model import DeepSeekV4Model
+from minideepseek.model.moe import MoE
 from minideepseek.train.metrics import iter_limited_swiglu, swiglu_monitor
 
 
@@ -72,13 +79,20 @@ def test_generation_is_deterministic_with_greedy(debug_model):
 
 
 def test_mini_flavors_are_registered():
-    for flavor in ("mini_60m", "mini_110m", "mini_200m", "mini_60m_dense", "debugmodel"):
+    for flavor in (
+        "mini_220m_a80m",
+        "mini_60m_dense_d768",
+        "mini_145m_a60m",
+        "debugmodel",
+    ):
         assert flavor in MODEL_FLAVORS
-    config = build_model_config("mini_60m", seq_len=512, n_mtp_layers=1)
+    config = build_model_config("mini_220m_a80m", seq_len=512, n_mtp_layers=1)
     assert config.vocab_size == 6400
-    assert len(config.layers) == 12
+    assert len(config.layers) == 7
     assert config.tie_word_embeddings is True
-    assert tuple(layer.attention.compress_ratio for layer in config.layers[:4]) == (0, 0, 4, 32)
+    assert tuple(layer.attention.compress_ratio for layer in config.layers) == (
+        0, 0, 4, 32, 4, 32, 4
+    )
     assert config.layers[2].attention.compress_ratio == 4
     assert config.layers[3].attention.compress_ratio == 32
     assert config.n_mtp_layers == 1
@@ -96,22 +110,80 @@ def test_swiglu_monitor_reports_clamp_stats(make_debug_model, small_batch):
 
 
 def test_flavor_parameter_counts_are_calibrated():
-    """Lock the roadmap calibration: values include MTP depth 1 + tied embeddings."""
+    """Lock the three design points: MTP depth 1 + tied embeddings."""
     expected = {
         "debugmodel": 12_984_104,
-        "mini_60m": 65_262_922,
-        "mini_60m_dense": 62_526_593,
-        "mini_110m": 120_652_773,
-        "mini_200m": 218_205_261,
+        "mini_220m_a80m": 216_652_538,
+        "mini_60m_dense_d768": 60_876_570,
+        "mini_145m_a60m": 145_841_946,
     }
     for flavor, target in expected.items():
         config = build_model_config(
             flavor,
-            seq_len=16384 if flavor == "debugmodel" else 8192,
+            seq_len=16384 if flavor == "debugmodel" else 4096,
+            max_context=16384 if flavor == "debugmodel" else 8192,
             n_mtp_layers=1,
         )
-        params = sum(p.numel() for p in DeepSeekV4Model(config).parameters())
-        assert abs(params - target) / target < 0.001, (flavor, params, target)
+        # meta device: count the parameter tree without allocating ~1GB.
+        with torch.device("meta"):
+            model = DeepSeekV4Model(config)
+        params = sum(p.numel() for p in model.parameters())
+        assert abs(params - target) / target < 1e-6, (flavor, params, target)
+
+
+def test_model_yaml_controls_context_and_mtp():
+    settings = load_config(ModelSettings, "configs/model/mini_220m_a80m.yaml")
+    assert settings.seq_len == 4096
+    assert settings.max_context == 8192
+    assert settings.n_mtp_layers == 1
+    assert settings.index_topk is None
+    config = build_model_config_from_settings(settings)
+    assert config.max_context_length == 8192
+    assert config.flavor == "mini_220m_a80m"
+    # Derived sparse-index budget: 4K -> 1024, 8K -> 2048.
+    assert config.layers[2].attention.index_topk == 1024
+    import dataclasses
+
+    config_8k = build_model_config_from_settings(
+        dataclasses.replace(settings, seq_len=8192, max_context=8192)
+    )
+    assert config_8k.layers[2].attention.index_topk == 2048
+
+
+def test_dense_expert_has_unit_routing_weight():
+    moe = MoE(
+        MoEConfig(
+            dim=8,
+            hidden_dim=16,
+            num_experts=1,
+            num_shared_experts=0,
+            top_k=1,
+            n_hash_layers=0,
+            vocab_size=32,
+            route_norm=False,
+            route_scale=1.0,
+            load_balance_coeff=None,
+        )
+    )
+    scores, ids, routing_map = moe.router(torch.randn(4, 8), None)
+    assert torch.equal(ids, torch.zeros_like(ids))
+    assert torch.allclose(scores, torch.ones_like(scores))
+    assert routing_map.shape == (4, 1)
+
+
+def test_parameter_report_buckets_are_additive(mtp_debug_model):
+    report = mtp_debug_model.parameter_report()
+    buckets = (
+        "embedding",
+        "lm_head",
+        "attention_and_other",
+        "moe_routed",
+        "moe_router",
+        "moe_shared",
+        "mtp",
+    )
+    assert abs(sum(report[name] for name in buckets) - report["total"]) < 1e-6
+    assert report["attention_and_other"] >= 0
 
 
 def test_forward_rejects_sequence_longer_than_context():
@@ -153,3 +225,16 @@ def test_sampling_logprob_uses_unfiltered_policy():
     assert int(ids.item()) == 1
     expected = F.log_softmax(logits, dim=-1)[0, 1]
     assert torch.allclose(logprobs[0], expected)
+
+
+def test_three_model_designs_forward_backward():
+    """The three architecture files must build and train on the CPU."""
+    for flavor in ("mini_60m_dense_d768", "mini_145m_a60m", "mini_220m_a80m"):
+        settings = load_config(ModelSettings, f"configs/model/{flavor}.yaml")
+        model = build_model(settings, device="cpu", dtype="float32")
+        batch = from_sequences([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10]])
+        loss = model.compute_loss(batch, mtp_weight=0.3)
+        assert torch.isfinite(loss.total)
+        loss.total.backward()
+        assert any(parameter.grad is not None for parameter in model.parameters())
+        del model

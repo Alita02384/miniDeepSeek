@@ -20,6 +20,8 @@ from typing import Any, TypeVar, get_args, get_origin, get_type_hints
 import torch
 import yaml
 
+from .paths import CONFIG_DIR, PROJECT_ROOT
+
 T = TypeVar("T")
 
 
@@ -100,8 +102,102 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def load_config(cls: type[T], path: str | Path) -> T:
-    return _from_mapping(cls, load_yaml(path))
+def _model_file_path(value: str | Path, base_dir: Path) -> Path:
+    """Resolve a model config path from a training config.
+
+    Paths are accepted relative to the training config, the project root, or
+    the current directory (in that order).  A bare role name such as
+    ``mini_220m_a80m`` is resolved against ``configs/model/``.
+    """
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    for root in (base_dir, PROJECT_ROOT, Path.cwd()):
+        path = root / candidate
+        if path.exists():
+            return path.resolve()
+    if candidate.suffix == "":
+        bundled = CONFIG_DIR / "model" / f"{candidate.name}.yaml"
+        if bundled.exists():
+            return bundled.resolve()
+    # Return the most useful candidate so ``load_yaml`` reports a concrete path.
+    return (base_dir / candidate).resolve()
+
+
+def _model_field(cls: type) -> bool:
+    return "model" in {field_info.name for field_info in dataclasses.fields(cls)}
+
+
+def resolve_model_file(
+    data: dict[str, Any],
+    *,
+    base_dir: Path,
+    override: str | Path | None = None,
+) -> dict[str, Any]:
+    """Merge a ``model_file`` into the inline ``model`` mapping.
+
+    A training config can either point at an architecture file explicitly::
+
+        model_file: configs/model/mini_220m_a80m.yaml
+        model:
+          seq_len: 4096
+
+    or select one of the bundled files through ``model.flavor``.  Inline
+    ``model`` values always win, which keeps run-specific choices (context
+    length, MTP depth, precision, ...) out of the architecture file.
+    """
+    data = dict(data)
+    inline = data.get("model") or {}
+    if not isinstance(inline, dict):
+        raise TypeError("model config must be a mapping")
+    model_file = override or data.get("model_file")
+    if model_file is None:
+        flavor = inline.get("flavor")
+        if flavor:
+            bundled = CONFIG_DIR / "model" / f"{flavor}.yaml"
+            if bundled.exists():
+                model_file = bundled
+            elif "dim" not in inline and "n_layers" not in inline:
+                raise ValueError(
+                    f"model flavor {flavor!r} has no configs/model/{flavor}.yaml; "
+                    "set model_file or inline the architecture fields"
+                )
+    if model_file is None:
+        return data
+    path = _model_file_path(model_file, base_dir)
+    model_data = load_yaml(path)
+    if not isinstance(model_data, dict):
+        raise TypeError(f"model config must be a mapping: {path}")
+    merged = deep_update(model_data, inline)
+    # The selected file owns the model identity; allowing an inline ``flavor``
+    # to rename another architecture is a silent-mismatch trap.
+    if "flavor" in model_data:
+        merged["flavor"] = model_data["flavor"]
+    data["model"] = merged
+    data["model_file"] = str(path)
+    return data
+
+
+def load_config(
+    cls: type[T],
+    path: str | Path,
+    *,
+    model_file: str | Path | None = None,
+) -> T:
+    """Load a typed YAML config, resolving its model architecture file.
+
+    ``model_file`` is a CLI-level override: it replaces the model file named by
+    the YAML while keeping the inline ``model`` run settings on top.
+    """
+    path = Path(path)
+    data = load_yaml(path)
+    if _model_field(cls):
+        data = resolve_model_file(
+            data,
+            base_dir=path.resolve().parent,
+            override=model_file,
+        )
+    return _from_mapping(cls, data)
 
 
 def dump_config(config: BaseConfig, path: str | Path) -> Path:
@@ -114,19 +210,54 @@ def dump_config(config: BaseConfig, path: str | Path) -> Path:
 # -- model --------------------------------------------------------------------
 @dataclass
 class ModelSettings(BaseConfig):
+    """A complete model specification.
+
+    ``configs/model/*.yaml`` files are exactly this dataclass; a training
+    config points at one through ``model_file`` (or a bundled ``flavor`` name)
+    and may override any field inline.  The defaults reproduce the V4 debug
+    model so ad-hoc ``ModelSettings()`` construction stays cheap and testable.
+    """
+
+    # Identity and architecture.
     flavor: str = "debugmodel"
-    seq_len: int = 2048
-    n_mtp_layers: int = 0
-    tie_word_embeddings: bool | None = None
+    dim: int = 256
+    n_layers: int = 4
+    n_heads: int = 16
+    head_dim: int = 256
+    rope_head_dim: int = 32
+    q_lora_rank: int = 128
+    o_lora_rank: int = 128
+    n_groups: int = 2
+    compress_ratios: tuple[int, ...] = (0, 0, 4, 128)
+    window_size: int = 16
+    index_n_heads: int = 8
+    index_head_dim: int = 64
+    moe_inter_dim: int = 256
+    num_experts: int = 4
+    num_shared_experts: int = 1
+    top_k: int = 3
+    n_hash_layers: int = 2
+    route_norm: bool = False
+    route_scale: float = 1.5
+    load_balance_coeff: float | None = 1e-3
     swiglu_limit: float | None = 10.0
+    hc_mult: int = 4
+    sinkhorn_iters: int = 20
+    vocab_size: int = 2048
+    tie_word_embeddings: bool = False
+    n_mtp_layers: int = 0
+    # Training sequence length; ``max_context`` is the RoPE/generation limit.
+    seq_len: int = 16384
+    max_context: int = 16384
+    # None derives ``min(2048, max(seq_len // 4, 64))`` at build time.
+    index_topk: int | None = 16
     indexer_loss_coeff: float = 0.01
+    # Runtime settings.
     device: str = "auto"
     dtype: str = "float32"
     seed: int = 1234
     # Debug-only: remap token ids modulo this limit (2048 for the V4 debug model).
     vocab_limit: int | None = None
-    # Dense-over-compressed index selection; None keeps the flavor default.
-    index_topk: int | None = None
 
 
 @dataclass
@@ -251,6 +382,8 @@ class TrainSettings(BaseConfig):
 
 @dataclass
 class TrainConfig(BaseConfig):
+    #: Optional path to a model YAML; inline ``model`` values override it.
+    model_file: str | None = None
     model: ModelSettings = field(default_factory=ModelSettings)
     optim: OptimizerSettings = field(default_factory=OptimizerSettings)
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
@@ -311,6 +444,8 @@ class TeacherSettings(BaseConfig):
     name: str
     checkpoint: str | None = None
     flavor: str = "debugmodel"
+    #: Optional path to a model YAML; takes precedence over ``flavor``.
+    model_file: str | None = None
     seq_len: int = 512
     key: str | None = None
     weight: float = 1.0
@@ -321,6 +456,7 @@ class TeacherSettings(BaseConfig):
 
 @dataclass
 class RLConfig(BaseConfig):
+    model_file: str | None = None
     model: ModelSettings = field(default_factory=ModelSettings)
     optim: OptimizerSettings = field(default_factory=OptimizerSettings)
     schedule: ScheduleSettings = field(default_factory=ScheduleSettings)
@@ -335,6 +471,7 @@ class RLConfig(BaseConfig):
 # -- evaluation ---------------------------------------------------------------
 @dataclass
 class EvalConfig(BaseConfig):
+    model_file: str | None = None
     model: ModelSettings = field(default_factory=ModelSettings)
     checkpoint: str | None = None
     data_path: str | None = None

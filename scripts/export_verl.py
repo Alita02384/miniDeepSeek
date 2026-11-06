@@ -2,7 +2,7 @@
 """Export GRPO data + a runnable verl command from miniDeepSeek records.
 
     .venv/bin/python scripts/export_verl.py \
-        --hf-model hf/mini_60m \
+        --hf-model hf/mini_220m_a80m \
         --train data/grpo/math.jsonl \
         --out-dir runs/verl_math
 

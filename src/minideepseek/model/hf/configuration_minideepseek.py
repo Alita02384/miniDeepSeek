@@ -21,6 +21,7 @@ class MiniDeepSeekConfig(PretrainedConfig):
         self,
         flavor: str = "debugmodel",
         seq_len: int = 2048,
+        max_context: int | None = None,
         n_mtp_layers: int = 0,
         tie_word_embeddings: bool | None = None,
         swiglu_limit: float | None = 10.0,
@@ -32,6 +33,7 @@ class MiniDeepSeekConfig(PretrainedConfig):
         model_config = build_model_config(
             flavor,
             seq_len=seq_len,
+            max_context=max_context,
             n_mtp_layers=n_mtp_layers,
             tie_word_embeddings=tie_word_embeddings,
             swiglu_limit=swiglu_limit,
@@ -50,6 +52,7 @@ class MiniDeepSeekConfig(PretrainedConfig):
         )
         self.flavor = flavor
         self.seq_len = int(seq_len)
+        self.max_context = int(model_config.max_context_length)
         self.n_mtp_layers = int(n_mtp_layers)
         self.swiglu_limit = swiglu_limit
         self.index_topk = index_topk
@@ -65,6 +68,7 @@ class MiniDeepSeekConfig(PretrainedConfig):
         return build_model_config(
             self.flavor,
             seq_len=self.seq_len,
+            max_context=self.max_context,
             n_mtp_layers=self.n_mtp_layers,
             tie_word_embeddings=self.tie_word_embeddings,
             swiglu_limit=self.swiglu_limit,

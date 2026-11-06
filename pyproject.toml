@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "minideepseek"
 version = "0.1.0"
-description = "A 60M-scale, DeepSeek-V4-isomorphic research model and training pipeline"
+description = "Self-contained, DeepSeek-V4-isomorphic research models and training pipeline"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -3,7 +3,7 @@
 
     .venv/bin/python scripts/export_hf.py \
         --checkpoint checkpoints/pretrain_full/final \
-        --out hf/mini_60m --flavor mini_60m --seq-len 8192
+        --out hf/mini_220m_a80m --flavor mini_220m_a80m --seq-len 4096
 
 The result can be loaded with ``trust_remote_code=True`` by transformers,
 verl, or any vLLM build that supports the model's auto_map.
@@ -27,6 +27,7 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     parser.add_argument("--flavor", default=None)
     parser.add_argument("--seq-len", type=int, default=None)
+    parser.add_argument("--max-context", type=int, default=None)
     parser.add_argument("--tie-word-embeddings", action="store_true", default=None)
     parser.add_argument("--swiglu-limit", type=float, default=None)
     parser.add_argument("--index-topk", type=int, default=None)
@@ -36,6 +37,7 @@ def main() -> int:
         args.out,
         flavor=args.flavor,
         seq_len=args.seq_len,
+        max_context=args.max_context,
         tie_word_embeddings=args.tie_word_embeddings,
         swiglu_limit=args.swiglu_limit,
         index_topk=args.index_topk,

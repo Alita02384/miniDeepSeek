@@ -1,11 +1,13 @@
 # miniDeepSeek
 
-用 DeepSeek-V4 的结构与训练方法，做一个 **60M 级、结构同构**的研究模型。
+用 DeepSeek-V4 的结构与训练方法，做一组**同构的研究模型**：
+**默认 `mini_220m_a80m`**（216.65M 总参 / 82.17M 激活），另有
+`mini_145m_a60m`（145.84M / 60.91M）和 `mini_60m_dense_d768`（60.88M / 60.88M）。
 本仓库是**自包含**的代码根：模型、tokenizer、数据、预训练/SFT、GRPO、
 多教师 OPD、一致性检查与评估全部在这里；不 import 任何同级参考仓库。
 
 > **当前阶段**：按项目要求，只实现并验证**代码逻辑**，用自带的
-> `debugmodel`（与 V4 debug 配置同构）跑测试；**不真实训练 mini-60M**。
+> `debugmodel`（与 V4 debug 配置同构）跑测试；**不真实训练这三个模型**。
 > 代码按**多卡 CUDA** 的目标环境编写，CPU/MPS 只用于逻辑验证。
 
 ---
@@ -15,8 +17,8 @@
 | 路线 | 代码 | 验证方式 |
 |---|---|---|
 | 自包含 V4 模型（SWA/CSA/HCA、mHC、MTP、MoE） | `src/minideepseek/model/` | 与参考实现逐层数值对齐；debug forward/backward |
-| mini flavor 构建 | `model/config.py` | `mini_60m` 65.26M（含 MTP depth 1）、`mini_110m` 120.65M、`mini_200m` 218.21M、dense 对照 62.52M |
-| 6 routed + 1 shared、top-2、hash routing | `model/moe.py` | 路由录制/回放、专家负载、路由熵 |
+| 模型配置加载 | `model/config.py`, `configs/model/` | `mini_220m_a80m` 216.65M / 82.17M 激活、`mini_145m_a60m` 145.84M / 60.91M、`mini_60m_dense_d768` 60.88M（均含 MTP depth 1、tied embeddings） |
+| MoE：8 routed/top-2（220m）、6 routed/top-2（145m）、1 dense expert（60m） | `model/moe.py` | 路由录制/回放、专家负载、路由熵 |
 | CSA(4) + HCA(32) + SWA | `model/attention.py`, `model/compressor.py` | 三种层型覆盖；indexer top-k 与参考一致 |
 | mHC / Sinkhorn / MTP depth 1 | `model/mhc.py`, `model/model.py` | MTP logits/loss/backward |
 | SwiGLU clamp + 监控 | `model/nn.py`, `train/metrics.py` | clamp 计数、clamp 率 |
@@ -33,7 +35,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`165 passed`（CPU，debug model，约 28 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`175 passed`（CPU，debug model，约 33 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -83,12 +85,22 @@ NPROC_PER_NODE=8 ./scripts/train_opd.sh     configs/opd/three_teacher.yaml
 
 ```text
 configs/
-├── model/{debugmodel,mini_60m,mini_110m,mini_200m}.yaml
+├── model/{debugmodel,mini_220m_a80m,mini_145m_a60m,mini_60m_dense_d768}.yaml
 ├── pretrain/{debug_smoke,pilot_0.6b,full_6b,dense_control_1b}.yaml
 ├── sft/{debug_smoke,math,code,world}.yaml
-├── grpo/{debug_math,math,code,world}.yaml
+├── grpo/{debug_math,math,code,world,math_vllm}.yaml
 ├── opd/{debug_three_teacher,single_math,three_teacher}.yaml
 └── eval/{debug_math,math,code,world}.yaml
+```
+
+`configs/model/*.yaml` 是完整的架构文件；训练配置用 `model_file` 选择它，
+`model:` 下的字段只覆盖本次运行（上下文长度、MTP、精度等）。CLI 也可以直接覆盖：
+
+```bash
+# 临时换模型架构，不复制 training config
+.venv/bin/python -m minideepseek.train.run \
+  --config configs/pretrain/full_6b.yaml \
+  --model-config configs/model/mini_145m_a60m.yaml
 ```
 
 ```bash
@@ -110,17 +122,18 @@ configs/
 
 # 一致性与评估
 .venv/bin/python -m minideepseek.consistency.check \
-  --flavor mini_60m --seq-len 4096 --checkpoint checkpoints/pretrain_full/final \
+  --flavor mini_220m_a80m --seq-len 4096 --checkpoint checkpoints/pretrain_full/final \
   --prompts data/eval/prompts.jsonl
 .venv/bin/python -m minideepseek.eval.run --config configs/eval/math.yaml
 
 # HF 导出（可选 extra: `pip install -e '.[hf]'`）
 .venv/bin/python scripts/export_hf.py \
-  --checkpoint checkpoints/pretrain_full/final --out hf/mini_60m --flavor mini_60m --seq-len 8192
+  --checkpoint checkpoints/pretrain_full/final --out hf/mini_220m_a80m \
+  --flavor mini_220m_a80m --seq-len 4096 --max-context 8192
 
 # verl 数据 + 配置导出（可选 CUDA extra: `pip install -e '.[verl]'`）
 .venv/bin/python scripts/export_verl.py \
-  --hf-model hf/mini_60m --train data/grpo/math.jsonl --out-dir runs/verl_math --rollout hf
+  --hf-model hf/mini_220m_a80m --train data/grpo/math.jsonl --out-dir runs/verl_math --rollout hf
 ```
 
 vLLM rollout 在 CUDA 上启用：`configs/grpo/*.yaml` 设置
@@ -143,7 +156,7 @@ rl:
 
 ```text
 src/minideepseek/
-├── model/        # 自包含 V4 模型、flavor、PackedBatch、wrapper、路由、checkpoint
+├── model/        # 自包含 V4 模型、架构配置加载、PackedBatch、wrapper、路由、checkpoint
 ├── tokenizer/    # MiniMind 6,400 tokenizer + chat template + response mask
 ├── data/         # pretrain/SFT/GRPO/OPD 数据、去重、污染、fertility、manifest
 ├── train/        # Muon+AdamW、scheduler、metrics、losses、trainer、CLI
@@ -159,10 +172,12 @@ scripts/          # 环境、数据、训练、评估脚本
 
 ## 5. 关键设计决定
 
-- **只验证逻辑，不训练**：所有测试固定使用 `debugmodel`；mini 配置只构建并统计参数量。
-- **mini-60M 实测 65.26M**（含 MTP depth 1、tied embeddings），目标 63M，偏差 +3.6%。
-- **6 routed + 1 shared，top-2**；hash routing 前 3 层；`route_norm=True`，`route_scale=1.5`。
-- **CSA(4) + HCA(32) + SWA**；dense 对照用 `*_dense` flavor。
+- **只验证逻辑，不训练**：所有测试固定使用 `debugmodel`；三个目标模型只构建、统计参数量并做 CPU 1-step/forward-backward。
+- **默认模型 `mini_220m_a80m`**：216.65M 总参 / 82.17M 激活（MTP depth 1、tied embeddings）。
+- **8 routed + 0 shared，top-2，前 2 层 hash**；`route_norm=True`，`route_scale=1.5`。
+- **`mini_60m_dense_d768` 的单一 expert 权重固定为 1.0**，等价于 dense FFN；无 hash / 无负载均衡。
+- **`mini_145m_a60m`**：6 routed / top-2，active FFN 宽度与 dense 控制组对齐。
+- **CSA(4) + HCA(32) + SWA**；`seq_len=4096`，`max_context=8192`；index top-k 由模型文件派生（4K→1024、8K→2048）。
 - **SwiGLU clamp 10.0 常开**；**Anticipatory Routing 实现但默认关闭**。
 - **4K dense-over-compressed → 8K sparse 的 index top-k 调度**：`IndexTopKSchedule`。
 - **GRPO/OPD 从 checkpoint 初始化**：`train.resume` 分别加载 SFT specialist 与 base student。
@@ -176,10 +191,10 @@ scripts/          # 环境、数据、训练、评估脚本
 
 ## 6. 未完成 / 明确不在当前阶段
 
-- 没有真实训练 mini-60M，也没有 0.6B/6B 数据产出；数据只用了 MiniMind 小样本。
+- 没有真实训练 `mini_220m_a80m` / `mini_145m_a60m` / `mini_60m_dense_d768`，也没有 0.6B/6B 数据产出；数据只用了 MiniMind 小样本。
 - 没有多卡 CUDA 实机：FSDP2/DDP 的 2 进程正确性已在 CPU/Gloo 验证，
   NCCL、真实 bf16 吞吐、8 卡扩展性未验证。
-- EP（专家并行）未实现：FSDP2 下 6 个 routed expert 是复制分片，尚未做
+- EP（专家并行）未实现：FSDP2 下 routed experts 是复制分片，尚未做
   all-to-all expert dispatch。
 - vLLM 自定义模型/paged-attention kernel 未实现；verl 的 HF rollout 路径
   未在 GPU 上实跑。vLLM/verl 都只是可选集成。

@@ -1,4 +1,4 @@
-"""miniDeepSeek: a 60M-scale, DeepSeek-V4-isomorphic research model."""
+"""miniDeepSeek: self-contained, DeepSeek-V4-isomorphic research models."""
 
 from __future__ import annotations
 

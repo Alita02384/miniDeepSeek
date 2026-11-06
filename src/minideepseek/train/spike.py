@@ -3,7 +3,7 @@
 V4's stability recipe pairs Anticipatory Routing with a spike detector: when the
 loss exceeds a robust threshold over the recent window, roll back briefly,
 enable AR for a few steps, then resume normal routing.  This module implements
-the detector and the in-memory rollback buffer; both are opt-in because the 60M
+the detector and the in-memory rollback buffer; both are opt-in because the small
 debug runs do not need them.
 """
 

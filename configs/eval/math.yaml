@@ -1,8 +1,8 @@
+model_file: configs/model/mini_220m_a80m.yaml
 model:
-  flavor: mini_60m
+  flavor: mini_220m_a80m
   seq_len: 4096
   n_mtp_layers: 0
-  index_topk: 1024
   device: auto
   dtype: bfloat16
   seed: 1234

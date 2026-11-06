@@ -11,6 +11,7 @@ roadmap rejects verl's sampled-token k1/k3 estimators for this stage.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,10 +21,18 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from ..config import RLConfig, TeacherSettings, resolve_device, set_seed
+from ..config import (
+    ModelSettings,
+    RLConfig,
+    TeacherSettings,
+    load_config,
+    resolve_device,
+    set_seed,
+)
 from ..data.grpo import GRPORecord
 from ..data.opd import OPDPrompt
 from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
+from ..model.config import load_model_settings
 from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.distributed import (
@@ -366,15 +375,18 @@ def load_teacher(
     index_topk = settings.index_topk
     if settings.checkpoint and index_topk is None:
         index_topk = read_metadata(settings.checkpoint).get("extra", {}).get("index_topk")
-    model = build_model(
-        settings.flavor,
-        seq_len=settings.seq_len,
-        n_mtp_layers=settings.n_mtp_layers,
-        device=device,
-        swiglu_limit=10.0,
-        index_topk=index_topk,
-        dtype=settings.dtype,
-    )
+    if settings.model_file:
+        model_settings = load_config(ModelSettings, settings.model_file)
+    else:
+        model_settings = load_model_settings(settings.flavor)
+    updates: dict[str, Any] = {
+        "seq_len": int(settings.seq_len),
+        "n_mtp_layers": int(settings.n_mtp_layers),
+    }
+    if index_topk is not None:
+        updates["index_topk"] = int(index_topk)
+    model_settings = dataclasses.replace(model_settings, **updates)
+    model = build_model(model_settings, device=device, dtype=settings.dtype)
     if settings.checkpoint:
         meta = load_checkpoint(
             settings.checkpoint,
@@ -405,14 +417,8 @@ def build_opd_trainer(
     device = context.device if context.enabled else resolve_device(config.model.device)
     set_seed(config.model.seed)
     student = build_model(
-        config.model.flavor,
-        seq_len=config.model.seq_len,
-        n_mtp_layers=config.model.n_mtp_layers,
+        config.model,
         device=device,
-        tie_word_embeddings=config.model.tie_word_embeddings,
-        swiglu_limit=config.model.swiglu_limit,
-        index_topk=config.model.index_topk,
-        indexer_loss_coeff=config.model.indexer_loss_coeff,
         dtype=config.model.dtype,
     )
     if context.enabled:

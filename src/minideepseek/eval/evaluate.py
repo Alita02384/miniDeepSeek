@@ -7,6 +7,7 @@ format/parse failures alongside accuracy.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import statistics
 from collections.abc import Callable, Sequence
@@ -53,19 +54,10 @@ def _load_model(config: EvalConfig, tokenizer: MiniDeepSeekTokenizer) -> MiniDee
     runtime_topk = None
     if config.checkpoint:
         runtime_topk = read_metadata(config.checkpoint).get("extra", {}).get("index_topk")
-    model = build_model(
-        config.model.flavor,
-        seq_len=config.model.seq_len,
-        n_mtp_layers=config.model.n_mtp_layers,
-        device=device,
-        tie_word_embeddings=config.model.tie_word_embeddings,
-        swiglu_limit=config.model.swiglu_limit,
-        index_topk=(
-            runtime_topk if runtime_topk is not None else config.model.index_topk
-        ),
-        indexer_loss_coeff=config.model.indexer_loss_coeff,
-        dtype=config.model.dtype,
-    )
+    settings = config.model
+    if runtime_topk is not None:
+        settings = dataclasses.replace(settings, index_topk=int(runtime_topk))
+    model = build_model(settings, device=device, dtype=settings.dtype)
     if config.checkpoint:
         meta = load_checkpoint(
             config.checkpoint,

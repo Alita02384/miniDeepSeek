@@ -1,0 +1,41 @@
+# mini_220m_a80m — the default training model.
+#
+# Hybrid attention: SWA (0), CSA (4), HCA (32); 16 heads x 256 = 4096 q dims.
+# DeepSeekMoE: 8 routed experts, top-2, no shared expert, first two layers hash.
+# Measured (MTP depth 1, tied embeddings): 216.65M total / 82.17M active.
+# See doc/Parameter_Setting.md and doc/decisions.md.
+flavor: mini_220m_a80m
+dim: 768
+n_layers: 7
+n_heads: 16
+head_dim: 256
+rope_head_dim: 32
+q_lora_rank: 288
+o_lora_rank: 288
+n_groups: 2
+compress_ratios: [0, 0, 4, 32, 4, 32, 4]
+window_size: 128
+index_n_heads: 8
+index_head_dim: 64
+moe_inter_dim: 1216
+num_experts: 8
+num_shared_experts: 0
+top_k: 2
+n_hash_layers: 2
+route_norm: true
+route_scale: 1.5
+load_balance_coeff: 0.001
+swiglu_limit: 10.0
+hc_mult: 4
+sinkhorn_iters: 20
+vocab_size: 6400
+tie_word_embeddings: true
+n_mtp_layers: 1
+seq_len: 4096
+max_context: 8192
+# null -> min(2048, max(seq_len // 4, 64)), i.e. 1024 @4K and 2048 @8K.
+index_topk: null
+indexer_loss_coeff: 0.01
+device: auto
+dtype: bfloat16
+seed: 1234

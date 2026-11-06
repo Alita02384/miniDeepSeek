@@ -1,13 +1,13 @@
 # 测试与验收
 
 > 当前阶段只验证**代码逻辑**。所有模型测试固定使用项目自带的
-> `debugmodel`（与 DeepSeek-V4 debug 配置同构；`mtp` 变体），不训练 mini-60M。
+> `debugmodel`（与 DeepSeek-V4 debug 配置同构；`mtp` 变体），不训练三个目标模型。
 
 ## 运行
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 165 passed, ~29s on CPU；无 transformers 时 HF 的 6 个测试跳过
+.venv/bin/python -m pytest -q   # 175 passed, ~33s on CPU；无 transformers 时 HF 的 6 个测试跳过
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -33,7 +33,7 @@
 |---|---|
 | `test_batch.py` | 文档打包、positions、target mask、MTP shift、跨文档边界、padded→packed |
 | `test_tokenizer.py` | 6,400 词表、特殊 token、chat template、response-only mask、多轮 |
-| `test_model.py` | forward/backward、MTP 形状、loss、logprob、greedy 生成、参数报告、mini 配置结构、五档参数校准、SwiGLU clamp 监控 |
+| `test_model.py` | forward/backward、MTP 形状、loss、logprob、greedy 生成、参数报告、三个模型档位的结构与参数校准、dense 单专家权重、SwiGLU clamp 监控 |
 | `test_routing.py` | hash/learned router 录制、replay 一致率、指标、gate 快照、hash 表持久化 |
 | `test_checkpoint.py` | torch / safetensors / DCP 三种存取、logits 位级一致、RNG 状态、指纹 |
 | `test_optimizer.py` | Newton-Schulz、Muon 单步、混合参数分组、warmup/cosine |
@@ -45,7 +45,7 @@
 | `test_anticipatory.py` | stale gate probe、replay、状态环形缓冲、closure |
 | `test_spike.py` | spike 检测、rollback 快照、自动 AR、index top-k 调度 |
 | `test_eval.py` | math/world 评估、报告落盘 |
-| `test_config.py` | 全部 YAML 可加载、未知键拒绝 |
+| `test_config.py` | 全部 YAML 可加载、未知键拒绝、model_file 合并与 CLI 覆盖、模型文件完整性 |
 | `test_distributed.py` | 单进程 FSDP2 wrap、forward/backward、optimizer、state/gather、trainer 保存/恢复 |
 | `test_hf.py` | HF config 往返、key prefix 映射、export/load logits 一致、greedy generate、trust_remote_code 加载 |
 | `test_integrations.py` | verl 数据 schema、reward entrypoint、verl GRPO/OPD config、torch backend、vLLM/lm-eval 缺依赖守卫、HTTP judge 解析 |
@@ -57,8 +57,13 @@
 ## 关键验收数值（本机实测）
 
 - debugmodel：无 MTP 10.60M；MTP depth 1 12.98M（12,984,104）。
-- mini 配置参数（含 MTP depth 1、tied embeddings）：`mini_60m` 65,262,922、
-  `mini_110m` 120,652,773、`mini_200m` 218,205,261、`mini_60m_dense` 62,526,593。
+- 三个目标模型（均含 MTP depth 1、tied embeddings）：
+  - `mini_220m_a80m`：216,652,538（216.65M）总参 / 82.17M 激活；
+  - `mini_145m_a60m`：145,841,946（145.84M）总参 / 60.91M 激活；
+  - `mini_60m_dense_d768`：60,876,570（60.88M）总参 / 60.88M 激活。
+- CPU 1-step（`train.smoke --flavor mini_220m_a80m --seq-len 64`）通过，
+  checkpoint 回读 `max_abs_diff = 0.0`；三档 forward/backward 均在单测覆盖。
+- **未验证**：head_dim=256 的 4K/8K 真实 batch 显存；详见 decisions D51。
 - 一致性（float32 CPU）：
   - rollout ↔ teacher-forced logprob：max |Δ| ≈ **9.5e-7**（阈值 1e-3）；
   - router replay：top-k 集合一致率 **100%**（阈值 99.9%）；

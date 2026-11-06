@@ -1,8 +1,8 @@
 # Multi-teacher on-policy distillation. Student is the base checkpoint.
+model_file: configs/model/mini_220m_a80m.yaml
 model:
-  flavor: mini_60m
+  flavor: mini_220m_a80m
   seq_len: 4096
-  index_topk: 1024
   n_mtp_layers: 0
   swiglu_limit: 10.0
   device: auto
@@ -41,21 +41,19 @@ teachers:
   - name: math_teacher
     key: math
     checkpoint: checkpoints/grpo_math/final
-    flavor: mini_60m
+    flavor: mini_220m_a80m
     seq_len: 4096
-    index_topk: 1024
     weight: 0.3333333333
   - name: code_teacher
     key: code
     checkpoint: checkpoints/grpo_code/final
-    flavor: mini_60m
+    flavor: mini_220m_a80m
     seq_len: 4096
-    index_topk: 1024
     weight: 0.3333333333
   - name: world_teacher
     key: world
     checkpoint: checkpoints/sft_world/final
-    flavor: mini_60m
+    flavor: mini_220m_a80m
     seq_len: 4096
     index_topk: 64
     weight: 0.3333333334

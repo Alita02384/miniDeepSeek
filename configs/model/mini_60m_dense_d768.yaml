@@ -1,0 +1,41 @@
+# mini_60m_dense_d768 — dense-FFN control at the same width/depth as the 220m/145m.
+#
+# One routed expert == a plain SwiGLU FFN; the router weight is fixed at 1.0
+# (route_scale) and there is no hash routing / load-balance bias.  Attention is
+# still the same SWA+CSA+HCA hybrid so only the FFN/MoE choice changes.
+# Measured (MTP depth 1, tied embeddings): 60.88M total / 60.88M active.
+flavor: mini_60m_dense_d768
+dim: 768
+n_layers: 7
+n_heads: 12
+head_dim: 64
+rope_head_dim: 32
+q_lora_rank: 288
+o_lora_rank: 288
+n_groups: 2
+compress_ratios: [0, 0, 4, 32, 4, 32, 4]
+window_size: 128
+index_n_heads: 8
+index_head_dim: 64
+moe_inter_dim: 2304
+num_experts: 1
+num_shared_experts: 0
+top_k: 1
+n_hash_layers: 0
+route_norm: false
+route_scale: 1.0
+load_balance_coeff: null
+swiglu_limit: 10.0
+hc_mult: 4
+sinkhorn_iters: 20
+vocab_size: 6400
+tie_word_embeddings: true
+n_mtp_layers: 1
+seq_len: 4096
+max_context: 8192
+# null -> min(2048, max(seq_len // 4, 64)), i.e. 1024 @4K and 2048 @8K.
+index_topk: null
+indexer_loss_coeff: 0.01
+device: auto
+dtype: bfloat16
+seed: 1234

@@ -1,8 +1,8 @@
 # 0.6B-token pilot. Batch warms from 16K to 64K tokens/micro-batch; final global step = 0.5M tokens.
+model_file: configs/model/mini_220m_a80m.yaml
 model:
-  flavor: mini_60m
+  flavor: mini_220m_a80m
   seq_len: 4096
-  index_topk: 1024
   n_mtp_layers: 1
   swiglu_limit: 10.0
   device: auto

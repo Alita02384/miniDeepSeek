@@ -18,7 +18,7 @@ torchtitan 的 V4 实现依赖 `models/common`、`config`、`distributed`、
 
 | 本仓库文件 | 上游参考 | 改动 |
 |---|---|---|
-| `src/minideepseek/model/config.py` | `deepseek_v4/flavors.py` | 用 dataclass 重写 flavor 构建；新增 mini_60m/110m/200m 与 dense 对照；集中管理 `swiglu_limit` / tied embedding / index_topk |
+| `src/minideepseek/model/config.py` | `deepseek_v4/flavors.py` | 用 dataclass 重写架构描述；模型数值外置到 `configs/model/*.yaml`，本文件只保留校验、派生（压缩层/MTP/index top-k）与构建 |
 | `src/minideepseek/model/nn.py` | `models/common/{activation,nn_modules,linear}.py` | `RMSNorm`、`LimitedSwiGLU`、初始化、Hadamard、SwiGLU clamp |
 | `src/minideepseek/model/rope.py` | `models/common/rope.py` | 实数版 adjacent-pair RoPE + YaRN，缓存为 buffer |
 | `src/minideepseek/model/mhc.py` | `deepseek_v4/mhc.py` | 保留 HcSplitSinkhorn / HcPre / HcPost / HcHead 数学与参数名 |

@@ -1,8 +1,9 @@
-# Dense-attention control (compress_ratios all 0, window = seq_len), 1B tokens.
+# Dense-FFN control (one expert, weight 1.0) at 768/7 layers, 1B tokens.
+# Attention stays SWA+CSA+HCA so only the FFN/MoE choice differs.
+model_file: configs/model/mini_60m_dense_d768.yaml
 model:
-  flavor: mini_60m_dense
+  flavor: mini_60m_dense_d768
   seq_len: 4096
-  index_topk: 1024
   n_mtp_layers: 1
   swiglu_limit: 10.0
   device: auto
@@ -34,4 +35,4 @@ train:
   mtp_weight: 0.3
   mtp_weight_final: 0.1
   mtp_decay_ratio: 0.8
-  balance_loss_coeff: 0.0001
+  balance_loss_coeff: 0.0

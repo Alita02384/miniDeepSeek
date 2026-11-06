@@ -77,8 +77,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("method", choices=["grpo", "opd"])
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--model-config",
+        default=None,
+        help="model YAML overriding the config's model_file",
+    )
     args = parser.parse_args(argv)
-    config = load_config(RLConfig, args.config)
+    config = load_config(RLConfig, args.config, model_file=args.model_config)
     report = run_grpo(config) if args.method == "grpo" else run_opd(config)
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0

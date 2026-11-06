@@ -96,9 +96,15 @@ class DeepSeekV4Router(nn.Module):
             scores, expert_bias_E, input_ids=input_ids, padding_mask=padding_mask
         )
         topk_scores = scores.gather(-1, ids)
-        if self.route_norm:
-            topk_scores = topk_scores / (topk_scores.sum(-1, keepdim=True) + 1e-20)
-        topk_scores = topk_scores * self.route_scale
+        if self.num_experts == 1:
+            # Dense control: a single routed expert must behave exactly like a
+            # plain FFN, i.e. weight 1.  A softplus(gate) weight would silently
+            # scale the FFN output and make the control non-comparable.
+            topk_scores = torch.full_like(topk_scores, float(self.route_scale))
+        else:
+            if self.route_norm:
+                topk_scores = topk_scores / (topk_scores.sum(-1, keepdim=True) + 1e-20)
+            topk_scores = topk_scores * self.route_scale
         routing_map = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, ids, True)
         if self.training:
             with torch.no_grad():
