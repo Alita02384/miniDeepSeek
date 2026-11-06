@@ -585,3 +585,22 @@
   experts 也按 `top_k/num_experts` 计入稀疏比例（220m=82.17M、
   145m=60.91M），与设计值一致。
 - **影响**：仅报告数值；训练/checkpoint 不受影响。
+
+### D53. 训练监控、可视化与 checkpoint 保留策略
+
+- **实际**：
+  - `metrics.jsonl` 新增 `tokens_seen`、`tokens_per_sec`、`step_time_s`、
+    `eta_seconds`、`loss_ema`、`mem_allocated/reserved/peak_mb`、
+    `mtp_loss_d{depth}`；val 记录新增 `val_ppl`、`val_main_loss`、
+    `val_mtp_loss`、`val_indexer_loss`、`val_tokens`。
+  - 新增 `src/minideepseek/viz/`（原生 SVG + 静态 HTML 报告）与
+    `scripts/plot_training.py`；`TrainSettings.report_every > 0` 时训练中
+    自动刷新 `report.html`。
+  - `save_best` 默认开（val 改善写 `best/`）；`keep_last_ckpt` 默认 0
+    （保留全部）；NaN/Inf 时写 `nan_step_*/`（含 `nan_report.json`）后退出。
+- **依据**：参考 `mini_deepseek_v4` 的 benchmark/监控/checkpoint 实践，
+  补齐本项目缺失的实验基建；所有默认值不改变训练数学，也不新增依赖
+  （可视化用原生 SVG，不引入 matplotlib）。
+- **影响**：旧 `metrics.jsonl` 仍可解析（字段只增不减）；开 `val_every`
+  且 val 改善时多一个 `best/` 目录；`keep_last_ckpt=0` 时不删除任何
+  checkpoint（与旧行为一致）。

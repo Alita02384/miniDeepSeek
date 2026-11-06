@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 175 passed, ~33s on CPU；无 transformers 时 HF 的 6 个测试跳过
+.venv/bin/python -m pytest -q   # 196 passed, ~40s on CPU；无 transformers 时 HF 的 6 个测试跳过
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
@@ -111,3 +111,9 @@ logits depth 1: mean abs 2.6e-4, max abs 8.2e-2
   需要在 CUDA 集群上做一次 smoke。
 - 6B 数据规模下的吞吐、去重与污染检查性能。
 - 训练收敛性 / benchmark 分数（当前阶段明确不追求）。
+
+| `test_metrics.py` | 紧凑日志格式、JSONL 写入、CPU 显存指标为空、稀疏记录 summary |
+| `test_viz.py` | SVG 折线/刻度、log 轴跳过非正值、无数据占位、右边缘标注、HTML 报告 |
+| `test_scaling.py` | 幂律参数恢复、≥3 点约束、累计 token 重建、token 区间切片 |
+| `test_benchmark.py` | 单步 benchmark 的 token 计数、吞吐/参数统计、CPU 无显存计数 |
+| `test_trainer.py`（新增） | best checkpoint、keep-last 清理、NaN 快照与报告 |

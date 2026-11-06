@@ -32,10 +32,13 @@
 | 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
 | 权重版本 + logprob 门禁 | `rl/rollout.py` | vLLM 版本计数与 actor/rollout 对比 |
 | 数据管线 | `data/` | 打包、mask、MinHash+段落去重、13-gram、fertility、manifest、license、加权混料、语言/vendored/math 过滤 |
+| 训练监控与可视化 | `train/metrics.py`, `viz/` | tok/s、峰值显存、ETA、路由/负载/SwiGLU 指标；`report.html` 内联 SVG 图表 |
+| 吞吐 / 显存基准 | `scripts/benchmark.py`, `train/benchmark.py` | 单卡与 FSDP2 的 step 时间、tok/s、峰值显存 |
+| Scaling law | `scripts/scaling_law.py`, `train/scaling.py` | val loss 幂律拟合 α/R² + Chinchilla 参考线 |
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`175 passed`（CPU，debug model，约 33 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`196 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -125,6 +128,18 @@ configs/
   --flavor mini_220m_a80m --seq-len 4096 --checkpoint checkpoints/pretrain_full/final \
   --prompts data/eval/prompts.jsonl
 .venv/bin/python -m minideepseek.eval.run --config configs/eval/math.yaml
+
+# 训练监控：自动刷新 report.html（YAML 里设 train.report_every: 50），或手动生成
+.venv/bin/python scripts/plot_training.py checkpoints/pretrain_full/metrics.jsonl \
+  --out checkpoints/pretrain_full/report.html --meta model=mini_220m_a80m
+
+# 吞吐 / 显存基准（单卡；多卡见 doc/run_plan.md）
+.venv/bin/python scripts/benchmark.py --config configs/pretrain/full_6b.yaml \
+  --seq-len 4096 --batch-size 1 --steps 10 --json-out bench.json
+
+# Scaling law 拟合（需要 ≥3 个 val 点）
+.venv/bin/python scripts/scaling_law.py checkpoints/pretrain_full/metrics.jsonl \
+  --params-m 216.65 --out checkpoints/pretrain_full/scaling_law.html
 
 # HF 导出（可选 extra: `pip install -e '.[hf]'`）
 .venv/bin/python scripts/export_hf.py \
