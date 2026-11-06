@@ -37,6 +37,7 @@ class LossOutput:
 
     @property
     def token_count(self) -> int:
+        """All prediction slots (main head plus MTP depths), not corpus tokens."""
         return self.main_token_count + sum(self.mtp_token_count.values())
 
 

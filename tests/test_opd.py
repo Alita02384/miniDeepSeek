@@ -62,6 +62,35 @@ def test_opd_single_step_two_teachers(tmp_path, stub_tokenizer):
     assert any(not torch.equal(before, after) for before, after in zip(student_before, student.parameters()))
 
 
+def test_opd_ddp_all_reduces_gradients(tmp_path, stub_tokenizer, monkeypatch):
+    import minideepseek.rl.opd as opd_module
+    from minideepseek.train.distributed import DistributedContext
+
+    calls = []
+    monkeypatch.setattr(
+        opd_module,
+        "all_reduce_gradients",
+        lambda model, world_size: calls.append(world_size),
+    )
+    student = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    teacher = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    prompts = [
+        OPDPrompt(prompt=[{"role": "user", "content": "m"}], teacher_key="math", domain="math")
+    ]
+    config = _opd_config(tmp_path)
+    trainer = OPDTrainer(
+        config,
+        student,
+        stub_tokenizer,
+        prompts,
+        {"math": teacher},
+        teacher_weights={"math": 1.0},
+        distributed=DistributedContext(enabled=True, mode="ddp", world_size=2),
+    )
+    trainer.step()
+    assert calls == [2]
+
+
 def test_opd_missing_teacher_raises(tmp_path, stub_tokenizer):
     student = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
     prompts = [OPDPrompt(prompt=[{"role": "user", "content": "x"}], teacher_key="world", domain="world")]

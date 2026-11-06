@@ -11,9 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 
 from ..config import TrainConfig, load_config
-from ..data.pretrain import PackedPretrainDataset
+from ..data.pretrain import BatchTokenSchedule, PackedPretrainDataset
 from ..data.sft import SFTDataset
 from ..model.batch import PackedBatch
 from ..tokenizer import load_tokenizer
@@ -23,6 +24,18 @@ from .trainer import build_trainer
 
 def _load_single_dataset(mode: str, path: str):
     return SFTDataset(path) if mode == "sft" else PackedPretrainDataset(path)
+
+
+@dataclass
+class MixedDataset:
+    """Per-source datasets behind a weighted ``data.sources`` mixture.
+
+    ``Trainer`` only needs the mixed ``meta`` for reporting; keeping the child
+    datasets lets ``run`` validate each source's tokenizer/sequence length.
+    """
+
+    meta: dict
+    datasets: list = field(default_factory=list)
 
 
 def _per_rank_tokens(value: int | None, world_size: int) -> int | None:
@@ -39,6 +52,7 @@ def _batch_factory(
     *,
     shard_rank: int,
     shard_world_size: int,
+    persistent_warmup: bool = True,
 ) -> Callable[[], Iterator[PackedBatch]]:
     total_steps = max(config.train.steps * max(config.train.grad_accum, 1), 1)
     # ``batch_tokens`` is a global (all-rank) micro-batch budget in the
@@ -48,6 +62,16 @@ def _batch_factory(
     batch_tokens_final = _per_rank_tokens(
         config.data.batch_tokens_final, shard_world_size
     )
+    schedule = None
+    if persistent_warmup and batch_tokens is not None:
+        # Shared by every restart of this loader, so an epoch boundary or a
+        # resume does not reset the batch-token warmup to ``base``.
+        schedule = BatchTokenSchedule(
+            base=batch_tokens,
+            final=batch_tokens_final,
+            warmup_ratio=config.data.batch_warmup_ratio,
+            total_steps=total_steps,
+        )
 
     def factory() -> Iterator[PackedBatch]:
         if mode == "sft":
@@ -63,6 +87,7 @@ def _batch_factory(
                 seed=config.data.seed,
                 shard_rank=shard_rank,
                 shard_world_size=shard_world_size,
+                schedule=schedule,
             )
         from ..data.pretrain import iter_batches
 
@@ -77,6 +102,7 @@ def _batch_factory(
             seed=config.data.seed,
             shard_rank=shard_rank,
             shard_world_size=shard_world_size,
+            schedule=schedule,
         )
 
     return factory
@@ -89,6 +115,7 @@ def load_dataset(
     shard_rank: int = 0,
     shard_world_size: int = 1,
     path: str | None = None,
+    persistent_warmup: bool = True,
 ) -> tuple[object, Callable[[], Iterator[PackedBatch]]]:
     explicit_path = path
     path = path or config.data.tokenized_path
@@ -98,8 +125,10 @@ def load_dataset(
         total_batches = max(config.train.steps * max(config.train.grad_accum, 1), 1)
         sources = []
         meta_sources = []
+        child_datasets = []
         for spec in config.data.sources:
             dataset = _load_single_dataset(mode, spec.path)
+            child_datasets.append(dataset)
             sources.append(
                 BatchSource(
                     name=spec.path,
@@ -109,6 +138,7 @@ def load_dataset(
                         dataset,
                         shard_rank=shard_rank,
                         shard_world_size=shard_world_size,
+                        persistent_warmup=persistent_warmup,
                     ),
                     weight=spec.weight,
                 )
@@ -127,7 +157,10 @@ def load_dataset(
             seed=config.data.seed,
             shuffle=config.data.shuffle,
         )
-        return {"meta": {"sources": meta_sources}}, (lambda: iter(mixer))
+        return (
+            MixedDataset(meta={"sources": meta_sources}, datasets=list(child_datasets)),
+            (lambda: iter(mixer)),
+        )
     if not path:
         raise SystemExit(
             "data.tokenized_path or data.sources is required; "
@@ -140,6 +173,7 @@ def load_dataset(
         dataset,
         shard_rank=shard_rank,
         shard_world_size=shard_world_size,
+        persistent_warmup=persistent_warmup,
     )
     return dataset, factory
 
@@ -147,6 +181,8 @@ def load_dataset(
 
 def _validate_dataset(dataset, tokenizer, config: TrainConfig, *, label: str) -> None:
     """Fail early on tokenizer/sequence-length drift between data and model."""
+    for index, child in enumerate(getattr(dataset, "datasets", ())):
+        _validate_dataset(child, tokenizer, config, label=f"{label}[{index}]")
     meta = getattr(dataset, "meta", None)
     if not isinstance(meta, dict):
         return
@@ -182,12 +218,15 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
     _validate_dataset(dataset, tokenizer, config, label="train")
     val_batches = None
     if config.train.val_path:
+        # A fresh, base-budget schedule keeps the validation batches identical
+        # across evaluations (the training warmup must not leak into val).
         val_dataset, val_batches = load_dataset(
             config,
             mode,
             path=config.train.val_path,
             shard_rank=0,
             shard_world_size=1,
+            persistent_warmup=False,
         )
         _validate_dataset(val_dataset, tokenizer, config, label="val")
     trainer, model = build_trainer(

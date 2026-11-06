@@ -122,6 +122,9 @@ def test_fsdp2_trainer_save_and_resume(tmp_path, distributed_context):
     assert meta["step"] == 1
     # At least one sub-optimizer must have state after resume.
     assert any(optimizer.state for optimizer in other.optimizer.optimizers)
+    # The restored optimizer state must be on the same layout as the FSDP2
+    # parameters; otherwise the next step mixes Tensor and DTensor state.
+    other.train_step()
 
 
 def test_distributed_snapshot_restore(distributed_context):

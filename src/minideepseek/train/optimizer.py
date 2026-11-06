@@ -132,6 +132,12 @@ class Muon(torch.optim.Optimizer):
                         gradient, memory_format=torch.preserve_format
                     )
                 buffer = state["momentum_buffer"]
+                if hasattr(buffer, "full_tensor"):
+                    # A restored FSDP2 checkpoint stores the state on the
+                    # parameter's sharded layout, while the Muon update is a
+                    # global matrix operation on the full gradient.
+                    buffer = buffer.full_tensor()
+                    state["momentum_buffer"] = buffer
                 buffer.mul_(momentum).add_(gradient)
                 update = gradient.add(buffer, alpha=momentum) if nesterov else buffer
                 matrix = update.reshape(-1, update.shape[-2], update.shape[-1])

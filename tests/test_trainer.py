@@ -79,7 +79,7 @@ def test_gradient_accumulation(tmp_path):
     config = _config(tmp_path, steps=1, grad_accum=2)
     trainer, _model = build_trainer(config, [batch, batch], tokenizer_hash="stub")
     summary = trainer.train(1)
-    assert summary["tokens"] == 2 * (int(batch.target_mask.sum()) + max(int(batch.target_mask.sum()) - 1, 0))
+    assert summary["tokens"] == 2 * int(batch.target_mask.sum())
 
 
 def test_sft_trainer(tmp_path):
@@ -139,6 +139,44 @@ def test_hash_layers_have_no_expert_bias(debug_model):
             assert f"{name}.expert_bias_E" in buffer_names
 
 
+def test_balance_loss_skips_hash_routers(debug_model, small_batch):
+    from minideepseek.model.routing import record_routing
+    from minideepseek.train.losses import capture_gate_scores, sequence_balance_loss
+
+    debug_model.train()
+    debug_model.zero_grad(set_to_none=True)
+    with (
+        record_routing(debug_model.model) as routing,
+        capture_gate_scores(debug_model.model) as gates,
+    ):
+        debug_model.forward(small_batch, use_mtp=False)
+    loss = sequence_balance_loss(
+        gates,
+        routing,
+        num_documents=small_batch.num_documents,
+        cu_seqlens=small_batch.cu_seqlens,
+        top_k=3,
+        num_experts=4,
+        coeff=1e-4,
+    )
+    assert float(loss.detach()) > 0.0
+    loss.backward()
+    layers = dict(iter_moe_layers(debug_model.model))
+    hash_norms = []
+    learned_norms = []
+    for name in gates:
+        moe = layers[name.removesuffix(".router")]
+        grad = moe.router.gate.weight.grad
+        assert grad is not None
+        norm = float(grad.norm())
+        (hash_norms if moe.router.hash else learned_norms).append(norm)
+    assert hash_norms and learned_norms
+    # Hash routers are skipped, so they only see the (tiny) indirect gradient
+    # that flows through the learned routers' inputs; the direct balance term
+    # used to be the same order as the learned layers.
+    assert max(hash_norms) < 0.01 * min(learned_norms)
+
+
 def test_anticipatory_routing_trainer(tmp_path):
     batch = from_sequences([[1, 2, 3, 4, 5], [6, 7, 8]])
     config = _config(tmp_path, steps=2)
@@ -148,6 +186,9 @@ def test_anticipatory_routing_trainer(tmp_path):
     assert summary["steps_run"] == 2
     assert trainer._ar_state is not None
     assert trainer._ar_state.stale_snapshot() is not None
+    # AR prefetches the next step's batch; only batches that a training step
+    # consumed may count towards the resume position.
+    assert trainer._batches_consumed == 1
 
 
 def test_factory_loader_cycles_and_validation_is_stable(tmp_path):
@@ -177,6 +218,11 @@ def test_factory_loader_cycles_and_validation_is_stable(tmp_path):
     ]
     assert len(val_losses) == 4
     assert all(torch.isfinite(torch.tensor(value)) for value in val_losses)
+    # Validation records must not erase the training metrics from the summary.
+    summary = trainer.logger.summary()
+    assert summary["steps"] == 4
+    assert "loss_mean" in summary
+    assert "val_loss_mean" in summary
 
 
 def test_resume_skips_consumed_batches(tmp_path):
@@ -225,7 +271,19 @@ def test_summary_tokens_count_all_steps(tmp_path):
     config = _config(tmp_path, steps=4, log_every=2)
     trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
     summary = trainer.train(4)
-    assert summary["tokens"] == 4 * 5  # 3 main + 2 MTP targets per step
+    assert summary["tokens"] == 4 * 3  # main-head targets per step
+
+
+def test_mixed_sources_validate_each_child():
+    from minideepseek.train.run import MixedDataset, _validate_dataset
+
+    class Child:
+        meta = {"tokenizer_hash": "wrong"}
+
+    tokenizer = type("T", (), {"sha256": "right", "vocab_size": 6400})()
+    dataset = MixedDataset(meta={"sources": []}, datasets=[Child()])
+    with pytest.raises(ValueError, match="tokenizer hash mismatch"):
+        _validate_dataset(dataset, tokenizer, TrainConfig(), label="train")
 
 
 def test_stage_transition_keeps_fresh_optimizer_and_data(tmp_path):

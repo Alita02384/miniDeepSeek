@@ -340,6 +340,28 @@ def _full_to_local(full: torch.Tensor, parameter: torch.Tensor) -> torch.Tensor:
     return value.contiguous()
 
 
+def _state_to_local(value: torch.Tensor, parameter: torch.Tensor) -> torch.Tensor:
+    """Place an optimizer-state tensor on ``parameter``'s layout.
+
+    FSDP2 parameters are DTensors, and optimizers expect their state tensors on
+    the same layout (AdamW's element-wise update mixes state and gradients).
+    Loading full state tensors as plain local tensors leaves a Tensor/DTensor
+    mismatch on the next ``optimizer.step()``.
+    """
+    from torch.distributed.tensor import DTensor
+
+    local = _full_to_local(value, parameter)
+    if not isinstance(parameter, DTensor):
+        return local
+    return DTensor.from_local(
+        local.contiguous(),
+        parameter.device_mesh,
+        parameter.placements,
+        shape=value.shape,
+        stride=value.stride(),
+    )
+
+
 def _copy_full_tensor(parameter: torch.Tensor, full: torch.Tensor) -> None:
     """Copy a full CPU tensor into a parameter, sharding for DTensor."""
     from torch.distributed.tensor import DTensor
@@ -430,7 +452,7 @@ def _load_single_optimizer(
             if not torch.is_tensor(value) or value.ndim == 0:
                 converted[key] = value
             else:
-                converted[key] = _full_to_local(value, parameter)
+                converted[key] = _state_to_local(value, parameter)
         new_state[index[name]] = converted
     optimizer.load_state_dict({"state": new_state, "param_groups": new_groups})
 

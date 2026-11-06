@@ -76,8 +76,14 @@ class Compressor(nn.Module):
         seqlen = x.shape[0]
         ratio = self.compress_ratio
         rd = self.rope_head_dim
-        kv = self.wkv(x)
-        score = self.wgate(x)
+        # The reference keeps the compressor projections in fp32: the pooled
+        # KV then goes through a bf16/fp16 autocast.  Doing the projections in
+        # low precision changes this module's numerics on CUDA.
+        with torch.autocast(
+            device_type="cuda", dtype=torch.float32, enabled=x.device.type == "cuda"
+        ):
+            kv = self.wkv(x)
+            score = self.wgate(x)
         if cu_seqlens is None:
             if seqlen % ratio != 0:
                 raise ValueError(f"seqlen {seqlen} not divisible by ratio {ratio}")
@@ -102,7 +108,7 @@ class Compressor(nn.Module):
             kv = self._overlap_transform(kv, 0.0, first)
             score = self._overlap_transform(score, float("-inf"), first)
         kv = (kv * score.softmax(dim=1)).sum(dim=1)
-        kv = self.norm(kv)
+        kv = self.norm(kv.to(x.dtype))
         nope, rope = torch.split(kv, [self.head_dim - rd, rd], dim=-1)
         rope = self.rope(rope.unsqueeze(1), positions=comp_positions).squeeze(1)
         return torch.cat([nope, rope], dim=-1)

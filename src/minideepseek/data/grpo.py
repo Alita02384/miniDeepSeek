@@ -123,6 +123,16 @@ def _prompt_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
+def _record_tools(value: Any) -> list[dict[str, Any]]:
+    """Parse a top-level ``tools`` field (list or MiniMind-style JSON string)."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    return list(value) if isinstance(value, list) else []
+
+
 def _reference_from_record(record: dict[str, Any], messages: list[dict[str, Any]]) -> str | None:
     for key in ("reference_answer", "answer", "gt", "target"):
         value = record.get(key)
@@ -159,7 +169,7 @@ def convert_record(
         difficulty=str(record.get("difficulty") or "medium"),
         source=str(record.get("source") or source or "unknown"),
         license=str(record.get("license") or "unknown"),
-        tools=list(record.get("tools") or []),
+        tools=_record_tools(record.get("tools")),
     )
 
 
@@ -178,7 +188,7 @@ def load_records(path: str | Path) -> list[GRPORecord]:
                     difficulty=str(item.get("difficulty", "medium")),
                     source=str(item.get("source", "unknown")),
                     license=str(item.get("license", "unknown")),
-                    tools=list(item.get("tools") or []),
+                    tools=_record_tools(item.get("tools")),
                 )
             )
         else:
@@ -256,8 +266,14 @@ def tokenize_prompts(
     records: Iterable[GRPORecord],
     tokenizer: MiniDeepSeekTokenizer,
 ) -> list[list[int]]:
+    """Tokenize prompts exactly like the rollout/eval prompt builder."""
     prompts = []
     for record in records:
-        text = tokenizer.render_chat(record.prompt, add_generation_prompt=True)
+        text = tokenizer.render_chat(
+            record.prompt,
+            add_generation_prompt=True,
+            tools=record.resolved_tools(),
+            open_thinking=True,
+        )
         prompts.append(tokenizer.encode(text))
     return prompts

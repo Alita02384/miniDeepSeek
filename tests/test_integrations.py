@@ -28,7 +28,28 @@ def test_verl_record_schema_and_reward(debug_model, stub_tokenizer):
     assert row["data_source"] == "minideepseek/math/math_exact_match"
     assert row["reward_model"]["ground_truth"] == "2"
     assert row["extra_info"]["verifier"] == "math_exact_match"
+    assert row["extra_info"]["prompt"] == record.prompt
     assert compute_score(row["data_source"], "答案 2", "2", row["extra_info"]) > 0
+
+
+def test_verl_world_reward_uses_prompt():
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "What is the capital of France?"}],
+        domain="world",
+        reference_answer="Paris is the capital of France",
+        verifier="llm_judge",
+    )
+    row = to_verl_record(record)
+    response = "Paris is the capital"
+    with_prompt = compute_score(
+        row["data_source"], response, row["reward_model"]["ground_truth"], row["extra_info"]
+    )
+    without_prompt = dict(row["extra_info"])
+    without_prompt.pop("prompt")
+    without = compute_score(
+        row["data_source"], response, row["reward_model"]["ground_truth"], without_prompt
+    )
+    assert with_prompt > without
 
 
 def test_verl_config_contains_hf_and_reward(tmp_path):

@@ -279,6 +279,34 @@ def token_schedule(
     return max(int(round(base + (final - base) * progress)), 1)
 
 
+@dataclass
+class BatchTokenSchedule:
+    """Stateful batch-token warmup shared across loader restarts.
+
+    A dataloader factory is re-created whenever an epoch ends or a run resumes.
+    Keeping the warmup counter in the caller-owned schedule object makes the
+    budget continue from the global batch index instead of restarting at
+    ``base`` every time.
+    """
+
+    base: int
+    final: int | None
+    warmup_ratio: float
+    total_steps: int
+    index: int = 0
+
+    def next(self) -> int:
+        value = token_schedule(
+            self.base,
+            self.final,
+            self.warmup_ratio,
+            self.total_steps,
+            self.index,
+        )
+        self.index += 1
+        return value
+
+
 def iter_batches(
     dataset: PackedPretrainDataset,
     *,
@@ -292,11 +320,13 @@ def iter_batches(
     batch_warmup_ratio: float = 0.0,
     total_steps: int = 1,
     seq_len: int = 1,
+    schedule: BatchTokenSchedule | None = None,
 ):
     """Yield packs (each pack is already a multi-document batch).
 
     When ``batch_tokens`` is given, the pack size is derived per batch from
-    :func:`token_schedule` instead of the fixed ``batch_size``.
+    :func:`token_schedule` instead of the fixed ``batch_size``.  Pass a shared
+    ``schedule`` to keep the warmup progress across loader restarts.
     """
     from ..model.batch import concat_batches
 
@@ -308,17 +338,24 @@ def iter_batches(
         indices = indices[shard_rank::shard_world_size]
     index = 0
     batch_index = 0
-    while index < len(indices):
+
+    def next_budget() -> int | None:
         if batch_tokens is None:
+            return None
+        if schedule is not None:
+            return schedule.next()
+        return token_schedule(
+            batch_tokens,
+            batch_tokens_final,
+            batch_warmup_ratio,
+            total_steps,
+            batch_index,
+        )
+
+    while index < len(indices):
+        current = next_budget()
+        if current is None:
             current = max(int(batch_size), 1) * max(int(seq_len), 1)
-        else:
-            current = token_schedule(
-                batch_tokens,
-                batch_tokens_final,
-                batch_warmup_ratio,
-                total_steps,
-                batch_index,
-            )
         size = max(1, current // max(int(seq_len), 1))
         chunk = indices[index : index + size]
         index += size

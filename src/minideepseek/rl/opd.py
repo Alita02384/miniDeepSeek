@@ -28,6 +28,7 @@ from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.distributed import (
     DistributedContext,
+    all_reduce_gradients,
     apply_parallelism,
     clip_grad_norm,
     gather_model_state_dict,
@@ -226,6 +227,8 @@ class OPDTrainer:
         if not torch.isfinite(loss_total):
             raise RuntimeError(f"non-finite OPD loss at step {self.step_index}")
         loss_total.backward()
+        if self.dist.enabled and self.dist.mode == "ddp":
+            all_reduce_gradients(self.student.model, self.dist.world_size)
         grad_norm = clip_grad_norm(self.student.model, self.config.optim.grad_clip)
         self._update_expert_biases()
         self.scheduler.step(self.step_index)

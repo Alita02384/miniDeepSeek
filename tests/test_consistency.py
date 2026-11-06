@@ -53,3 +53,28 @@ def test_run_all_checks(debug_model, stub_tokenizer):
     assert report["logprob"]["passed"]
     assert report["routing"]["passed"]
     assert report["checkpoint"]["passed"]
+
+
+def test_cli_ignores_mtp_heads_for_zero_mtp_model(tmp_path):
+    from minideepseek.consistency.check import main
+    from minideepseek.model import build_model
+    from minideepseek.model.checkpoint import save_checkpoint
+    from minideepseek.tokenizer import load_tokenizer
+
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=1, device="cpu")
+    checkpoint = tmp_path / "mtp"
+    save_checkpoint(checkpoint, model, tokenizer_hash=load_tokenizer().sha256)
+    code = main(
+        [
+            "--flavor",
+            "debugmodel",
+            "--seq-len",
+            "128",
+            "--checkpoint",
+            str(checkpoint),
+            "--demo",
+            "--max-new-tokens",
+            "1",
+        ]
+    )
+    assert code == 0

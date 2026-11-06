@@ -46,10 +46,12 @@ class MetricsLogger:
     def summary(self) -> dict[str, Any]:
         if not self.history:
             return {}
-        keys = set.intersection(*(set(item) for item in self.history)) - {"step"}
-        summary = {"steps": len(self.history)}
-        for key in sorted(keys):
-            values = [item[key] for item in self.history]
+        # Validation records only carry ``val_loss``; intersecting the key sets
+        # would drop every training metric as soon as one is logged.
+        keys = sorted({key for item in self.history for key in item} - {"step"})
+        summary = {"steps": len({item["step"] for item in self.history})}
+        for key in keys:
+            values = [item[key] for item in self.history if key in item]
             summary[f"{key}_first"] = values[0]
             summary[f"{key}_last"] = values[-1]
             summary[f"{key}_min"] = min(values)

@@ -14,7 +14,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .pretrain import BatchTokenSchedule
 
 import numpy as np
 import torch
@@ -183,8 +186,13 @@ def iter_batches(
     batch_tokens_final: int | None = None,
     batch_warmup_ratio: float = 0.0,
     total_steps: int = 1,
+    schedule: BatchTokenSchedule | None = None,
 ):
-    """Yield multi-document batches greedily filled up to the current budget."""
+    """Yield multi-document batches greedily filled up to the current budget.
+
+    Pass a shared ``BatchTokenSchedule`` to keep warmup progress across loader
+    restarts (see ``data.pretrain.iter_batches``).
+    """
     from .pretrain import token_schedule
 
     order = list(range(len(dataset)))
@@ -196,19 +204,28 @@ def iter_batches(
     group: list[PackedBatch] = []
     total = 0
     batch_index = 0
-    for index in order:
-        limit = token_schedule(
+    limit: int | None = None
+
+    def next_limit() -> int:
+        if schedule is not None:
+            return schedule.next()
+        return token_schedule(
             batch_tokens,
             batch_tokens_final,
             batch_warmup_ratio,
             total_steps,
             batch_index,
         )
+
+    for index in order:
+        if limit is None:
+            limit = next_limit()
         sample = dataset[index]
         if group and total + sample.num_tokens > limit:
             yield concat_batches(group)
             group, total = [], 0
             batch_index += 1
+            limit = next_limit()
         group.append(sample)
         total += sample.num_tokens
     if group:

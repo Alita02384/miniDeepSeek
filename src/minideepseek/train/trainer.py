@@ -180,12 +180,17 @@ class Trainer:
         self._last_loss: float | None = None
 
     # -- data -----------------------------------------------------------------
-    def _next_batch(self) -> PackedBatch:
+    def _pull_batch(self) -> PackedBatch:
+        """Fetch the next batch without advancing the resume position."""
         try:
             batch = next(self._batch_iter)
         except StopIteration:
             self._batch_iter = iter(self._batch_factory())
             batch = next(self._batch_iter)
+        return batch
+
+    def _next_batch(self) -> PackedBatch:
+        batch = self._pull_batch()
         self._batches_consumed += 1
         return batch
 
@@ -324,7 +329,9 @@ class Trainer:
             return
         gates = router_gate_snapshot(self.model.model)
         while len(self._ar_queue) < micro_batches:
-            batch = self._next_batch()
+            # Prefetched batches are not counted as consumed until a training
+            # step actually uses them.
+            batch = self._pull_batch()
             self._ar_queue.append((batch, probe_routing(self.model, batch, gates)))
 
     def _next_training_batch(self) -> tuple[PackedBatch, object | None]:
@@ -390,7 +397,9 @@ class Trainer:
                 if loss_output.indexer is not None
                 else 0.0
             )
-            metrics.tokens = loss_output.token_count
+            # ``tokens`` is the LM token budget (main head only); MTP targets
+            # are auxiliary prediction slots, not corpus tokens.
+            metrics.tokens = loss_output.main_token_count
             metrics.router = routing_metrics(routing)
             metrics.swiglu = swiglu.as_dict()
             return total, metrics
@@ -526,7 +535,7 @@ class Trainer:
             batch = batch.to(self.device)
             output = self.model.compute_loss(batch, mtp_weight=self._mtp_weight())
             losses.append(float(output.total.detach()))
-            tokens += output.token_count
+            tokens += output.main_token_count
         if was_training:
             self.model.train()
         if not losses:

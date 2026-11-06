@@ -138,6 +138,78 @@ def test_grpo_conversion_and_reference_leak():
         validate_record(assistant, load_tokenizer())
 
 
+def test_grpo_top_level_string_tools_are_parsed(tmp_path):
+    from minideepseek.data.grpo import convert_record, load_records
+
+    tools = json.dumps(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "calc",
+                    "description": "evaluate",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+    )
+    record = convert_record(
+        {
+            "prompt": [{"role": "user", "content": "1+1"}],
+            "tools": tools,
+            "gt": "2",
+            "domain": "math",
+        },
+        default_domain="math",
+        default_verifier="math_exact_match",
+    )
+    assert [tool["function"]["name"] for tool in record.tools] == ["calc"]
+
+    path = tmp_path / "tools.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "prompt": [{"role": "user", "content": "1+1"}],
+                "verifier": "math_exact_match",
+                "domain": "math",
+                "tools": tools,
+            }
+        )
+        + "\n"
+    )
+    loaded = load_records(path)
+    assert [tool["function"]["name"] for tool in loaded[0].tools] == ["calc"]
+    rendered = load_tokenizer().render_chat(
+        loaded[0].prompt,
+        add_generation_prompt=True,
+        tools=loaded[0].resolved_tools(),
+        open_thinking=True,
+    )
+    assert "calc" in rendered
+
+
+def test_tokenize_prompts_matches_rollout_format():
+    from minideepseek.data.grpo import GRPORecord, tokenize_prompts
+
+    tokenizer = load_tokenizer()
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "1+1"}],
+        domain="math",
+        reference_answer="2",
+        verifier="math_exact_match",
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "calc", "parameters": {"type": "object"}},
+            }
+        ],
+    )
+    decoded = tokenizer.decode(tokenize_prompts([record], tokenizer)[0])
+    assert "calc" in decoded
+    assert "<think>" in decoded
+    assert "</think>" not in decoded  # thinking stays open for the rollout
+
+
 def test_grpo_build_from_minimind_style(tmp_path):
     source = tmp_path / "rl.jsonl"
     rows = [
@@ -269,6 +341,63 @@ def test_flat_dataset_sidecars_are_memmapped(tmp_path):
     arrays = load_flat_dataset(path)
     assert all(isinstance(array, np.memmap) for array in arrays)
     assert arrays[0].dtype == np.int32
+
+
+def test_batch_token_warmup_persists_across_loader_restarts(tmp_path):
+    import numpy as np
+
+    from minideepseek.data.io import save_flat_dataset
+    from minideepseek.data.pretrain import BatchTokenSchedule, PackedPretrainDataset, iter_batches
+    from minideepseek.data.sft import SFTDataset
+    from minideepseek.data.sft import iter_batches as sft_iter_batches
+
+    ids = np.arange(1, 33, dtype=np.int32)  # 4 examples x 8 tokens
+    positions = np.tile(np.arange(8, dtype=np.int32), 4)
+    mask = np.tile(np.asarray([False] + [True] * 7), 4)
+    offsets = np.arange(0, 33, 8, dtype=np.int64)
+    path = tmp_path / "tiny.npz"
+    save_flat_dataset(
+        path,
+        input_ids=ids,
+        positions=positions,
+        target_mask=mask,
+        offsets=offsets,
+        meta={"format": "test"},
+    )
+
+    def run_epoch(iterator):
+        return [batch.num_tokens for batch in iterator]
+
+    pretrain = PackedPretrainDataset(path)
+    schedule = BatchTokenSchedule(base=8, final=32, warmup_ratio=0.5, total_steps=4)
+    kwargs = dict(
+        batch_tokens=8,
+        batch_tokens_final=32,
+        batch_warmup_ratio=0.5,
+        total_steps=4,
+        seq_len=8,
+        shuffle=False,
+        schedule=schedule,
+    )
+    first = run_epoch(iter_batches(pretrain, **kwargs))
+    second = run_epoch(iter_batches(pretrain, **kwargs))
+    assert first[0] == 8
+    assert second[0] > first[0]  # the warmup continued instead of restarting
+
+    sft = SFTDataset(path)
+    sft_schedule = BatchTokenSchedule(base=8, final=32, warmup_ratio=0.5, total_steps=4)
+    sft_kwargs = dict(
+        batch_tokens=8,
+        batch_tokens_final=32,
+        batch_warmup_ratio=0.5,
+        total_steps=4,
+        shuffle=False,
+        schedule=sft_schedule,
+    )
+    sft_first = run_epoch(sft_iter_batches(sft, **sft_kwargs))
+    sft_second = run_epoch(sft_iter_batches(sft, **sft_kwargs))
+    assert sft_first[0] == 8
+    assert sft_second[0] > sft_first[0]
 
 
 def test_sft_tool_record_keeps_tool_schema(tmp_path):

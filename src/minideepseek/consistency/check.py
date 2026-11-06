@@ -77,7 +77,10 @@ def main(argv: list[str] | None = None) -> int:
         index_topk=index_topk,
     )
     if args.checkpoint:
-        meta = load_checkpoint(args.checkpoint, model)
+        # Pretrain/SFT checkpoints carry MTP heads; a model built without them
+        # must ignore exactly that prefix (same policy as eval/RL/teacher).
+        ignore = ("mtp_layers.",) if args.n_mtp_layers == 0 else ()
+        meta = load_checkpoint(args.checkpoint, model, ignore_prefixes=ignore)
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise SystemExit("checkpoint tokenizer hash does not match")

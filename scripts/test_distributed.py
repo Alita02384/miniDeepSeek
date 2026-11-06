@@ -116,9 +116,29 @@ def _worker(rank: int, world_size: int, port: int, mode: str, steps: int) -> Non
         digest = box[0]
         if digest is None:
             raise RuntimeError("rank 0 did not gather a state dict")
-        trainer.save("final")  # all ranks participate; only rank 0 writes
+        checkpoint = trainer.save("final")  # all ranks participate; only rank 0 writes
+        # Regression: resume a fresh model from the checkpoint and take one
+        # step.  FSDP2 optimizer state must keep the parameter layout, or the
+        # next AdamW/Muon step mixes plain Tensors and DTensors.
+        set_seed(4321)
+        resumed = build_model(
+            "debugmodel",
+            seq_len=64,
+            n_mtp_layers=1,
+            device=context.device,
+        )
+        resumed.model = apply_parallelism(
+            resumed.model, context, settings, device=context.device
+        )
+        resumed_trainer = Trainer(config, resumed, batches, distributed=context)
+        resumed_trainer.resume(checkpoint)
+        resumed_trainer.train_step()
         if context.is_main:
-            print(f"PASS world_size={world_size} mode={mode} digest={digest[:16]}", flush=True)
+            print(
+                f"PASS world_size={world_size} mode={mode} digest={digest[:16]} "
+                "(resume step ok)",
+                flush=True,
+            )
     finally:
         context.shutdown()
 

@@ -33,6 +33,7 @@ from ..model.wrapper import MiniDeepSeekModel, build_model
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 from ..train.distributed import (
     DistributedContext,
+    all_reduce_gradients,
     apply_parallelism,
     gather_model_state_dict,
     gather_optimizer_state_dict,
@@ -278,6 +279,8 @@ class GRPOTrainer:
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite GRPO loss at step {self.step_index}")
         loss.backward()
+        if self.dist.enabled and self.dist.mode == "ddp":
+            all_reduce_gradients(self.model.model, self.dist.world_size)
         stats.grad_norm = float(
             torch.nn.utils.clip_grad_norm_(
                 list(self.model.parameters()), self.config.optim.grad_clip

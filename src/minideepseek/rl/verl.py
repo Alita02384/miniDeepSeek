@@ -51,6 +51,9 @@ def to_verl_record(record: GRPORecord, *, data_source: str | None = None) -> dic
             "source": record.source,
             "license": record.license,
             "teacher_key": record.domain,
+            # verl's reward signature does not receive the prompt; carry it so
+            # prompt-dependent rewards (world relevance) stay correct.
+            "prompt": record.prompt,
         },
         "ability": record.domain,
     }
@@ -91,8 +94,9 @@ def compute_score(
         parts = data_source.split("/")
         if len(parts) == 3:
             domain, verifier = parts[1], parts[2]
+    prompt = extra.get("prompt")
     record = GRPORecord(
-        prompt=[],
+        prompt=prompt if isinstance(prompt, list) else [],
         domain=domain,
         reference_answer=ground_truth or None,
         rubric=dict(extra.get("rubric") or {}),

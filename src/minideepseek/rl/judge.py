@@ -111,9 +111,7 @@ def make_judge(settings: RewardSettings):
     """Return the configured world judge, falling back to the heuristic."""
     if settings.world_judge != "http":
         return default_world_judge
-    url = os.environ.get("MINIDEEPSEEK_JUDGE_URL") or os.environ.get(
-        "MINIDEEPSEEK_JUDGE_URL"
-    )
+    url = os.environ.get("MINIDEEPSEEK_JUDGE_URL")
     model = os.environ.get("MINIDEEPSEEK_JUDGE_MODEL")
     if not url or not model:
         raise RuntimeError(

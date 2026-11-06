@@ -230,6 +230,32 @@ def test_grpo_resume_does_not_override_rl_lr(tmp_path, stub_tokenizer):
     )
 
 
+def test_grpo_ddp_all_reduces_gradients(tmp_path, stub_tokenizer, monkeypatch):
+    import minideepseek.rl.grpo as grpo_module
+    from minideepseek.model import build_model
+    from minideepseek.train.distributed import DistributedContext
+
+    calls = []
+    monkeypatch.setattr(
+        grpo_module,
+        "all_reduce_gradients",
+        lambda model, world_size: calls.append(world_size),
+    )
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math")]
+    config = _rl_config(tmp_path)
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    trainer = GRPOTrainer(
+        config,
+        model,
+        stub_tokenizer,
+        records,
+        lambda text, _record: RewardResult(total=0.0),
+        distributed=DistributedContext(enabled=True, mode="ddp", world_size=2),
+    )
+    trainer.step()
+    assert calls == [2]
+
+
 def test_grpo_prompt_budget_is_global(tmp_path, stub_tokenizer):
     from minideepseek.model import build_model
     from minideepseek.rl.rollout import TorchRolloutEngine

@@ -53,7 +53,9 @@ def sequence_balance_loss(
     ``f`` is the fraction of tokens in document ``d`` routed to expert ``i`` and
     ``P`` is the mean gate score.  This is the V3/V4 sequence-wise form, which
     discourages a layer from concentrating an individual sequence on a few
-    experts (unlike the batch-wise auxiliary loss).
+    experts (unlike the batch-wise auxiliary loss).  Only learned routers are
+    included: hash-routed layers pick experts from a fixed table, so the loss
+    cannot change their routing and would only distort the expert weights.
     """
     if coeff <= 0 or not gate_scores or not routing:
         reference = next(iter(gate_scores.values()), None)
@@ -67,6 +69,11 @@ def sequence_balance_loss(
         if name not in routing.layers:
             continue
         layer = routing.layers[name]
+        if layer.is_hash:
+            # Hash routing reads a fixed token->expert table, so a balance
+            # loss cannot change its routing; its only gradient would distort
+            # the gate weights that scale the routed experts.
+            continue
         scores = F.softplus(gate.float()).sqrt()
         routing_map = layer.routing_map.to(gate.device).float()
         if scores.shape[0] != routing_map.shape[0]:
