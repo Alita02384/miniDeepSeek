@@ -431,3 +431,44 @@
   - B53（MTP 无效 token 计入路由统计）保留为设计缺口，需 padding-mask 贯通；
   - Compressor fp32 对齐的 CUDA bf16 数值收益未在 GPU 验证；
   - vLLM/verl GPU、NCCL、真实 mini-60M 数据与训练仍未验证。
+
+## 2026-11-06 三个模型档位与 configs/model 架构文件
+
+- **commit**: `363e3af` feat: 三个模型档位改用 configs/model 架构文件加载
+- **做了什么**:
+  - 采用 `doc/Parameter_Setting.md` 的设计，新增 `mini_220m_a80m`
+    （默认）、`mini_145m_a60m`、`mini_60m_dense_d768` 三个完整
+    `ModelSettings` YAML；删除旧 `mini_60m/110m/200m`；
+  - `model/config.py` 改为从 YAML 构建：只保留校验、hybrid 层映射、MTP
+    派生与 index top-k 派生；训练配置用 `model_file` 选择架构，`model:`
+    覆盖运行参数，CLI 增加 `--model-config`；
+  - `seq_len`（4K）与 `max_context`（8K）分离；HF 导出/加载携带
+    `max_context`；
+  - dense 档单 expert 权重固定为 1.0，`sequence_balance_loss` 对单 expert
+    返回 0；修复 `parameter_report` 的 MTP expert 重复统计；
+  - 更新所有 pretrain/SFT/GRPO/OPD/eval 配置、README、decisions
+    D46-D52、testing 与 sources。
+- **实现了什么**:
+  - 三个档位参数与激活（MTP depth 1、tied embeddings）：
+    `mini_220m_a80m` 216,652,538 / 82.17M；
+    `mini_145m_a60m` 145,841,946 / 60.91M；
+    `mini_60m_dense_d768` 60,876,570 / 60.88M；
+  - 新模型只需新增/替换 `configs/model/*.yaml`，无需改 Python；
+  - `mini_220m_a80m` 在 CPU 完成 1-step forward/backward + checkpoint
+    回读，三档均进入单测。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → **175 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0（175 passed）
+  - `scripts/verify_reference.py --seq-len 64 --mtp` → worst block 1.631e-4，
+    logits mean abs 1.58e-4
+  - `python -m minideepseek.train.smoke --flavor mini_220m_a80m --seq-len 64
+    --n-mtp-layers 1 --steps 1 --device cpu` → `checkpoint_max_abs_diff=0.0`
+  - `load_config(TrainConfig, configs/pretrain/full_6b.yaml)` → 构建
+    216.65M / max_context 8192，跑 1 step 通过
+- **未完成 / 风险**:
+  - head_dim=256 的 torch gather attention 在 4K/8K 真实 batch 下的显存
+    未验证（decisions D51）；full_6b 的 64K tokens/micro-batch 大概率需要
+    fused kernel / activation checkpointing / 分块重算；
+  - 旧的“dense attention 对照”（compress_ratios 全 0）未保留；
+  - vLLM/verl GPU、NCCL、真实数据训练仍未验证。
