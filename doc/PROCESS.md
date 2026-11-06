@@ -393,3 +393,41 @@
 - **剩余 / 设计决策**:
   - B31（code license 未知 header 策略）、B32（污染检查/manifest 强制接入）、B35（HF remote-code 自包含）、B37（grad accumulation token 加权）仍需产品/数据策略决定，不是当前可复现的静默逻辑错误；
   - vLLM/verl/NCCL/bf16 实机与真实 60M 训练仍未验证。
+
+## 2026-11-06 审计 02 与修复（FSDP2 resume / balance / warmup / metrics / 数据 / RL）
+
+- **commit**: `6da5bb0` fix: 修复审计 02 的训练/数据/RL 逻辑问题
+- **做了什么**:
+  - 第二轮独立审计（通读源码 + 参考实现对照 + /tmp 数值脚本），新增
+    `doc/BUGS_02.md`（1 个 P0、5 个 P1、6 个 P2、若干设计项）与
+    `doc/FIXS_02.md`（逐项修复记录/验证/剩余风险）；
+  - FSDP2 optimizer-state 恢复：state 按参数 layout 包回 DTensor；Muon 收到分片
+    momentum buffer 时先 `full_tensor()` 还原；
+  - sequence balance loss 跳过 hash 路由层；batch-token warmup 改为共享
+    `BatchTokenSchedule`，跨 epoch/resume 继续（val 仍用 base 预算）；
+  - `MetricsLogger.summary` 取 key 并集；`tokens` 指标只统计主头 LM token；
+  - GRPO 顶层 string tools 解析；consistency CLI 在 n_mtp=0 时忽略 `mtp_layers.`；
+  - GRPO/OPD 在 ddp 模式下 all-reduce 梯度；`data.sources` 返回 `MixedDataset`
+    并逐源校验；`tokenize_prompts` 对齐 rollout prompt；
+  - verl `extra_info` 透传 prompt；Compressor 投影按参考实现 fp32；
+    AR 预取不再计入 `extra.data_batches`。
+- **实现了什么**:
+  - 多卡（FSDP2）中断续训/curriculum 交接/rollback 恢复后可继续 step；
+  - 多 epoch 训练不再把 batch-token warmup 重置；
+  - 带验证集的 run 报告保留 lr/grad_norm/routing/swiglu 汇总；
+  - ddp RL 的 rank 权重保持一致；混料训练恢复 tokenizer/seq_len 门禁。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → **165 passed**
+  - `bash scripts/debug_smoke.sh` → exit 0
+  - `scripts/test_distributed.py --world-size 2 --mode fsdp2|ddp --steps 1` →
+    PASS，且脚本现在会在 2 进程下 resume 后继续走一步
+  - `scripts/test_rl_distributed.py --method grpo|opd` → PASS
+  - `scripts/verify_reference.py --seq-len 160 --mtp` → worst block 1.5e-4
+  - debug SFT → GRPO → OPD 实跑，三个 checkpoint 落盘
+  - 手工：1/2 进程 FSDP2 resume/rollback step、resume 等价性（max |Δ| 6.1e-6）、
+    ddp GRPO 两 rank digest 一致、epoch1/2 batch token `[8,16,32,8]→[32,32]`
+- **未完成 / 风险**:
+  - B53（MTP 无效 token 计入路由统计）保留为设计缺口，需 padding-mask 贯通；
+  - Compressor fp32 对齐的 CUDA bf16 数值收益未在 GPU 验证；
+  - vLLM/verl GPU、NCCL、真实 mini-60M 数据与训练仍未验证。
