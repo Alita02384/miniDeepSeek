@@ -33,7 +33,7 @@ def _parse_meta(values: list[str]) -> dict[str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("metrics", nargs="+", help="one or more metrics.jsonl files")
+    parser.add_argument("metrics", help="metrics.jsonl for one run")
     parser.add_argument("--out", default=None, help="output HTML path")
     parser.add_argument("--title", default="miniDeepSeek training report")
     parser.add_argument(
@@ -45,17 +45,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    records = []
-    paths = [Path(path) for path in args.metrics]
-    for path in paths:
-        records.extend(load_metrics(path))
+    path = Path(args.metrics)
+    records = load_metrics(path)
     if not records:
         raise SystemExit("no metrics records found")
     records.sort(key=lambda record: float(record.get("step", 0)))
 
-    out = Path(args.out) if args.out else paths[0].parent / "report.html"
+    out = Path(args.out) if args.out else path.parent / "report.html"
     meta = _parse_meta(args.meta)
-    meta.setdefault("metrics", ", ".join(str(path) for path in paths))
+    meta.setdefault("metrics", str(path))
     summary = build_report(records, out, title=args.title, meta=meta)
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     return 0
