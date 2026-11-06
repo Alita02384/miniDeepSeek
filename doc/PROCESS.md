@@ -476,6 +476,7 @@
 ## 2026-11-06 训练监控、可视化与实验基建（P0+P1）
 
 - **commit**: `9f44ce0` feat: 增加训练监控、可视化与实验基建；`9a019d6` docs: 增加训练执行计划与监控/基准工具说明
+- **后续小修**: `6a534d2` 测试计数；`2257361` plot_training 单 run；`de8d449` full_6b/pilot 启用 keep_last 与 report_every
 - **做了什么**:
   - 扩展 `StepMetrics`/`metrics.jsonl`：`tokens_seen`、`tokens_per_sec`、
     `step_time_s`、`eta_seconds`、`loss_ema`、`mem_allocated/reserved/peak_mb`、
