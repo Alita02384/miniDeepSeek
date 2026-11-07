@@ -12,6 +12,7 @@ replayed in the actor forward (see ``minideepseek.model.routing``).
 
 from __future__ import annotations
 
+import random
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
@@ -87,17 +88,20 @@ class TorchRolloutEngine:
         model: MiniDeepSeekModel,
         tokenizer: MiniDeepSeekTokenizer,
         generator=None,
+        *,
+        thinking_ratio: float = 1.0,
     ):
         self.model = model
         self.tokenizer = tokenizer
         self.generator = generator
+        self.thinking_ratio = min(max(float(thinking_ratio), 0.0), 1.0)
 
-    def encode_prompt(self, record: GRPORecord) -> list[int]:
+    def encode_prompt(self, record: GRPORecord, *, open_thinking: bool = True) -> list[int]:
         text = self.tokenizer.render_chat(
             record.prompt,
             add_generation_prompt=True,
             tools=record.resolved_tools(),
-            open_thinking=True,
+            open_thinking=open_thinking,
         )
         return self.tokenizer.encode(text)
 
@@ -116,7 +120,14 @@ class TorchRolloutEngine:
         if group_size < 1:
             raise ValueError("group_size must be >= 1")
         groups: list[RolloutGroup] = []
-        prompt_ids = [self.encode_prompt(record) for record in records]
+        rng = random.Random(seed) if seed is not None else random.Random()
+        prompt_ids = [
+            self.encode_prompt(
+                record,
+                open_thinking=rng.random() < self.thinking_ratio,
+            )
+            for record in records
+        ]
         repeated = [ids for ids in prompt_ids for _ in range(group_size)]
         generator = self.generator or self.model
         output = generator.generate(

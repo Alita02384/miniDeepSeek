@@ -42,7 +42,12 @@ class ToolRolloutEngine(TorchRolloutEngine):
         thinking_ratio: float = 0.1,
         max_tool_calls: int = 4,
     ):
-        super().__init__(model, tokenizer, generator=generator)
+        super().__init__(
+            model,
+            tokenizer,
+            generator=generator,
+            thinking_ratio=thinking_ratio,
+        )
         self.max_turns = max(int(max_turns), 1)
         self.thinking_ratio = float(thinking_ratio)
         self.max_tool_calls = max(int(max_tool_calls), 1)

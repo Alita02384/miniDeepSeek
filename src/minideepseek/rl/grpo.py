@@ -121,7 +121,9 @@ class GRPOTrainer:
                     max_tool_calls=config.rl.max_tool_calls,
                 )
             else:
-                engine = TorchRolloutEngine(model, tokenizer)
+                engine = TorchRolloutEngine(
+                    model, tokenizer, thinking_ratio=config.rl.thinking_ratio
+                )
         self.engine = engine
         self.optimizer = build_optimizer(model, config.optim)
         self.scheduler = WarmupDecaySchedule(
@@ -221,9 +223,19 @@ class GRPOTrainer:
         )
         ratio = torch.exp(actor_logprobs - old_logprobs)
         clip = float(self.config.rl.clip)
-        unclipped = ratio * advantage_tensor
-        clipped = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantage_tensor
-        policy_loss = -torch.minimum(unclipped, clipped).sum() / max(length, 1)
+        if self.config.rl.loss_type == "cispo":
+            # MiniMind's CISPO: keep the gradient path through log-prob even
+            # when the importance ratio is clamped from above.
+            clamped_ratio = torch.clamp(
+                ratio, max=float(self.config.rl.epsilon_high)
+            ).detach()
+            policy_loss = -(
+                clamped_ratio * advantage_tensor * actor_logprobs
+            ).sum() / max(length, 1)
+        else:
+            unclipped = ratio * advantage_tensor
+            clipped = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantage_tensor
+            policy_loss = -torch.minimum(unclipped, clipped).sum() / max(length, 1)
         with torch.no_grad():
             clip_fraction = (
                 ((ratio < 1.0 - clip) | (ratio > 1.0 + clip)).float().mean()
@@ -468,6 +480,8 @@ def build_grpo_trainer(
 
 def _validate_rl_settings(config: RLConfig) -> None:
     """Reject options that the local GRPO trainer would otherwise ignore."""
+    if config.rl.loss_type not in {"grpo", "cispo"}:
+        raise ValueError(f"unknown GRPO loss_type {config.rl.loss_type!r}")
     if config.rl.kl_coeff != 0:
         raise ValueError("GRPO does not implement a KL reference penalty")
     if config.rl.min_response_tokens != 2:

@@ -1,7 +1,7 @@
 # Domain GRPO. MTP is disabled for RL: the loss is defined on the main head.
-model_file: configs/model/mini_220m_a80m.yaml
+model_file: configs/model/mini_145m_a60m.yaml
 model:
-  flavor: mini_220m_a80m
+  flavor: mini_145m_a60m
   seq_len: 4096
   n_mtp_layers: 0
   swiglu_limit: 10.0
@@ -34,18 +34,28 @@ train:
   out_dir: checkpoints/grpo_code
 rl:
   method: grpo
-  group_size: 8
-  prompts_per_step: 32
-  max_new_tokens: 1024
-  temperature: 1.0
+  group_size: 4
+  prompts_per_step: 8
+  max_new_tokens: 768
+  temperature: 0.8
   clip: 0.2
+  loss_type: cispo
+  epsilon_high: 5.0
   kl_coeff: 0.0
 reward:
   kind: code
-  format_bonus: 0.1
-  parse_bonus: 0.1
-  length_penalty: 0.05
-  max_length_penalty_at: 2048
+  # Unit tests are the primary verifier.  These weights are intentionally
+  # explicit so the code specialist reward can be tuned without touching the
+  # executor; the values are a first pass.
+  code_timeout_s: 5.0
+  code_pass_reward: 1.0
+  code_compile_bonus: 0.0
+  code_syntax_penalty: 0.1
+  code_format_bonus: 0.05
+  length_bonus: 0.0
+  think_bonus: 0.0
+  repetition_penalty: 0.0
+  reward_clip: 3.0
 distributed:
   mode: fsdp2
   param_dtype: bfloat16

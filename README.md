@@ -36,6 +36,7 @@
 | GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL；FSDP2 多卡路径 |
 | general specialist RLAIF | `rl/reward_model.py`, `configs/grpo/general.yaml` | `internlm2-1_8b-reward` + 长度/思考/重复 shaping |
 | tool-use specialist | `rl/agent_rollout.py`, `rl/tools.py`, `configs/grpo/tool.yaml` | 多轮工具执行、observation mask、tool reward |
+| code specialist 槽位 | `configs/{sft,grpo,eval}/code.yaml` | 单测 reward 权重可配；数据待补，3-teacher pipeline 已预留 |
 | 一键流水线 | `pipeline.py`, `configs/pipeline/` | tokenize→pretrain→SFT→GRPO→OPD→eval→export；按实际 token 自动算 step |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
 | 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
@@ -47,7 +48,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`210 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`213 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 

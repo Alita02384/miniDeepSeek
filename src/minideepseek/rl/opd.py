@@ -115,7 +115,9 @@ class OPDTrainer:
                     max_tool_calls=config.rl.max_tool_calls,
                 )
             else:
-                engine = TorchRolloutEngine(student, tokenizer)
+                engine = TorchRolloutEngine(
+                    student, tokenizer, thinking_ratio=config.rl.thinking_ratio
+                )
         self.engine = engine
         self.optimizer = build_optimizer(student, config.optim)
         self.scheduler = WarmupDecaySchedule(

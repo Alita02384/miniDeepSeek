@@ -24,7 +24,7 @@ def build_rollout_engine(
     """
     del sample_kwargs
     if config.rl.rollout_backend == "torch":
-        return TorchRolloutEngine(model, tokenizer)
+        return TorchRolloutEngine(model, tokenizer, thinking_ratio=config.rl.thinking_ratio)
     if config.rl.rollout_backend != "vllm":
         raise ValueError(f"unknown rollout backend {config.rl.rollout_backend!r}")
 
@@ -52,4 +52,4 @@ def build_rollout_engine(
         index_topk=model.current_index_topk(),
         indexer_loss_coeff=model.config.layers[-1].attention.indexer_loss_coeff,
     )
-    return TorchRolloutEngine(model, tokenizer, generator=generator)
+    return TorchRolloutEngine(model, tokenizer, generator=generator, thinking_ratio=config.rl.thinking_ratio)

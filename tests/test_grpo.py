@@ -367,3 +367,41 @@ def test_general_reward_model_and_shaping():
     assert result.components["length"] == 0.5
     assert result.components["think"] > 0
     assert result.total <= 3.0
+
+
+def test_code_reward_configurable_weights():
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "add"}],
+        domain="code",
+        verifier="unit_test",
+        rubric={"tests": "assert add(1, 2) == 3"},
+    )
+    settings = RewardSettings(
+        kind="code",
+        code_pass_reward=2.0,
+        code_compile_bonus=0.2,
+        code_syntax_penalty=0.3,
+        code_format_bonus=0.1,
+    )
+    result = code_reward("```python\ndef add(a, b):\n    return a + b\n```", record, settings)
+    assert abs(result.total - 2.3) < 1e-9
+    broken = code_reward("```python\ndef add(a, b)\n```", record, settings)
+    assert abs(broken.total + 0.3) < 1e-9
+
+
+def test_grpo_cispo_one_step(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model
+
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math", verifier="math_exact_match")]
+    config = _rl_config(tmp_path, loss_type="cispo", epsilon_high=5.0)
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
+    trainer = GRPOTrainer(
+        config,
+        model,
+        stub_tokenizer,
+        records,
+        lambda text, _record: RewardResult(total=float(len(text) % 2), components={"dummy": 1.0}),
+    )
+    metrics = trainer.step()
+    assert torch.isfinite(torch.tensor(metrics["loss"]))
+    assert metrics["clip_fraction"] >= 0.0

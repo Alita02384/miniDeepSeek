@@ -134,12 +134,19 @@ def _extract_code(response: str) -> str:
 
 
 def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> RewardResult:
+    """Unit-test reward with configurable pass/compile/format weights.
+
+    The tests live in ``record.rubric['tests']`` (or ``test_code``).  The
+    settings are deliberately explicit so the code specialist's reward can be
+    tuned later without editing the executor.
+    """
     code = _extract_code(response)
     tests = record.rubric.get("tests") or record.rubric.get("test_code")
+    format_bonus = settings.code_format_bonus if code != response else 0.0
     if not tests:
         return RewardResult(
             total=0.0,
-            components={"unit_tests": 0.0, "compiled": 0.0},
+            components={"unit_tests": 0.0, "compiled": 0.0, "format": format_bonus},
             details={"error": "record has no rubric.tests"},
         )
     try:
@@ -147,8 +154,8 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
         compiled = 1.0
     except SyntaxError as error:
         return RewardResult(
-            total=-0.1,
-            components={"unit_tests": 0.0, "compiled": 0.0},
+            total=-float(settings.code_syntax_penalty),
+            components={"unit_tests": 0.0, "compiled": 0.0, "format": format_bonus},
             details={"error": f"syntax: {error}"},
         )
     program = code + "\n\n" + str(tests) + "\n"
@@ -165,14 +172,20 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
             )
         except subprocess.TimeoutExpired:
             return RewardResult(
-                total=0.0,
-                components={"unit_tests": 0.0, "compiled": compiled},
+                total=float(settings.code_compile_bonus) + format_bonus,
+                components={"unit_tests": 0.0, "compiled": compiled, "format": format_bonus},
                 details={"error": "timeout"},
             )
     passed = completed.returncode == 0
-    components = {"unit_tests": 1.0 if passed else 0.0, "compiled": compiled}
+    base = float(settings.code_pass_reward) if passed else 0.0
+    total = base + float(settings.code_compile_bonus) + format_bonus
+    components = {
+        "unit_tests": 1.0 if passed else 0.0,
+        "compiled": compiled,
+        "format": format_bonus,
+    }
     return RewardResult(
-        total=1.0 if passed else 0.0,
+        total=total,
         components=components,
         details={
             "returncode": completed.returncode,

@@ -63,3 +63,33 @@ def test_build_flat_datasets(tmp_path):
     assert report["grpo_tool"]["records"] == 1
     general = [json.loads(line) for line in (out / "grpo_general_train.jsonl").read_text().splitlines()]
     assert general and general[0]["multi_turn"] is True
+
+
+def test_build_code_slots(tmp_path):
+    minimind = tmp_path / "minimind"
+    minimind.mkdir()
+    code_sft = tmp_path / "code_sft.jsonl"
+    _write(code_sft, [{"conversations": [{"role": "user", "content": "write add"}, {"role": "assistant", "content": "def add(a,b): return a+b"}]}])
+    code_grpo = tmp_path / "code_grpo.jsonl"
+    _write(code_grpo, [{"prompt": [{"role": "user", "content": "write add"}], "rubric": {"tests": "assert add(1, 2) == 3"}}])
+    # Minimal inputs for the mandatory branches.
+    _write(minimind / "sft_t2t_mini.jsonl", [{"conversations": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}])
+    _write(minimind / "rlaif.jsonl", [{"conversations": [{"role": "user", "content": "q"}, {"role": "assistant", "content": ""}]}])
+    _write(minimind / "agent_rl.jsonl", [])
+    _write(minimind / "agent_rl_math.jsonl", [])
+    out = tmp_path / "data"
+    report = build_all(
+        minimind,
+        out,
+        skip_pretrain=True,
+        max_per_domain=10,
+        code_sft=code_sft,
+        code_grpo=code_grpo,
+    )
+    assert (out / "sft_code.jsonl").exists()
+    assert (out / "grpo_code_train.jsonl").exists()
+    assert (out / "eval_code.jsonl").exists()
+    assert (out / "opd_prompts_code.jsonl").exists()
+    assert report["grpo_code"]["records"] == 1
+    mixed = [json.loads(line) for line in (out / "opd_prompts_mixed.jsonl").read_text().splitlines()]
+    assert any(item["teacher_key"] == "code" for item in mixed)

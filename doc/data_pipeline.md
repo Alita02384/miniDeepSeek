@@ -23,8 +23,20 @@ data/
 └── tokenization/                # 服务器生成：pretrain_{2k,4k,8k}.npz, sft_{general,tool}.npz
 ```
 
-code 相关文件（`sft_code.jsonl`、`grpo_code_train.jsonl`、
-`opd_prompts_code.jsonl`）当前不存在；补齐后由同一 build 脚本加入。
+code 相关文件（`sft_code.jsonl`、`grpo_code_train.jsonl`、`opd_prompts_code.jsonl`）
+当前不存在；补齐后由同一 build 脚本加入：
+
+```bash
+.venv/bin/python -m minideepseek.data.build \
+  --minimind-root ../minimind/dataset --out data \
+  --code-sft /path/to/code_sft.jsonl \
+  --code-grpo /path/to/code_grpo.jsonl
+```
+
+code GRPO 输入必须是 `prompt` + `rubric.tests`（单测字符串），`verifier`
+由脚本写成 `unit_test`。code reward 权重在 `configs/grpo/code.yaml`：
+`code_pass_reward`、`code_compile_bonus`、`code_syntax_penalty`、
+`code_format_bonus`、`code_timeout_s`，后续可直接改 YAML。
 
 ## 2. 生成
 
@@ -80,6 +92,16 @@ NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
 
 阶段：tokenize → pretrain 2K→4K→8K（按实际 token 数自动算 step）→
 SFT general/tool → GRPO general/tool → 2-teacher OPD → eval → HF export。
+
+code 数据补齐后：
+
+```bash
+NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
+  configs/pipeline/minimind_3teacher.yaml
+```
+
+它包含 `sft_code`、`grpo_code`、`opd_three_teacher`、`eval_code`，OPD 使用
+general/tool/code 三个 teacher；缺少 code 数据时会在 tokenize 阶段明确报错。
 
 `--from/--to` 只跑子阶段；已有 `final/meta.json` 的 stage 会跳过，`--force` 重跑。
 

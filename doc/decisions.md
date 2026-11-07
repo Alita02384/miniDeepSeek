@@ -726,3 +726,30 @@
   tool 是窄格式技能，少而重复优于多而杂（见 `doc/specialist_data_145m.md` §3）。
 - **影响**：各专家 `steps` 不再统一；tool 需要多 epoch 采样；
   general 数据须先从 `sft_t2t.jsonl` 过滤掉 code/math/tool 再抽样。
+
+### D63. code specialist 配置与 code reward 首版
+
+- **背景**：三个 specialist 定为 general / tool-use / code；code 数据与
+  reward 尚未最终确定，但配置和代码槽位先落地，避免后续再改训练主链。
+- **实际**：
+  - `configs/{sft,grpo,eval}/code.yaml` 改为 145M 档、curriculum resume；
+  - `RewardSettings` 增加 `code_pass_reward`、`code_compile_bonus`、
+    `code_syntax_penalty`、`code_format_bonus`，`code_reward` 按这些权重
+    计算，默认值与旧行为一致；
+  - `data/build.py` 增加 `--code-sft/--code-grpo`，自动生成
+    `sft_code.jsonl`、`grpo_code_train/eval.jsonl`、`opd_prompts_code.jsonl`；
+  - `configs/pipeline/minimind_3teacher.yaml` 预留 sft_code / grpo_code /
+    3-teacher OPD / eval_code。
+- **依据**：用户要求先写 reward 设置，数据后补；不希望在补数据时改训练代码。
+- **影响**：缺 code 数据时 `minimind_3teacher.yaml` 会在 tokenize 前明确报错；
+  当前可运行的仍是 `minimind_145m.yaml`（general + tool）。
+
+### D64. 训练循环对齐 MiniMind 的两处细节
+
+- **thinking ratio**：单轮 rollout 原来固定 `open_thinking=True`；现在
+  `TorchRolloutEngine` 按 `rl.thinking_ratio` 随机打开，general 用 0.9、
+  tool 用 0.1，和 MiniMind 的 `RLAIFDataset` / `train_agent.py` 一致。
+- **loss type**：`rl.loss_type` 支持 `grpo` / `cispo`；general/tool 配置用
+  `cispo` + `epsilon_high=5.0`（MiniMind 默认），旧配置默认仍为 `grpo`。
+- **未照搬**：MiniMind 的 KL(ref) 项与 PPO 未引入；当前 GRPO 仍是
+  correctness-first 的 torch 实现。

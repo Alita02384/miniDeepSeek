@@ -99,7 +99,7 @@ def _tokenize_stage(stage: dict[str, Any], *, data_dir: Path, tokenization_dir: 
     max_tokens = stage.get("max_tokens")
     if dry_run:
         print(f"+ tokenize pretrain {stage.get('seq_lens')} -> {tokenization_dir}")
-        print(f"+ tokenize sft general/tool -> {tokenization_dir}")
+        print(f"+ tokenize sft {stage.get('sft_domains', ['general', 'tool'])} -> {tokenization_dir}")
         return
     tokenize_pretrain(
         data_dir / "pretrain_t2t.jsonl",
@@ -111,9 +111,12 @@ def _tokenize_stage(stage: dict[str, Any], *, data_dir: Path, tokenization_dir: 
         paragraph_dedup=bool(stage.get("paragraph_dedup", False)),
         quality_filter=not bool(stage.get("no_quality", False)),
     )
-    for name in ("general", "tool"):
+    for name in stage.get("sft_domains", ["general", "tool"]):
+        source = data_dir / f"sft_{name}.jsonl"
+        if not source.exists():
+            raise SystemExit(f"missing SFT source: {source}")
         tokenize_sft(
-            data_dir / f"sft_{name}.jsonl",
+            source,
             tokenization_dir / f"sft_{name}.npz",
             seq_len=int(stage.get("sft_seq_len", 4096)),
             max_records=max_records,
@@ -222,7 +225,10 @@ def _stage_done(stage: dict[str, Any], *, tokenization_dir: Path) -> bool:
     kind = stage["kind"]
     if kind == "tokenize":
         needed = [tokenization_dir / f"pretrain_{suffix}.json" for suffix in ("2k", "4k", "8k")]
-        needed += [tokenization_dir / "sft_general.json", tokenization_dir / "sft_tool.json"]
+        needed += [
+            tokenization_dir / f"sft_{name}.json"
+            for name in stage.get("sft_domains", ["general", "tool"])
+        ]
         return all(path.exists() for path in needed)
     if kind == "curriculum":
         return (Path(stage.get("out_dir", "checkpoints/curriculum_145m")) / "stage_02_seq8192" / "final" / "meta.json").exists()
@@ -234,6 +240,39 @@ def _stage_done(stage: dict[str, Any], *, tokenization_dir: Path) -> bool:
         return (Path(stage.get("out", "hf/minimind_145m")) / "config.json").exists()
     return False
 
+
+
+def _preflight(spec: dict[str, Any], data_dir: Path, *, dry_run: bool) -> None:
+    missing: list[str] = []
+    for stage in spec.get("stages", []):
+        kind = stage["kind"]
+        if kind == "tokenize":
+            for name in stage.get("sft_domains", ["general", "tool"]):
+                path = data_dir / f"sft_{name}.jsonl"
+                if not path.exists():
+                    missing.append(str(path))
+        elif kind in {"grpo", "eval"} and stage.get("data"):
+            path = Path(stage["data"])
+            if not path.exists():
+                missing.append(str(path))
+        elif kind == "opd":
+            if stage.get("data") and not Path(stage["data"]).exists():
+                missing.append(str(stage["data"]))
+            if stage.get("config"):
+                config = load_yaml(stage["config"])
+                for teacher in config.get("teachers", []):
+                    key = teacher.get("key") or teacher.get("name")
+                    prompt_path = data_dir / f"opd_prompts_{key}.jsonl"
+                    if not prompt_path.exists():
+                        missing.append(str(prompt_path))
+    if not missing:
+        return
+    message = "pipeline preflight missing data:\n" + "\n".join(f"  - {path}" for path in missing)
+    if dry_run:
+        print(message)
+        return
+    raise SystemExit(message)
+
 def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str | None = None, stop: str | None = None, force: bool = False) -> dict[str, Any]:
     spec = load_yaml(config_path)
     name = str(spec.get("name", "run"))
@@ -242,6 +281,7 @@ def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str |
     data_dir = Path(spec.get("data_dir", "data"))
     tokenization_dir = Path(spec.get("tokenization_dir", data_dir / "tokenization"))
     nproc = int(os.environ.get("NPROC_PER_NODE", spec.get("nproc", 1)))
+    _preflight(spec, data_dir, dry_run=dry_run)
     state: dict[str, Any] = {"name": name, "stages": {}}
     active = start is None
     for stage in spec.get("stages", []):

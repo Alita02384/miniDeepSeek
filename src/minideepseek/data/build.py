@@ -269,11 +269,76 @@ def build_grpo_tool(
     return {"train": _preview(train_target), "eval": _preview(eval_target), "records": len(records), "train_records": len(train), "eval_records": len(val)}
 
 
+
+
+def build_sft_code(source: Path, target: Path, *, force: bool, dry_run: bool) -> dict[str, Any]:
+    """Copy a code instruction JSONL (conversations/messages) into the flat set.
+
+    Code SFT data is external; the accepted format is the same conversation
+    schema as ``sft_general``.  We do not rewrite records here because the
+    upstream code corpus is still being selected.
+    """
+    if not source.exists():
+        return {"target": _preview(target), "missing": True, "source": _preview(source)}
+    action = copy_file(source, target, force=force, dry_run=dry_run)
+    return {"source": _preview(source), "target": _preview(target), "action": action}
+
+
+def build_grpo_code(
+    source: Path,
+    train_target: Path,
+    eval_target: Path,
+    *,
+    val_ratio: float,
+    seed: int,
+    force: bool,
+    dry_run: bool,
+) -> dict[str, Any]:
+    """Convert code RL records with ``rubric.tests`` into GRPO JSONL."""
+    if not source.exists():
+        return {"train": _preview(train_target), "eval": _preview(eval_target), "missing": True}
+    if train_target.exists() and eval_target.exists() and not force:
+        return {"train": _preview(train_target), "eval": _preview(eval_target), "action": "kept"}
+    if dry_run:
+        return {"train": _preview(train_target), "action": "would build"}
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in iter_jsonl(source):
+        prompt = record.get("prompt") or record.get("messages")
+        if not prompt and record.get("conversations"):
+            prompt = _strip_trailing_assistant(_messages(record))
+        if not isinstance(prompt, list) or not prompt:
+            continue
+        rubric = dict(record.get("rubric") or {})
+        tests = rubric.get("tests") or rubric.get("test_code") or record.get("tests") or record.get("test_code")
+        if not tests:
+            continue
+        key = _prompt_key(prompt)
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(
+            {
+                "prompt": prompt,
+                "domain": "code",
+                "verifier": "unit_test",
+                "rubric": {**rubric, "tests": tests},
+                "multi_turn": False,
+                "source": record.get("source", source.stem),
+                "license": record.get("license", "unknown"),
+            }
+        )
+    train, val = _split(records, val_ratio, seed)
+    write_jsonl(train_target, train)
+    write_jsonl(eval_target, val)
+    return {"train": _preview(train_target), "eval": _preview(eval_target), "records": len(records), "train_records": len(train), "eval_records": len(val)}
+
 def build_opd_prompts(
     general_source: Path,
     tool_source: Path,
     output_dir: Path,
     *,
+    code_source: Path | None = None,
     max_per_domain: int,
     seed: int,
     force: bool,
@@ -284,7 +349,10 @@ def build_opd_prompts(
     import random
 
     per_domain: dict[str, list[dict[str, Any]]] = {}
-    for domain, source in (("general", general_source), ("tool", tool_source)):
+    sources = [("general", general_source), ("tool", tool_source)]
+    if code_source is not None and code_source.exists():
+        sources.append(("code", code_source))
+    for domain, source in sources:
         prompts = []
         for record in iter_jsonl(source):
             prompt = record.get("prompt")
@@ -339,6 +407,9 @@ def build_all(
     force: bool = False,
     dry_run: bool = False,
     skip_pretrain: bool = False,
+    code_sft: Path | None = None,
+    code_grpo: Path | None = None,
+    code_eval: Path | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     tokenization_dir = output_dir / "tokenization"
@@ -388,10 +459,45 @@ def build_all(
         force=force,
         dry_run=dry_run,
     )
+    missing: list[str] = []
+    if code_sft is not None:
+        report["sft_code"] = build_sft_code(
+            code_sft, output_dir / "sft_code.jsonl", force=force, dry_run=dry_run
+        )
+        if report["sft_code"].get("missing"):
+            missing.append("sft_code")
+    else:
+        report["sft_code"] = {"missing": True, "reason": "--code-sft not provided"}
+        missing.append("sft_code")
+    if code_grpo is not None:
+        report["grpo_code"] = build_grpo_code(
+            code_grpo,
+            output_dir / "grpo_code_train.jsonl",
+            output_dir / "eval_code.jsonl",
+            val_ratio=val_ratio,
+            seed=seed,
+            force=force,
+            dry_run=dry_run,
+        )
+        if report["grpo_code"].get("missing"):
+            missing.append("grpo_code")
+    else:
+        report["grpo_code"] = {"missing": True, "reason": "--code-grpo not provided"}
+        missing.append("grpo_code")
+    if code_eval is not None:
+        report["eval_code"] = build_sft_code(
+            code_eval, output_dir / "eval_code.jsonl", force=force, dry_run=dry_run
+        )
+        if report["eval_code"].get("missing"):
+            missing.append("eval_code")
+    elif not (output_dir / "eval_code.jsonl").exists():
+        missing.append("eval_code")
+
     report["opd"] = build_opd_prompts(
         output_dir / "grpo_general_train.jsonl",
         output_dir / "grpo_tool_train.jsonl",
         output_dir,
+        code_source=output_dir / "grpo_code_train.jsonl",
         max_per_domain=max_per_domain,
         seed=seed,
         force=force,
@@ -424,7 +530,11 @@ def build_all(
                         str(minimind_root / "agent_rl.jsonl"),
                         str(minimind_root / "agent_rl_math.jsonl"),
                     ],
+                    "code_sft": str(code_sft) if code_sft else None,
+                    "code_grpo": str(code_grpo) if code_grpo else None,
+                    "code_eval": str(code_eval) if code_eval else None,
                 },
+                "missing": sorted(set(missing)),
                 "notes": [
                     "sft_general is copied verbatim from sft_t2t_mini.jsonl",
                     "sft_tool is the tool/tool_call subset plus a general slice",
@@ -450,6 +560,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--skip-pretrain", action="store_true")
+    parser.add_argument("--code-sft", default=None, help="code SFT JSONL (conversations)")
+    parser.add_argument("--code-grpo", default=None, help="code GRPO JSONL (prompt + rubric.tests)")
+    parser.add_argument("--code-eval", default=None, help="code eval JSONL")
     args = parser.parse_args(argv)
     report = build_all(
         Path(args.minimind_root).expanduser(),
@@ -462,6 +575,9 @@ def main(argv: list[str] | None = None) -> int:
         force=args.force,
         dry_run=args.dry_run,
         skip_pretrain=args.skip_pretrain,
+        code_sft=Path(args.code_sft).expanduser() if args.code_sft else None,
+        code_grpo=Path(args.code_grpo).expanduser() if args.code_grpo else None,
+        code_eval=Path(args.code_eval).expanduser() if args.code_eval else None,
     )
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0

@@ -39,6 +39,8 @@ rl:
   max_new_tokens: 768
   temperature: 0.8
   clip: 0.2
+  loss_type: cispo
+  epsilon_high: 5.0
   kl_coeff: 0.0
   thinking_ratio: 0.1
   max_turns: 3

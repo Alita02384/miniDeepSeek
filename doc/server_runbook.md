@@ -157,9 +157,25 @@ actor 训练状态另算。general GRPO 每 step 约 6×32=192 次打分，按 4
 
 ## 8. code 专家补齐后
 
-1. 把 code SFT/GRPO 数据放进 `data/`（`sft_code.jsonl`、
-   `grpo_code_train.jsonl`）；
-2. 新增 `configs/sft/code.yaml`、`configs/grpo/code.yaml`；
-3. 在 pipeline 里加 `sft_code`、`grpo_code`，OPD 加 `code` teacher 与
-   `opd_prompts_code.jsonl`；
-4. 重跑 `opd`：`--from opd --force`。
+code 配置和 pipeline 槽位已经写好，只差数据：
+
+1. 准备 code SFT（conversations）与 code GRPO（`prompt` + `rubric.tests`）；
+2. 生成 code 数据：
+
+```bash
+.venv/bin/python -m minideepseek.data.build \
+  --minimind-root ../minimind/dataset --out data \
+  --code-sft /path/to/code_sft.jsonl \
+  --code-grpo /path/to/code_grpo.jsonl
+```
+
+3. 跑 3-teacher pipeline：
+
+```bash
+NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
+  configs/pipeline/minimind_3teacher.yaml
+```
+
+`configs/grpo/code.yaml` 里的 `code_pass_reward`、`code_compile_bonus`、
+`code_syntax_penalty`、`code_format_bonus`、`code_timeout_s` 是首版 reward
+权重，可直接按数据调整；`data/opd_prompts_mixed.jsonl` 会自动包含 code。

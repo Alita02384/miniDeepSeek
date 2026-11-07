@@ -429,7 +429,12 @@ class RewardSettings(BaseConfig):
     tool_gt_weight: float = 2.5
     tool_unfinished_penalty: float = 0.5
     tool_tag_penalty: float = 0.5
+    #: Code reward weights (unit tests are the verifier).
     code_timeout_s: float = 5.0
+    code_pass_reward: float = 1.0
+    code_compile_bonus: float = 0.0
+    code_syntax_penalty: float = 0.1
+    code_format_bonus: float = 0.0
     world_judge: str = "heuristic"  # heuristic | http
     world_judge_timeout_s: float = 30.0
     world_weights: dict[str, float] = field(
@@ -452,6 +457,9 @@ class RLSettings(BaseConfig):
     max_new_tokens: int = 64
     temperature: float = 1.0
     clip: float = 0.2
+    #: MiniMind supports GRPO and CISPO; default stays GRPO for existing tests.
+    loss_type: str = "grpo"  # grpo | cispo
+    epsilon_high: float = 5.0
     kl_coeff: float = 0.0
     min_response_tokens: int = 2
     #: Multi-turn agent rollout (MiniMind ``train_agent.py`` defaults).

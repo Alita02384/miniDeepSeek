@@ -1,7 +1,7 @@
 # Domain SFT: 70-80% domain data + 20-30% general (mixing happens upstream).
-model_file: configs/model/mini_220m_a80m.yaml
+model_file: configs/model/mini_145m_a60m.yaml
 model:
-  flavor: mini_220m_a80m
+  flavor: mini_145m_a60m
   seq_len: 4096
   n_mtp_layers: 1
   swiglu_limit: 10.0
@@ -27,8 +27,8 @@ data:
   seed: 1234
   domain: code
 train:
-  steps: 500
-  resume: checkpoints/pretrain_full/final
+  steps: 300
+  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
   resume_data: false
   resume_optimizer: false
   resume_step: false
