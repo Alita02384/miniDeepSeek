@@ -640,3 +640,31 @@
   - 1.8B reward model 未下载/未在 CPU smoke（无 `transformers` 时按可选路径）；
   - code specialist、3-teacher OPD 未实现（数据/reward 缺口）；
   - tool rollout 的 CUDA/多卡与真实 145M 训练未验证。
+
+## 2026-11-07 本地 reward model 与 debug 训练验证
+
+- **commit**: `0e0da48` feat: add local reward-model smoke check
+- **做了什么**：
+  - 下载 `internlm/internlm2-1_8b-reward` 到代码根同级
+    `../internlm2-1_8b-reward`（3.2 GB，未进 git）；HF 主站 SSL 不稳定，
+    用 `hf-mirror.com` 的 `resolve/main` 直链下载；
+  - `pyproject` 的 `hf` extra 补 `sentencepiece`、`protobuf`（InternLM2
+    tokenizer 需要）；
+  - 新增 `scripts/check_reward_model.py`，并在 `server_setup.sh` 中按需调用。
+- **验证**：
+  - reward tokenizer 加载：`InternLM2TokenizerFast`，vocab 92,544；
+  - `LocalRewardModel` 加载 + 打分：score `-0.814453`（CPU，约 3.8 s）；
+  - debug 模型训练：
+    - pretrain smoke 2 step → `checkpoints/debug_smoke/final`；
+    - SFT smoke 2 step → `checkpoints/debug_sft/final`；
+    - GRPO debug 1 step → `checkpoints/debug_grpo/final`；
+    - OPD debug 1 step → `checkpoints/debug_opd/final`；
+    - general GRPO 1 step + 真实 1.8B RM（debug model，2 prompts）→
+      `reward_model=-1.637`、`reward_mean=-2.137`、loss 有限；
+  - `ruff check src tests scripts` → All checks passed；
+  - `pytest -q` → 210 passed。
+- **未完成 / 风险**：
+  - 本地 `~/.cache` 受沙箱限制，运行 RM 需 `HF_HOME=$PWD/.cache/huggingface`；
+    服务器无此限制；
+  - 1.8B RM 在 CPU 上只做了单次打分/1 步 GRPO，未测 CUDA 批量吞吐；
+  - 完整 2.3B token tokenization 与 145M GPU 训练仍未执行。

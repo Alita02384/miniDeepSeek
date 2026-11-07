@@ -110,6 +110,13 @@ reward:
 general GRPO 只有 shaping、没有主信号；tool 分支仍可用工具+GT reward，但
 无工具分支会退化。下载与许可按 InternLM2 官方仓库执行。
 
+本地如果 `~/.cache` 不可写，运行前设：
+
+```bash
+export HF_HOME="$PWD/.cache/huggingface"
+.venv/bin/python scripts/check_reward_model.py --path ../internlm2-1_8b-reward
+```
+
 ## 6. 断点 / 常见问题
 
 - **续跑**：再执行同一条 `run_pipeline.sh`；stage final 存在即跳过。
