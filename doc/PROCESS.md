@@ -692,3 +692,30 @@
   - 现存 `pretrain_t2t.jsonl` 仍是 2.2B 单源，3B 七源混料尚未落地（无 manifest、未打包）；
   - `code_reward` 仍是二值奖励，code GRPO 上线前必须先改部分分；
   - MoE 分化方案（领域 batch + 平衡损失退火）只有设计，未在 145M 上验证。
+
+## 2026-11-07 code specialist 槽位 + RL 对齐 MiniMind
+
+- **commit**: `31a7bb5` feat: complete code specialist slots and align RL with MiniMind
+- **做了什么**：
+  - `data/build.py` 增加 `--code-sft/--code-grpo/--code-eval`；生成
+    `sft_code.jsonl`、`grpo_code_train/eval.jsonl`、`opd_prompts_code.jsonl`；
+    缺 code 时写进 `specialists.yaml` 的 `missing`；
+  - `configs/{sft,grpo,eval}/code.yaml` 改为 145M 档；code reward 权重
+    `code_pass_reward/code_compile_bonus/code_syntax_penalty/code_format_bonus`
+    显式化；
+  - `configs/pipeline/minimind_3teacher.yaml`：sft_code → grpo_code →
+    3-teacher OPD → eval_code；pipeline preflight 缺数据时提前报错；
+  - `rl.rollout` 支持 `thinking_ratio`（general 0.9 / tool 0.1）；
+  - `rl.loss_type` 支持 `cispo`；general/tool 配置用 CISPO + epsilon_high=5；
+  - `pipeline` 支持 `sft_domains` 与 OPD teacher prompt 预检。
+- **验证**：
+  - `pytest -q` → **213 passed**；
+  - `ruff check src tests scripts` → All checks passed；
+  - `tests/test_build_data.py` 的 code 槽位测试通过；
+  - `pipeline --config configs/pipeline/minimind_3teacher.yaml --to tokenize`
+    → 明确列出 `sft_code.jsonl`、`grpo_code_train.jsonl`、
+    `opd_prompts_code.jsonl`、`eval_code.jsonl` 缺失。
+- **未完成 / 风险**：
+  - code 数据尚未提供，code reward 权重只是首版；
+  - 3-teacher OPD 未实际跑过；
+  - MiniMind 的 KL(ref) / PPO 没有照搬，当前仍是 GRPO/CISPO + 可验证/奖励模型。
