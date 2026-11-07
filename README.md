@@ -47,7 +47,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`217 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`210 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -110,10 +110,10 @@ NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
 configs/
 ├── model/{debugmodel,mini_220m_a80m,mini_145m_a60m,mini_60m_dense_d768}.yaml
 ├── pretrain/{debug_smoke,pilot_0.6b,full_6b,pretrain_145m,curriculum_145m_4x4090}.yaml
-├── sft/{debug_smoke,general,tool,math,code,world}.yaml
-├── grpo/{debug_math,general,tool,math,code,world,math_vllm}.yaml
-├── opd/{debug_three_teacher,two_teacher_general_tool,three_teacher,single_math}.yaml
-├── eval/{debug_math,general,tool,math,code,world}.yaml
+├── sft/{debug_smoke,general,tool,code}.yaml
+├── grpo/{debug_math,general,tool,code}.yaml
+├── opd/{debug_three_teacher,two_teacher_general_tool,three_teacher}.yaml
+├── eval/{debug_math,general,tool,code}.yaml
 └── pipeline/minimind_145m.yaml
 ```
 

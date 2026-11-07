@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-CONFIG="${1:-configs/opd/three_teacher.yaml}"
+CONFIG="${1:-configs/opd/two_teacher_general_tool.yaml}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if [ "$NPROC_PER_NODE" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   exec .venv/bin/torchrun --standalone --nproc_per_node="$NPROC_PER_NODE" \
