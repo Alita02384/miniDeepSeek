@@ -7,7 +7,7 @@ model:
   dtype: bfloat16
   seed: 1234
 checkpoint: checkpoints/grpo_code/final
-data_path: data/processed/eval/code.jsonl
+data_path: data/eval_code.jsonl
 domain: code
 max_new_tokens: 1024
 temperature: 0.0

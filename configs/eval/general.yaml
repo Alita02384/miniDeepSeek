@@ -1,0 +1,19 @@
+model_file: configs/model/mini_145m_a60m.yaml
+model:
+  flavor: mini_145m_a60m
+  seq_len: 4096
+  n_mtp_layers: 0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+checkpoint: checkpoints/grpo_general/final
+data_path: data/eval_general.jsonl
+domain: general
+max_new_tokens: 1024
+temperature: 0.0
+limit: 200
+out_path: reports/eval_general.json
+reward:
+  kind: general
+  reward_model_path: ../internlm2-1_8b-reward
+  reward_model_dtype: float16

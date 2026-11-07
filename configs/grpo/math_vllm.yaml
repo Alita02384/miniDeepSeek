@@ -23,7 +23,7 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/processed/grpo/math/train.jsonl
+  path: data/grpo_math_train.jsonl
   shuffle: true
   seed: 1234
   domain: math

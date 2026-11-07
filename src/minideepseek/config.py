@@ -410,11 +410,25 @@ class TrainConfig(BaseConfig):
 # -- reinforcement learning ---------------------------------------------------
 @dataclass
 class RewardSettings(BaseConfig):
-    kind: str = "math"  # math | code | world | medical | composite
+    kind: str = "math"  # math | code | tool | general | world | medical
     format_bonus: float = 0.1
     parse_bonus: float = 0.1
     length_penalty: float = 0.0
     max_length_penalty_at: int = 2048
+    #: MiniMind-style dense shaping.  Zero disables a term, keeping the
+    #: legacy math/code reward totals unchanged.
+    length_bonus: float = 0.0
+    think_bonus: float = 0.0
+    repetition_penalty: float = 0.0
+    reward_clip: float = 0.0
+    #: Optional local reward model (``internlm2-1_8b-reward`` or equivalent).
+    reward_model_path: str | None = None
+    reward_model_dtype: str = "float16"
+    #: Tool reward weights (MiniMind ``train_agent.py`` defaults).
+    tool_valid_bonus: float = 0.5
+    tool_gt_weight: float = 2.5
+    tool_unfinished_penalty: float = 0.5
+    tool_tag_penalty: float = 0.5
     code_timeout_s: float = 5.0
     world_judge: str = "heuristic"  # heuristic | http
     world_judge_timeout_s: float = 30.0
@@ -440,6 +454,10 @@ class RLSettings(BaseConfig):
     clip: float = 0.2
     kl_coeff: float = 0.0
     min_response_tokens: int = 2
+    #: Multi-turn agent rollout (MiniMind ``train_agent.py`` defaults).
+    max_turns: int = 3
+    thinking_ratio: float = 0.1
+    max_tool_calls: int = 4
     teacher_weights: dict[str, float] = field(default_factory=dict)
     # "torch" is the correctness-first path; "vllm" is CUDA-only and optional.
     rollout_backend: str = "torch"

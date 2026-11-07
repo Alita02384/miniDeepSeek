@@ -12,6 +12,7 @@ so no string-span bookkeeping is needed and multi-turn/tool data works.
 from __future__ import annotations
 
 import json
+from array import array
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -115,10 +116,13 @@ def build_sft_dataset(
     seed: int = 1234,
 ) -> dict[str, Any]:
     tokenizer = tokenizer or load_tokenizer()
-    flat_ids: list[int] = []
-    flat_positions: list[int] = []
-    flat_mask: list[bool] = []
-    offsets: list[int] = [0]
+    # ``array``/``bytearray`` keep a 600M-token SFT corpus at ~6 GB instead of
+    # the ~50 GB a list-of-Python-ints would need.  This mirrors the pretrain
+    # packing buffers and produces byte-identical arrays.
+    flat_ids = array("i")
+    flat_positions = array("i")
+    flat_mask = bytearray()
+    offsets = array("q", [0])
     used = 0
     skipped = 0
     for path in paths:
@@ -164,12 +168,14 @@ def build_sft_dataset(
         "add_generation_prompt": bool(add_generation_prompt),
         "seed": int(seed),
     }
+    if flat_ids.itemsize != 4:  # pragma: no cover - non-32-bit-int platforms
+        raise RuntimeError(f"array('i') has itemsize {flat_ids.itemsize}, expected 4")
     save_flat_dataset(
         output_path,
-        input_ids=np.asarray(flat_ids, dtype=np.int32),
-        positions=np.asarray(flat_positions, dtype=np.int32),
-        target_mask=np.asarray(flat_mask, dtype=bool),
-        offsets=np.asarray(offsets, dtype=np.int64),
+        input_ids=np.frombuffer(flat_ids, dtype=np.int32),
+        positions=np.frombuffer(flat_positions, dtype=np.int32),
+        target_mask=np.frombuffer(flat_mask, dtype=np.uint8).view(bool),
+        offsets=np.frombuffer(offsets, dtype=np.int64),
         meta=meta,
     )
     return meta

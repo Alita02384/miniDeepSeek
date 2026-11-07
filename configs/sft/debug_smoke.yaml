@@ -15,7 +15,7 @@ schedule:
   decay: cosine
   min_lr_ratio: 0.1
 data:
-  tokenized_path: data/tokenized/debug_sft.npz
+  tokenized_path: data/tokenization/debug_sft.npz
   batch_tokens: 256
   shuffle: true
   seed: 1234

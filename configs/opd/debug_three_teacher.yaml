@@ -15,7 +15,7 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/processed/opd/debug_prompts.jsonl
+  path: data/opd_debug_prompts.jsonl
   domain: mixed
 train:
   steps: 1

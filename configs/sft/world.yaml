@@ -21,7 +21,7 @@ schedule:
   min_lr_ratio: 0.1
   decay_start_ratio: 0.8
 data:
-  tokenized_path: data/tokenized/sft_world.npz
+  tokenized_path: data/tokenization/sft_world.npz
   batch_tokens: 32768
   shuffle: true
   seed: 1234

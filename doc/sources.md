@@ -101,3 +101,16 @@ shasum -a 256 tokenizer/tokenizer.json   # 71f32c68...
 
 参考实现升级时，先跑 `pytest tests/test_model.py` 与本文件的数值对齐脚本，
 再核对 state dict key/shape 是否变化。
+
+## 6. MiniMind tool / reward 组件（2026-11-07）
+
+| 本项目文件 | 来源 | 改动 |
+|---|---|---|
+| `src/minideepseek/rl/tools.py` | `minimind/trainer/train_agent.py` 的 `TOOLS`/`MOCK_RESULTS`/`CHECK_ARGS`/`parse_tool_calls`/`execute_tool`/`safe_math_eval` | 拆成独立模块；去掉训练脚本全局变量；保留同样的 mock 结果 |
+| `src/minideepseek/rl/agent_rollout.py` | `minimind/trainer/train_agent.py` 的 `rollout_single`/`rollout_batch` | 适配本项目 `RolloutSample`/token mask；用 chat template 前缀一致性校验替代 marker hack；observation 不入 loss |
+| `src/minideepseek/rl/reward_model.py` | `minimind/trainer/trainer_utils.py::LMForRewardModel` | 去掉全局依赖；`transformers` 改为运行时可选导入；device 自动选择 |
+| `src/minideepseek/rl/reward.py` tool/general + shaping | `minimind/trainer/train_grpo.py`、`train_agent.py` 的 `calculate_rewards`/`rep_penalty` | 保留权重与 clip；接入本项目 `RewardSettings`/`GRPORecord`；math/code 原有可验证 reward 不替换 |
+
+数据来源：`minimind/dataset/{rlaif.jsonl, agent_rl.jsonl, agent_rl_math.jsonl,
+sft_t2t_mini.jsonl, sft_t2t.jsonl, pretrain_t2t.jsonl}`；许可见 MiniMind 数据集卡
+（pretrain/SFT 为 CC-BY-NC-4.0，agent/rlaif 为混合来源，接入前核对上游）。

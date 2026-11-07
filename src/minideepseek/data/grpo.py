@@ -17,8 +17,8 @@ from typing import Any
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer, normalize_conversation
 from .io import iter_jsonl, write_jsonl
 
-VERIFIERS = {"math_exact_match", "unit_test", "llm_judge", "numeric", "none"}
-DOMAINS = {"math", "code", "world", "medical", "general"}
+VERIFIERS = {"math_exact_match", "unit_test", "llm_judge", "numeric", "none", "tool"}
+DOMAINS = {"math", "code", "world", "medical", "general", "tool"}
 
 
 @dataclass
@@ -32,6 +32,11 @@ class GRPORecord:
     source: str = "unknown"
     license: str = "unknown"
     tools: list[dict[str, Any]] = field(default_factory=list)
+    #: Multi-turn agent/RLAIF prompts legitimately contain assistant/tool
+    #: history; single-turn math/code prompts must not.
+    multi_turn: bool = False
+    #: All accepted final answers (tool tasks may have several).
+    gt: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,7 +48,9 @@ class GRPORecord:
             "difficulty": self.difficulty,
             "source": self.source,
             "license": self.license,
+            "multi_turn": self.multi_turn,
             **({"tools": self.tools} if self.tools else {}),
+            **({"gt": self.gt} if self.gt else {}),
         }
 
     def resolved_tools(self) -> list[dict[str, Any]] | None:
@@ -93,15 +100,20 @@ def validate_record(record: GRPORecord, tokenizer: MiniDeepSeekTokenizer) -> Non
     rendered = tokenizer.render_chat(
         record.prompt, add_generation_prompt=True, tools=record.resolved_tools()
     )
-    if _reference_leaked(rendered, record.reference_answer):
+    if not record.multi_turn and _reference_leaked(rendered, record.reference_answer):
         # A reference answer leaking into the prompt is the classic GRPO bug.
+        # Multi-turn prompts contain history, so the reference may legitimately
+        # occur there; tool rewards compare against ``gt`` after rollout.
         raise ValueError("reference answer appears in the rendered prompt")
-    for message in record.prompt:
-        if message.get("role") == "assistant":
-            raise ValueError("GRPO prompts must not contain assistant turns")
+    if not record.multi_turn:
+        for message in record.prompt:
+            if message.get("role") == "assistant":
+                raise ValueError("GRPO prompts must not contain assistant turns")
 
 
-def _prompt_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
+def _prompt_from_record(
+    record: dict[str, Any], *, multi_turn: bool = False
+) -> list[dict[str, Any]]:
     explicit = record.get("prompt") or record.get("messages")
     if explicit is not None:
         messages = normalize_conversation({"messages": explicit})
@@ -111,15 +123,17 @@ def _prompt_from_record(record: dict[str, Any]) -> list[dict[str, Any]]:
         messages = [{"role": "user", "content": record["question"]}]
     else:
         raise ValueError("cannot build a prompt: no prompt/messages/conversations/question")
-    # Keep the turns up to (and including) the last user message; a trailing
-    # assistant turn becomes the reference instead.
+    # Drop a trailing assistant turn (it is the target, not context).  In a
+    # multi-turn agent prompt, earlier assistant/tool turns are legitimate
+    # history and must be kept.
     while messages and messages[-1]["role"] != "user":
         messages = messages[:-1]
     if not messages:
         messages = normalize_conversation({"messages": explicit or []})
-    for message in messages:
-        if message["role"] == "assistant":
-            raise ValueError("prompt contains an assistant turn")
+    if not multi_turn:
+        for message in messages:
+            if message["role"] == "assistant":
+                raise ValueError("prompt contains an assistant turn")
     return messages
 
 
@@ -131,6 +145,18 @@ def _record_tools(value: Any) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             return []
     return list(value) if isinstance(value, list) else []
+
+
+def _gt_from_record(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("gt", "reference_answers", "reference_answer", "answer", "target"):
+        value = record.get(key)
+        if isinstance(value, (list, tuple)):
+            values.extend(str(item).strip() for item in value if str(item).strip())
+        elif isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(values))
 
 
 def _reference_from_record(record: dict[str, Any], messages: list[dict[str, Any]]) -> str | None:
@@ -157,19 +183,23 @@ def convert_record(
     default_verifier: str = "none",
     source: str | None = None,
 ) -> GRPORecord:
-    prompt = _prompt_from_record(record)
+    multi_turn = bool(record.get("multi_turn", False))
+    prompt = _prompt_from_record(record, multi_turn=multi_turn)
     domain = str(record.get("domain") or default_domain)
     verifier = str(record.get("verifier") or default_verifier)
+    gt = _gt_from_record(record)
     return GRPORecord(
         prompt=prompt,
         domain=domain if domain in DOMAINS else default_domain,
-        reference_answer=_reference_from_record(record, prompt),
+        reference_answer=_reference_from_record(record, prompt) or (gt[0] if gt else None),
         rubric=dict(record.get("rubric") or {}),
         verifier=verifier if verifier in VERIFIERS else default_verifier,
         difficulty=str(record.get("difficulty") or "medium"),
         source=str(record.get("source") or source or "unknown"),
         license=str(record.get("license") or "unknown"),
         tools=_record_tools(record.get("tools")),
+        multi_turn=multi_turn,
+        gt=gt,
     )
 
 
@@ -189,6 +219,8 @@ def load_records(path: str | Path) -> list[GRPORecord]:
                     source=str(item.get("source", "unknown")),
                     license=str(item.get("license", "unknown")),
                     tools=_record_tools(item.get("tools")),
+                    multi_turn=bool(item.get("multi_turn", False)),
+                    gt=[str(value) for value in item.get("gt", []) if str(value).strip()],
                 )
             )
         else:

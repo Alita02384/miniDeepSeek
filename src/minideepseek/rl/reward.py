@@ -22,6 +22,7 @@ from typing import Any, Protocol
 
 from ..config import RewardSettings
 from ..data.grpo import GRPORecord
+from .tools import parse_tool_calls, valid_tool_call
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
 _ANSWER_RE = re.compile(
@@ -237,33 +238,202 @@ def medical_reward(response: str, record: GRPORecord, settings: RewardSettings) 
     return RewardResult(total=total, components=components, details={})
 
 
+
+
+def _length_shaping(text: str, settings: RewardSettings) -> float:
+    if settings.length_bonus <= 0:
+        return 0.0
+    return settings.length_bonus if 20 <= len(text.strip()) <= 800 else -settings.length_bonus
+
+
+def _think_shaping(text: str, settings: RewardSettings) -> float:
+    if settings.think_bonus <= 0 or "</think>" not in text:
+        return 0.0
+    thinking, _answer = text.split("</think>", 1)
+    value = settings.think_bonus if 20 <= len(thinking.strip()) <= 300 else -settings.think_bonus
+    value += 0.25 if text.count("</think>") == 1 else -0.25
+    return value
+
+
+def _repetition_shaping(text: str, settings: RewardSettings) -> float:
+    cap = float(settings.repetition_penalty)
+    if cap <= 0:
+        return 0.0
+    tokens = re.findall(r"\w+|[^\w\s]", text.lower())
+    grams = [tuple(tokens[index : index + 3]) for index in range(len(tokens) - 2)]
+    if not grams:
+        return 0.0
+    repeats = len(grams) - len(set(grams))
+    return min(cap, repeats * cap * 2 / len(grams))
+
+
+def _finalize(result: RewardResult, response: str, settings: RewardSettings) -> RewardResult:
+    """Apply MiniMind-style dense shaping and optional reward clipping."""
+    shaped = dict(result.components)
+    if settings.length_bonus > 0:
+        shaped["length"] = _length_shaping(response, settings)
+    if settings.think_bonus > 0:
+        shaped["think"] = _think_shaping(response, settings)
+    if settings.repetition_penalty > 0:
+        shaped["repetition"] = -_repetition_shaping(response, settings)
+    total = float(result.total) + sum(
+        value for key, value in shaped.items() if key not in result.components
+    )
+    details = dict(result.details)
+    if settings.reward_clip > 0:
+        clipped = max(-settings.reward_clip, min(settings.reward_clip, total))
+        if clipped != total:
+            details["pre_clip_total"] = total
+        total = clipped
+    return RewardResult(total=total, components=shaped, details=details)
+
+
+def _gt_hits(text: str, gt: list[str]) -> set[str]:
+    """Match MiniMind's final-answer check: exact substring or numeric equality."""
+    text_value = str(text)
+    text_number = text_value.replace(",", "")
+    numbers = [float(value) for value in re.findall(r"(?<![\w.])[-+]?\d+(?:\.\d+)?(?![\w.])", text_number)]
+    hits: set[str] = set()
+    for value in gt:
+        candidate = str(value).strip()
+        if not candidate:
+            continue
+        if candidate.lower() in text_value.lower():
+            hits.add(candidate)
+            continue
+        normalized = candidate.replace(",", "")
+        if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", normalized):
+            target = float(normalized)
+            if any(abs(target - number) < 1e-6 for number in numbers):
+                hits.add(candidate)
+    return hits
+
+
+def general_reward(
+    response: str,
+    record: GRPORecord,
+    settings: RewardSettings,
+    *,
+    reward_model=None,
+) -> RewardResult:
+    """MiniMind RLAIF path: dense reward model + format shaping.
+
+    The MiniMind prompt pool (``rlaif.jsonl``) has no verifiable answer, so the
+    reward model is the primary signal.  Without one we still return the format
+    shaping so a smoke run does not silently train on a zero reward.
+    """
+    score = 0.0
+    if reward_model is not None:
+        score = float(reward_model.get_score(record.prompt, response))
+    return RewardResult(
+        total=score,
+        components={"reward_model": score},
+        details={"reward_model": reward_model is not None},
+    )
+
+
+def tool_reward(
+    response: str,
+    record: GRPORecord,
+    settings: RewardSettings,
+    *,
+    reward_model=None,
+) -> RewardResult:
+    """MiniMind ``train_agent.py`` tool/agent reward.
+
+    ``record.rubric['tool_turns']`` is filled by the multi-turn rollout engine;
+    ``record.rubric['unfinished']`` marks a trajectory that hit ``max_turns``.
+    """
+    turns = record.rubric.get("tool_turns") or [response]
+    turns = [str(turn) for turn in turns]
+    calls = [call for turn in turns for call in parse_tool_calls(turn)]
+    tools = record.resolved_tools()
+    tag_balance = sum(
+        abs(turn.count("<tool_call>") - turn.count("</tool_call>")) for turn in turns
+    )
+    total = -float(settings.tool_tag_penalty) * tag_balance
+    components = {"tool_tag_balance": -float(settings.tool_tag_penalty) * tag_balance}
+    details: dict[str, Any] = {"turns": len(turns), "tool_calls": len(calls)}
+
+    if not calls:
+        # No tool call: fall back to the ordinary answer branch.
+        if reward_model is not None:
+            rm_score = float(reward_model.get_score(record.prompt, response))
+            total += rm_score
+            components["reward_model"] = rm_score
+        return RewardResult(total=total, components=components, details=details)
+
+    gt = list(record.gt)
+    if not gt:
+        rubric_gt = record.rubric.get("gt")
+        if isinstance(rubric_gt, (list, tuple)):
+            gt = [str(value) for value in rubric_gt]
+        elif record.reference_answer:
+            gt = [record.reference_answer]
+    valid_calls = sum(1 for call in calls if valid_tool_call(call, tools))
+    gap = abs(valid_calls - len(gt)) + max(0, len(calls) - valid_calls)
+    align = float(settings.tool_valid_bonus) if gap == 0 else -float(settings.tool_valid_bonus) * gap
+    total += align
+    components["tool_alignment"] = align
+    final_text = response.split("</tool_call>")[-1] if "</tool_call>" in response else response
+    hits = _gt_hits(final_text, gt) if gt else set()
+    gt_score = float(settings.tool_gt_weight) * (len(hits) / len(gt)) if gt else 0.0
+    total += gt_score
+    components["gt_match"] = gt_score
+    if bool(record.rubric.get("unfinished", False)):
+        total -= float(settings.tool_unfinished_penalty)
+        components["unfinished"] = -float(settings.tool_unfinished_penalty)
+    details.update({"valid_calls": valid_calls, "gt": gt, "hits": sorted(hits)})
+    return RewardResult(total=total, components=components, details=details)
+
 def dispatch_reward(
     response: str,
     record: GRPORecord,
     settings: RewardSettings,
     *,
     judge: Judge | None = None,
+    reward_model=None,
 ) -> RewardResult:
-    if record.verifier == "math_exact_match" or settings.kind == "math":
-        return math_reward(response, record, settings)
-    if record.verifier == "unit_test" or settings.kind == "code":
-        return code_reward(response, record, settings)
-    if record.domain == "medical" or settings.kind == "medical":
-        return medical_reward(response, record, settings)
-    if record.verifier == "llm_judge" or settings.kind == "world":
-        return world_reward(response, record, settings, judge=judge)
-    # Unknown verifier: no learning signal rather than a silently wrong one.
-    return RewardResult(total=0.0, components={}, details={"verifier": record.verifier})
+    if record.verifier == "tool" or settings.kind == "tool":
+        result = tool_reward(response, record, settings, reward_model=reward_model)
+    elif record.verifier == "math_exact_match" or settings.kind == "math":
+        result = math_reward(response, record, settings)
+    elif record.verifier == "unit_test" or settings.kind == "code":
+        result = code_reward(response, record, settings)
+    elif record.domain == "medical" or settings.kind == "medical":
+        result = medical_reward(response, record, settings)
+    elif record.verifier == "llm_judge" or settings.kind == "world":
+        result = world_reward(response, record, settings, judge=judge)
+    elif settings.kind in {"general", "rlaif"}:
+        result = general_reward(response, record, settings, reward_model=reward_model)
+    else:
+        # Unknown verifier: no learning signal rather than a silently wrong one.
+        result = RewardResult(total=0.0, components={}, details={"verifier": record.verifier})
+    return _finalize(result, response, settings)
 
 
-def make_reward_fn(settings: RewardSettings, *, judge: Judge | None = None) -> Callable[[str, GRPORecord], RewardResult]:
+def make_reward_fn(
+    settings: RewardSettings,
+    *,
+    judge: Judge | None = None,
+    reward_model=None,
+) -> Callable[[str, GRPORecord], RewardResult]:
     if judge is None and settings.kind == "world" and settings.world_judge == "http":
         from .judge import make_judge
 
         judge = make_judge(settings)
+    if reward_model is None and settings.reward_model_path:
+        from .reward_model import LocalRewardModel
+
+        reward_model = LocalRewardModel(
+            settings.reward_model_path,
+            dtype=settings.reward_model_dtype,
+        )
 
     def reward_fn(response: str, record: GRPORecord) -> RewardResult:
-        return dispatch_reward(response, record, settings, judge=judge)
+        return dispatch_reward(
+            response, record, settings, judge=judge, reward_model=reward_model
+        )
 
     return reward_fn
 

@@ -22,6 +22,7 @@ class OPDPrompt:
     teacher_key: str
     domain: str = "general"
     source: str = "unknown"
+    multi_turn: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -29,6 +30,7 @@ class OPDPrompt:
             "teacher_key": self.teacher_key,
             "domain": self.domain,
             "source": self.source,
+            **({"multi_turn": True} if self.multi_turn else {}),
         }
 
 
@@ -49,6 +51,10 @@ def load_opd_prompts(path: str | Path) -> list[OPDPrompt]:
                 teacher_key=str(key),
                 domain=str(item.get("domain", key)),
                 source=str(item.get("source", "unknown")),
+                multi_turn=bool(
+                    item.get("multi_turn")
+                    or any(message.get("role") == "assistant" for message in prompt)
+                ),
             )
         )
     return prompts
@@ -80,20 +86,27 @@ def build_opd_pool(
             prompt = item.get("prompt") or item.get("messages") or item.get("conversations")
             if not prompt:
                 continue
-            # Strip a trailing assistant turn; the student must generate it.
             prompt = [
-                message
-                for message in prompt
-                if isinstance(message, dict) and message.get("role") != "assistant"
+                message for message in prompt if isinstance(message, dict)
             ]
+            # Strip only the trailing assistant turn (the student generates
+            # it); earlier assistant/tool turns are legitimate multi-turn
+            # context for agent prompts and must be kept.
+            while prompt and prompt[-1].get("role") == "assistant":
+                prompt = prompt[:-1]
             if not prompt:
                 continue
+            multi_turn = bool(
+                item.get("multi_turn")
+                or any(message.get("role") == "assistant" for message in prompt)
+            )
             merged.append(
                 OPDPrompt(
                     prompt=prompt,
                     teacher_key=str(item.get("teacher_key") or key),
                     domain=str(item.get("domain") or key),
                     source=path.stem,
+                    multi_turn=multi_turn,
                 )
             )
             taken += 1

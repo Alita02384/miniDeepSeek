@@ -339,3 +339,31 @@ def test_rollout_prompt_opens_thinking_and_format_bonus_is_reachable():
         "42</think>", record, RewardSettings(kind="math", format_bonus=0.1)
     )
     assert result.components["format"] == 0.1
+
+
+def test_general_reward_model_and_shaping():
+    from minideepseek.rl.reward import dispatch_reward
+
+    class FakeRewardModel:
+        def get_score(self, messages, response):
+            del messages, response
+            return 1.5
+
+    record = GRPORecord(prompt=[{"role": "user", "content": "hello"}], domain="general")
+    settings = RewardSettings(
+        kind="general",
+        length_bonus=0.5,
+        think_bonus=1.0,
+        repetition_penalty=0.5,
+        reward_clip=3.0,
+    )
+    result = dispatch_reward(
+        "你好，这是回答。<think>思考内容足够长足够长足够长</think>",
+        record,
+        settings,
+        reward_model=FakeRewardModel(),
+    )
+    assert result.components["reward_model"] == 1.5
+    assert result.components["length"] == 0.5
+    assert result.components["think"] > 0
+    assert result.total <= 3.0

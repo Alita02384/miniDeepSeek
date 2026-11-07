@@ -651,3 +651,57 @@
   `activation_checkpointing` 字段，让 8K 阶段单独开启重算。
 - **依据**：`until_step` 本来就是累计语义，续跑无需改训练循环。
 - **影响**：同一条课程命令可反复执行；阶段切换仍用 `resume_data=False`。
+
+### D58. specialist 路线改为 general / tool-use / code
+
+- **原方案**：world / code / math 三个 specialist。
+- **新方案**：general / tool-use / code；math 不再单独做 specialist，world/medical
+  不再作为 teacher。code 数据与 GRPO reward 暂缺，先训练 general + tool-use。
+- **依据**：用户 2026-11-07 决策；MiniMind 的通用能力、RLAIF、tool/agent 数据
+  都已具备，code 需要外部数据与单测 reward，先不硬做。
+- **影响**：OPD 先 2-teacher（general + tool）；code 数据补齐后加
+  `sft_code` / `grpo_code`，再切 3-teacher。world/medical 代码保留但不在流水线。
+
+### D59. 数据平铺 + MiniMind 直接来源
+
+- **原方案**：`data/raw`、`data/processed/{sft,grpo,opd}`、`data/tokenized`。
+- **新方案**：`data/*.jsonl` 平铺；`data/tokenization/` 单独放 packed 中间产物；
+  `data/manifests/` 放来源/统计。`data/build.py` 从 `minimind/dataset` 复制/处理：
+  - `pretrain_t2t.jsonl`、`sft_general.jsonl` 原样复制；
+  - `sft_tool.jsonl` = SFT tool 子集 + 25% general；
+  - `grpo_general_*` = `rlaif.jsonl` prompt（丢末尾空 assistant，保留多轮历史）；
+  - `grpo_tool_*` = `agent_rl.jsonl` + `agent_rl_math.jsonl` 的 tools+gt 子集；
+  - `opd_prompts_*` 从 GRPO train prompt 派生并均衡。
+- **依据**：用户要求平铺、上传 ModelScope、服务器一键；`minimind/dataset` 只读。
+- **影响**：旧 `data/raw`、`data/tokenized`、`data/processed` 已删除；配置统一
+  指向平铺路径与 `data/tokenization/`。
+
+### D60. general/tool reward：MiniMind 设计 + 可验证主信号
+
+- **general**：`internlm2-1_8b-reward` 主分数 + MiniMind 的长度/思考/重复 shaping
+  + `reward_clip=3`；`rlaif` 没有 gt，不能只用规则。
+- **tool**：MiniMind `train_agent.py` 的 tool 对齐 + GT 2.5× + 未完成 -0.5 +
+  标签平衡 + shaping；tool 分支不调用 RM，无工具分支可用 RM。
+- **math/code**：保留 exact match / 单测作为主信号，shaping 默认 0，避免改变
+  既有 reward 语义；需要时在 YAML 打开。
+- **依据**：MiniMind 的 RM 路线解决通用 prompt 的奖励稀疏；我们的 tool 有
+  gt/工具结果，保留可验证信号更可靠。
+
+### D61. tool-use 多轮 rollout 与 OPD observation mask
+
+- **实现**：`rl/agent_rollout.py` 移植 MiniMind `train_agent.py` 的
+  assistant→tool_call→observation 循环；`RolloutSample.token_mask` 把
+  observation 标 0，GRPO loss 与 OPD KL 只算 assistant token。
+- **OPD**：`ToolRolloutEngine` 同时服务单轮 general 与多轮 tool prompt；
+  `OPDTrainer` 用同一 `response_mask`，teacher 在 observation 上下文上打分。
+- **依据**：MiniMind 的多轮 tool RL 是当前数据可复用的最短路径；不引入
+  vLLM/tool server 依赖，先保证 CPU/CUDA torch 路径正确。
+
+### D62. tokenization 路径与去重
+
+- **路径**：`data/tokenization/pretrain_{2k,4k,8k}.npz`、`sft_{general,tool}.npz`；
+  `.npz` 是逻辑路径，实际是 `.npy` sidecar + `.json` meta。
+- **去重**：`data/tokenize.py` 默认关闭内置 MinHash。2.3B 语料上纯 Python
+  MinHash 约需数十 GB 内存/数十分钟；正式去重需要独立的 exact/分布式实现。
+- **依据**：D45 已把 pretrain 打包缓冲降到 ~9 B/token；SFT builder 也改成
+  `array`/`bytearray`，604M token 约 6 GB 而不是 ~50 GB。

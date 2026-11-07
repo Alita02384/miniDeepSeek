@@ -1,7 +1,8 @@
-# Multi-teacher on-policy distillation. Student is the base checkpoint.
-model_file: configs/model/mini_220m_a80m.yaml
+# Three-teacher OPD: general + tool + code.  The code slot stays empty until
+# code SFT/GRPO data and checkpoints exist; preflight will fail loudly.
+model_file: configs/model/mini_145m_a60m.yaml
 model:
-  flavor: mini_220m_a80m
+  flavor: mini_145m_a60m
   seq_len: 4096
   n_mtp_layers: 0
   swiglu_limit: 10.0
@@ -18,44 +19,45 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/processed/opd/prompts_mixed.jsonl
+  path: data/opd_prompts_mixed.jsonl
   domain: mixed
 train:
   steps: 500
   grad_accum: 1
   log_every: 1
   ckpt_every: 50
-  resume: checkpoints/pretrain_full/final
+  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
   resume_step: false
   out_dir: checkpoints/opd_three_teacher
 rl:
   method: opd
   prompts_per_step: 32
   max_new_tokens: 1024
-  temperature: 1.0
+  temperature: 0.8
+  thinking_ratio: 0.1
+  max_turns: 3
   teacher_weights:
-    math: 0.3333333333
-    code: 0.3333333333
-    world: 0.3333333334
+    general: 0.3333333333
+    tool: 0.3333333333
+    code: 0.3333333334
 teachers:
-  - name: math_teacher
-    key: math
-    checkpoint: checkpoints/grpo_math/final
-    flavor: mini_220m_a80m
+  - name: general_teacher
+    key: general
+    checkpoint: checkpoints/grpo_general/final
+    flavor: mini_145m_a60m
+    seq_len: 4096
+    weight: 0.3333333333
+  - name: tool_teacher
+    key: tool
+    checkpoint: checkpoints/grpo_tool/final
+    flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333333
   - name: code_teacher
     key: code
     checkpoint: checkpoints/grpo_code/final
-    flavor: mini_220m_a80m
+    flavor: mini_145m_a60m
     seq_len: 4096
-    weight: 0.3333333333
-  - name: world_teacher
-    key: world
-    checkpoint: checkpoints/sft_world/final
-    flavor: mini_220m_a80m
-    seq_len: 4096
-    index_topk: 64
     weight: 0.3333333334
 distributed:
   mode: fsdp2

@@ -11,20 +11,20 @@ out_dir: checkpoints/curriculum_145m
 mode: pretrain
 stages:
   - seq_len: 2048
-    tokenized_path: data/tokenized/pretrain_2k.npz
+    tokenized_path: data/tokenization/pretrain_2k.npz
     until_step: 1400
     # Global micro-batch: 4 GPUs x 2048 = one 2K pack per rank, warming to two.
     batch_tokens: 8192
     batch_tokens_final: 16384
     batch_warmup_ratio: 0.1
   - seq_len: 4096
-    tokenized_path: data/tokenized/pretrain_4k.npz
+    tokenized_path: data/tokenization/pretrain_4k.npz
     until_step: 6400
     batch_tokens: 16384
     batch_tokens_final: 16384
     batch_warmup_ratio: 0.0
   - seq_len: 8192
-    tokenized_path: data/tokenized/pretrain_8k.npz
+    tokenized_path: data/tokenization/pretrain_8k.npz
     until_step: 7800
     # One 8K pack per rank; 24 GB needs per-block recompute at this length.
     batch_tokens: 32768

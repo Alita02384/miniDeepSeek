@@ -1,0 +1,18 @@
+name: minimind_specialists
+seed: 1234
+val_ratio: 0.1
+general_ratio: 0.25
+sources:
+  pretrain: ../minimind/dataset/pretrain_t2t.jsonl
+  sft_general: ../minimind/dataset/sft_t2t_mini.jsonl
+  sft_tool: ../minimind/dataset/sft_t2t_mini.jsonl
+  grpo_general: ../minimind/dataset/rlaif.jsonl
+  grpo_tool:
+  - ../minimind/dataset/agent_rl.jsonl
+  - ../minimind/dataset/agent_rl_math.jsonl
+notes:
+- sft_general is copied verbatim from sft_t2t_mini.jsonl
+- sft_tool is the tool/tool_call subset plus a general slice
+- grpo_general is the rlaif prompt pool with the trailing empty assistant dropped
+- grpo_tool is the agent_rl/agent_rl_math tool+gt subset, multi-turn
+- code expert is intentionally absent until code SFT/GRPO data is added

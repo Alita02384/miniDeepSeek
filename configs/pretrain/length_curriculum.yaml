@@ -6,19 +6,19 @@ out_dir: checkpoints/pretrain_curriculum
 mode: pretrain
 stages:
   - seq_len: 2048
-    tokenized_path: data/tokenized/pretrain_2k.npz
+    tokenized_path: data/tokenization/pretrain_2k.npz
     until_step: 1200
     batch_tokens: 8192
     batch_tokens_final: 32768
     batch_warmup_ratio: 0.1
   - seq_len: 4096
-    tokenized_path: data/tokenized/pretrain_4k.npz
+    tokenized_path: data/tokenization/pretrain_4k.npz
     until_step: 9600
     batch_tokens: 16384
     batch_tokens_final: 65536
     batch_warmup_ratio: 0.01
   - seq_len: 8192
-    tokenized_path: data/tokenized/pretrain_8k.npz
+    tokenized_path: data/tokenization/pretrain_8k.npz
     until_step: 12000
     batch_tokens: 16384
     batch_tokens_final: 65536

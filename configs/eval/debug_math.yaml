@@ -7,7 +7,7 @@ model:
   seed: 1234
   vocab_limit: 2048
 checkpoint: checkpoints/debug_sft/final
-data_path: data/processed/eval/debug_math.jsonl
+data_path: data/eval_debug_math.jsonl
 domain: math
 max_new_tokens: 8
 temperature: 0.0

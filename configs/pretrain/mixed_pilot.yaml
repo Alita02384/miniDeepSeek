@@ -28,16 +28,16 @@ data:
   shuffle: true
   seed: 1234
   sources:
-    - path: data/tokenized/pretrain_general_4k.npz
+    - path: data/tokenization/pretrain_general_4k.npz
       weight: 0.60
       domain: general
-    - path: data/tokenized/pretrain_code_4k.npz
+    - path: data/tokenization/pretrain_code_4k.npz
       weight: 0.25
       domain: code
-    - path: data/tokenized/pretrain_math_4k.npz
+    - path: data/tokenization/pretrain_math_4k.npz
       weight: 0.10
       domain: math
-    - path: data/tokenized/pretrain_long_4k.npz
+    - path: data/tokenization/pretrain_long_4k.npz
       weight: 0.05
       domain: general
 train:

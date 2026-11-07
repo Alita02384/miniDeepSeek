@@ -10,6 +10,12 @@
 > `debugmodel`（与 V4 debug 配置同构）跑测试；**不真实训练这三个模型**。
 > 代码按**多卡 CUDA** 的目标环境编写，CPU/MPS 只用于逻辑验证。
 
+> **2026-11-07 路线更新**：三个 specialist 改为 **general / tool-use / code**。
+> 当前可训练 general 与 tool-use；code 的数据与 GRPO reward 暂缺。OPD 先跑
+> 2-teacher（general + tool），code 补齐后切 3-teacher。world/medical 不再作为
+> specialist。数据平铺在 `data/*.jsonl`，tokenization 在 `data/tokenization/`。
+> 详见 [doc/data_pipeline.md](doc/data_pipeline.md)。
+
 ---
 
 ## 1. 已完成的能力
@@ -28,6 +34,9 @@
 | Anticipatory Routing | `model/anticipatory.py`, `train/trainer.py` | 一步预取队列 + cache → replay；默认关 |
 | 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token warmup；flat→cosine LR；val_path；2K→4K→8K 分阶段 runner |
 | GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL；FSDP2 多卡路径 |
+| general specialist RLAIF | `rl/reward_model.py`, `configs/grpo/general.yaml` | `internlm2-1_8b-reward` + 长度/思考/重复 shaping |
+| tool-use specialist | `rl/agent_rollout.py`, `rl/tools.py`, `configs/grpo/tool.yaml` | 多轮工具执行、observation mask、tool reward |
+| 一键流水线 | `pipeline.py`, `configs/pipeline/` | tokenize→pretrain→SFT→GRPO→OPD→eval→export；按实际 token 自动算 step |
 | router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
 | 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
 | 权重版本 + logprob 门禁 | `rl/rollout.py` | vLLM 版本计数与 actor/rollout 对比 |
@@ -38,7 +47,7 @@
 | 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
 | world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
 
-测试：`201 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
+测试：`217 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
 
 ### 模型自包含说明
 
@@ -54,47 +63,58 @@ V4 的数学与参数布局。state dict 的 key 与形状和参考实现一致�
 环境：Python 3.11+；CPU 即可跑通 debug 模型，CUDA 上走 bf16。
 
 ```bash
-# 1) 建 venv、装 torch / tokenizers 等轻量依赖
+# 1) 本地：环境 + debug 数据 + 门禁
 ./scripts/setup_env.sh
-
-# 2) 生成 debug 数据集（MiniMind 样本，token id 限到 2048 以匹配 debug 词表）
-./scripts/prepare_debug_data.sh
-
-# 3) 端到端门禁：训练 smoke → 一致性 → 全部测试
 ./scripts/debug_smoke.sh
 
-# 4) 多卡（CUDA）：torchrun + FSDP2
-NPROC_PER_NODE=8 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
-NPROC_PER_NODE=8 ./scripts/train_grpo.sh    configs/grpo/math.yaml
-NPROC_PER_NODE=8 ./scripts/train_opd.sh     configs/opd/three_teacher.yaml
+# 2) 本地：从 minimind 生成平铺 JSONL（不修改 minimind/dataset）
+bash scripts/build_data.sh
 
-# 5) 2K→4K→8K 长度课程（先准备三段数据）
-.venv/bin/python -m minideepseek.data.prepare curriculum \
-  --input data/raw/pretrain.jsonl --out-dir data/tokenized --seq-lens 2048 4096 8192
-./scripts/train_curriculum.sh configs/pretrain/length_curriculum.yaml
+# 3) 本地：打包上传（只含 JSONL + manifests，不含 tokenization）
+bash scripts/package_dataset.sh dist/minideepseek-data
+```
+
+服务器：
+
+```bash
+git clone <repo> miniDeepSeek && cd miniDeepSeek
+DATA_REPO_URL=https://www.modelscope.cn/datasets/<ns>/<name>.git \
+  bash scripts/server_setup.sh
+
+# 先 dry-run 看完整命令与 token 预算
+NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
+  configs/pipeline/minimind_145m.yaml --dry-run
+
+# 一键训练：tokenize → 2K/4K/8K pretrain → SFT general/tool
+# → GRPO general/tool → 2-teacher OPD → eval → HF export
+NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
+  configs/pipeline/minimind_145m.yaml
 ```
 
 单独运行：
 
 ```bash
 .venv/bin/python -m pytest -q
+.venv/bin/python -m minideepseek.data.tokenize --smoke --seq-lens 2048 \
+  --out-dir data/tokenization
 .venv/bin/python -m minideepseek.train.smoke --flavor debugmodel --steps 2
 .venv/bin/python -m minideepseek.consistency.check --flavor debugmodel --demo
 ```
 
----
+数据流：`data/*.jsonl` 是上传/下载的唯一数据源；`data/tokenization/` 在服务器
+生成，是中间产物，不打包。
 
 ## 3. 配置与入口
 
 ```text
 configs/
 ├── model/{debugmodel,mini_220m_a80m,mini_145m_a60m,mini_60m_dense_d768}.yaml
-├── pretrain/{debug_smoke,pilot_0.6b,full_6b,dense_control_1b,pretrain_145m}.yaml
-├── pretrain/{length_curriculum,curriculum_145m_4x4090,curriculum_debug_smoke}.yaml
-├── sft/{debug_smoke,math,code,world}.yaml
-├── grpo/{debug_math,math,code,world,math_vllm}.yaml
-├── opd/{debug_three_teacher,single_math,three_teacher}.yaml
-└── eval/{debug_math,math,code,world}.yaml
+├── pretrain/{debug_smoke,pilot_0.6b,full_6b,pretrain_145m,curriculum_145m_4x4090}.yaml
+├── sft/{debug_smoke,general,tool,math,code,world}.yaml
+├── grpo/{debug_math,general,tool,math,code,world,math_vllm}.yaml
+├── opd/{debug_three_teacher,two_teacher_general_tool,three_teacher,single_math}.yaml
+├── eval/{debug_math,general,tool,math,code,world}.yaml
+└── pipeline/minimind_145m.yaml
 ```
 
 `configs/model/*.yaml` 是完整的架构文件；训练配置用 `model_file` 选择它，
@@ -112,7 +132,7 @@ configs/
 [doc/hardware_budget.md](doc/hardware_budget.md)。
 
 ```bash
-# 数据（本地语料已在 data/raw/，manifest 见 data/manifests/pretrain_local.yaml）
+# 数据（平铺 JSONL；manifest 见 data/manifests/specialists.yaml）
 .venv/bin/python -m minideepseek.data.prepare pretrain --input ... --output ...
 .venv/bin/python -m minideepseek.data.prepare sft      --input ... --output ...
 .venv/bin/python -m minideepseek.data.prepare grpo     --input ... --output ...
@@ -120,19 +140,19 @@ configs/
 .venv/bin/python -m minideepseek.data.prepare fertility --input ...
 .venv/bin/python -m minideepseek.data.prepare contamination --train ... --eval ...
 .venv/bin/python -m minideepseek.data.prepare manifest --manifest data/manifests/pretrain_6b.yaml
-.venv/bin/python -m minideepseek.data.prepare curriculum --input ... --out-dir data/tokenized
+.venv/bin/python -m minideepseek.data.prepare curriculum --input ... --out-dir data/tokenization
 
 # 训练 / RL
 ./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
-./scripts/train_sft.sh      configs/sft/math.yaml
-./scripts/train_grpo.sh     configs/grpo/math.yaml
-./scripts/train_opd.sh      configs/opd/three_teacher.yaml
+./scripts/train_sft.sh      configs/sft/general.yaml
+./scripts/train_grpo.sh     configs/grpo/general.yaml
+./scripts/train_opd.sh      configs/opd/two_teacher_general_tool.yaml
 
 # 一致性与评估
 .venv/bin/python -m minideepseek.consistency.check \
-  --flavor mini_220m_a80m --seq-len 4096 --checkpoint checkpoints/pretrain_full/final \
+  --flavor mini_220m_a80m --seq-len 4096 --checkpoint checkpoints/curriculum_145m/stage_02_seq8192/final \
   --prompts data/eval/prompts.jsonl
-.venv/bin/python -m minideepseek.eval.run --config configs/eval/math.yaml
+.venv/bin/python -m minideepseek.eval.run --config configs/eval/general.yaml
 
 # 训练监控：自动刷新 report.html（YAML 里设 train.report_every: 50），或手动生成
 .venv/bin/python scripts/plot_training.py checkpoints/pretrain_full/metrics.jsonl \
@@ -148,7 +168,7 @@ configs/
 
 # HF 导出（可选 extra: `pip install -e '.[hf]'`）
 .venv/bin/python scripts/export_hf.py \
-  --checkpoint checkpoints/pretrain_full/final --out hf/mini_220m_a80m \
+  --checkpoint checkpoints/curriculum_145m/stage_02_seq8192/final --out hf/mini_220m_a80m \
   --flavor mini_220m_a80m --seq-len 4096 --max-context 8192
 
 # verl 数据 + 配置导出（可选 CUDA extra: `pip install -e '.[verl]'`）

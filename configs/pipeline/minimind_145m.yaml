@@ -1,0 +1,64 @@
+# One-click pipeline: general + tool specialists -> 2-teacher OPD -> eval.
+# Code specialist intentionally absent; add sft_code/grpo_code stages when
+# code SFT/GRPO data is available.
+name: minimind_145m
+nproc: 4
+data_dir: data
+tokenization_dir: data/tokenization
+run_dir: runs/minimind_145m
+stages:
+  - id: tokenize
+    kind: tokenize
+    seq_lens: [2048, 4096, 8192]
+    sft_seq_len: 4096
+  - id: pretrain
+    kind: curriculum
+    config: configs/pretrain/curriculum_145m_4x4090.yaml
+    token_ratios: {2048: 0.15, 4096: 0.55, 8192: 0.30}
+    out_dir: checkpoints/curriculum_145m
+  - id: sft_general
+    kind: sft
+    name: general
+    config: configs/sft/general.yaml
+    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    epochs: 1.0
+    out_dir: checkpoints/sft_general
+  - id: sft_tool
+    kind: sft
+    name: tool
+    config: configs/sft/tool.yaml
+    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    epochs: 1.0
+    out_dir: checkpoints/sft_tool
+  - id: grpo_general
+    kind: grpo
+    config: configs/grpo/general.yaml
+    data: data/grpo_general_train.jsonl
+    resume: checkpoints/sft_general/final
+    out_dir: checkpoints/grpo_general
+  - id: grpo_tool
+    kind: grpo
+    config: configs/grpo/tool.yaml
+    data: data/grpo_tool_train.jsonl
+    resume: checkpoints/sft_tool/final
+    out_dir: checkpoints/grpo_tool
+  - id: opd_general_tool
+    kind: opd
+    config: configs/opd/two_teacher_general_tool.yaml
+    data: data/opd_prompts_mixed.jsonl
+    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    out_dir: checkpoints/opd_general_tool
+  - id: eval_general
+    kind: eval
+    config: configs/eval/general.yaml
+    checkpoint: checkpoints/grpo_general/final
+    data: data/eval_general.jsonl
+  - id: eval_tool
+    kind: eval
+    config: configs/eval/tool.yaml
+    checkpoint: checkpoints/grpo_tool/final
+    data: data/eval_tool.jsonl
+  - id: export
+    kind: export
+    checkpoint: checkpoints/opd_general_tool/final
+    out: hf/minimind_145m_general_tool

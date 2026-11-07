@@ -15,7 +15,7 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/processed/grpo/debug_math.jsonl
+  path: data/grpo_debug_math.jsonl
   domain: math
 train:
   steps: 1

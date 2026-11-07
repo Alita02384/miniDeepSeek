@@ -35,6 +35,9 @@ class RolloutSample:
     teacher_key: str | None = None
     prompt_text: str = ""
     response_text: str = ""
+    #: Per-response-token loss mask.  Multi-turn agent rollouts mark tool
+    #: observations ``False`` so only assistant tokens contribute to loss.
+    token_mask: list[bool] | None = None
 
     @property
     def sequence(self) -> list[int]:
@@ -48,8 +51,28 @@ class RolloutSample:
     def response_length(self) -> int:
         return len(self.response_ids)
 
+    @property
+    def num_loss_tokens(self) -> int:
+        if self.token_mask is None:
+            return len(self.response_ids)
+        return sum(1 for value in self.token_mask if value)
+
     def response_mask(self) -> list[bool]:
-        return [False] * len(self.prompt_ids) + [True] * len(self.response_ids)
+        values = self.token_mask if self.token_mask is not None else [True] * len(self.response_ids)
+        if len(values) != len(self.response_ids):
+            raise ValueError(
+                f"token_mask length {len(values)} != response length {len(self.response_ids)}"
+            )
+        return [False] * len(self.prompt_ids) + list(values)
+
+    def loss_logprobs(self) -> list[float]:
+        if self.token_mask is None:
+            return list(self.sampling_logprobs)
+        return [
+            value
+            for value, keep in zip(self.sampling_logprobs, self.token_mask, strict=True)
+            if keep
+        ]
 
 
 @dataclass
@@ -156,7 +179,7 @@ class TorchRolloutEngine:
             temperature=temperature or samples[0].temperature,
         ).detach().float().cpu()
         sampling = torch.tensor(
-            [value for sample in samples for value in sample.sampling_logprobs],
+            [value for sample in samples for value in sample.loss_logprobs()],
             dtype=torch.float32,
         )
         if actor.numel() != sampling.numel():

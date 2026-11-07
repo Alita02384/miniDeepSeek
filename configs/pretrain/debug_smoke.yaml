@@ -18,7 +18,7 @@ schedule:
   decay: cosine
   min_lr_ratio: 0.1
 data:
-  tokenized_path: data/tokenized/debug_pretrain.npz
+  tokenized_path: data/tokenization/debug_pretrain.npz
   batch_tokens: 256
   shuffle: true
   seed: 1234

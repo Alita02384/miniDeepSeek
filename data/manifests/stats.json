@@ -1,0 +1,42 @@
+{
+  "eval_general.jsonl": {
+    "bytes": 2548411,
+    "sha256": "4f2c442109cf55b2ea1e0b3e08afa5fa7a929c8d705abd95ff0f261308762e39"
+  },
+  "eval_tool.jsonl": {
+    "bytes": 9889192,
+    "sha256": "43768e687abe9fd64cba7f24ac4657cea044a8e63beb41bd0166837bc13554cb"
+  },
+  "grpo_general_train.jsonl": {
+    "bytes": 22284796,
+    "sha256": "945bf5aaed71076b6d7c4c9803aad3c79ec59af1f1ea59268e46ae53fb4ef722"
+  },
+  "grpo_tool_train.jsonl": {
+    "bytes": 89193627,
+    "sha256": "2e993b9103b636eadf36c4ef9a524ce41e2bb0934e648b36b4cff10a1315396e"
+  },
+  "opd_prompts_general.jsonl": {
+    "bytes": 22005372,
+    "sha256": "3f62289f8bff4a7293d58c20f5894f61ddc4a518bec5f8e452dfa3fcfe4b02db"
+  },
+  "opd_prompts_mixed.jsonl": {
+    "bytes": 55101571,
+    "sha256": "766c05d9e5560ee9415bcdf2196250f6d22dfdbc71bc825c70353ff2a82a7346"
+  },
+  "opd_prompts_tool.jsonl": {
+    "bytes": 33096199,
+    "sha256": "6ba49a15e21e7604afe9e10b43ff22a04750bb8d3b6e805f19bd88d04a32fe3b"
+  },
+  "pretrain_t2t.jsonl": {
+    "bytes": 8275074893,
+    "sha256": "31efc9a6fa7430769c0e78cde1c8ec0273ac7bbad20614c0ee58bccef327cc9d"
+  },
+  "sft_general.jsonl": {
+    "bytes": 1739201170,
+    "sha256": "abb1e76b2056e14728beb78db96b7b3c491a0bef1ed3e34a9b381b28f29fa518"
+  },
+  "sft_tool.jsonl": {
+    "bytes": 157977621,
+    "sha256": "2dcdd391f61e54124e2835de5d2ff614e31dcea536fc90a20f33ee618726597d"
+  }
+}

@@ -27,3 +27,8 @@ dist/
 
 # 系统
 .DS_Store
+
+# 运行产物
+runs/
+dist/
+hf/

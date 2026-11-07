@@ -606,3 +606,36 @@
 - **未完成 / 风险**:
   - 未实际训练 16k 自定义词表，文中 0.21/0.24/0.36 是按 6.4k→49k 插值的估计值；
   - 词表若不换，代码/英文的 token 成本要长期用"短样本 + 只做 Python"来对冲。
+
+## 2026-11-07 general/tool specialist + flat data + one-click pipeline
+
+- **做了什么**：
+  - 新增 `data/build.py`：从 `minimind/dataset` 生成平铺 `data/*.jsonl`
+    （general/tool SFT、general/tool GRPO、OPD prompt pool）；
+  - 新增 `data/tokenize.py`：2K/4K/8K pretrain + SFT general/tool tokenization；
+  - `data/grpo.py` 增加 `multi_turn` / `gt`；`data/opd.py` 保留多轮历史；
+  - `rl/tools.py`、`rl/agent_rollout.py`：MiniMind 多轮 tool rollout + 工具执行；
+  - `rl/reward_model.py`：1.8B reward model 包装；
+  - `rl/reward.py`：general/tool reward + MiniMind shaping + clip；
+  - `rl/grpo.py` / `rl/opd.py`：token mask、多轮 engine、OPD observation mask；
+  - `sft.py`：array/bytearray 缓冲，604M token SFT 从 ~50GB 降到 ~6GB；
+  - 新增 general/tool SFT/GRPO/OPD/eval 配置、pipeline 配置、数据/服务器脚本；
+  - 删除旧的 `data/raw`、`data/tokenized`、`data/processed` 与过时 manifest。
+- **实现了什么**：
+  - 平铺数据实际生成：`sft_tool` 84,832 tool + 20,204 general；`grpo_general`
+    17,464 train / 1,940 eval；`grpo_tool` 34,734 train / 3,859 eval；
+    `opd_prompts_mixed` 37,464（general 17,464 + tool 20,000）；
+  - CPU 上 tool 多轮 rollout + GRPO 1 step 通过，observation 被 mask；
+  - `pipeline.py` 支持 dry-run、阶段跳过、按 token meta 自动算 step。
+- **验证**：
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → **217 passed**
+  - `python -m minideepseek.data.build ...` → 上述 JSONL 数量
+  - `python -m minideepseek.data.tokenize --smoke ...` → pretrain/SFT meta 正常
+  - `tests/test_tool_agent.py` → 多轮 tool rollout / GRPO 1 step
+- **未完成 / 风险**：
+  - 完整 2.3B token 的 2K/4K/8K tokenization 未在本机跑（16GB 内存不足），
+    需在 64GB+ 服务器执行；
+  - 1.8B reward model 未下载/未在 CPU smoke（无 `transformers` 时按可选路径）；
+  - code specialist、3-teacher OPD 未实现（数据/reward 缺口）；
+  - tool rollout 的 CUDA/多卡与真实 145M 训练未验证。

@@ -20,7 +20,7 @@ schedule:
   min_lr_ratio: 0.1
   decay_start_ratio: 0.8
 data:
-  tokenized_path: data/tokenized/pretrain_1b.npz
+  tokenized_path: data/tokenization/pretrain_1b.npz
   batch_tokens: 16384
   batch_tokens_final: 65536
   batch_warmup_ratio: 0.1

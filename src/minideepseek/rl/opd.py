@@ -49,6 +49,7 @@ from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
+from .agent_rollout import ToolRolloutEngine
 from .rollout import RolloutSample, TorchRolloutEngine
 
 
@@ -104,7 +105,18 @@ class OPDTrainer:
         self.dist = distributed or DistributedContext(device=student.device)
         self.prompts = list(prompts)
         self.teachers = teachers
-        self.engine = engine or TorchRolloutEngine(student, tokenizer)
+        if engine is None:
+            if any(prompt.multi_turn or prompt.domain == "tool" for prompt in prompts):
+                engine = ToolRolloutEngine(
+                    student,
+                    tokenizer,
+                    max_turns=config.rl.max_turns,
+                    thinking_ratio=config.rl.thinking_ratio,
+                    max_tool_calls=config.rl.max_tool_calls,
+                )
+            else:
+                engine = TorchRolloutEngine(student, tokenizer)
+        self.engine = engine
         self.optimizer = build_optimizer(student, config.optim)
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
@@ -145,7 +157,12 @@ class OPDTrainer:
     def _rollout(self) -> list[RolloutSample]:
         prompts = self._sample_prompts()
         records = [
-            GRPORecord(prompt=prompt.prompt, domain=prompt.domain, verifier="none")
+            GRPORecord(
+                prompt=prompt.prompt,
+                domain=prompt.domain,
+                verifier="none",
+                multi_turn=prompt.multi_turn,
+            )
             for prompt in prompts
         ]
         groups = self.engine.rollout(
@@ -444,6 +461,15 @@ def build_opd_trainer(
     from .backends import build_rollout_engine
 
     engine = build_rollout_engine(config, student, tokenizer)
+    if any(prompt.multi_turn or prompt.domain == "tool" for prompt in prompts):
+        engine = ToolRolloutEngine(
+            student,
+            tokenizer,
+            generator=getattr(engine, "generator", None),
+            max_turns=config.rl.max_turns,
+            thinking_ratio=config.rl.thinking_ratio,
+            max_tool_calls=config.rl.max_tool_calls,
+        )
     trainer = OPDTrainer(
         config,
         student,

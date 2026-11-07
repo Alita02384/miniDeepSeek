@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
         "configs/sft/math.yaml",
         "configs/sft/code.yaml",
         "configs/sft/world.yaml",
+        "configs/sft/general.yaml",
+        "configs/sft/tool.yaml",
     ],
 )
 def test_train_configs_load(relative):
@@ -35,9 +37,12 @@ def test_train_configs_load(relative):
         "configs/grpo/math.yaml",
         "configs/grpo/code.yaml",
         "configs/grpo/world.yaml",
+        "configs/grpo/general.yaml",
+        "configs/grpo/tool.yaml",
         "configs/opd/debug_three_teacher.yaml",
         "configs/opd/single_math.yaml",
         "configs/opd/three_teacher.yaml",
+        "configs/opd/two_teacher_general_tool.yaml",
     ],
 )
 def test_rl_configs_load(relative):
@@ -47,7 +52,14 @@ def test_rl_configs_load(relative):
 
 @pytest.mark.parametrize(
     "relative",
-    ["configs/eval/debug_math.yaml", "configs/eval/math.yaml", "configs/eval/code.yaml", "configs/eval/world.yaml"],
+    [
+        "configs/eval/debug_math.yaml",
+        "configs/eval/math.yaml",
+        "configs/eval/code.yaml",
+        "configs/eval/world.yaml",
+        "configs/eval/general.yaml",
+        "configs/eval/tool.yaml",
+    ],
 )
 def test_eval_configs_load(relative):
     config = load_config(EvalConfig, ROOT / relative)

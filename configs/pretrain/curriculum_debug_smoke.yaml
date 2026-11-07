@@ -3,22 +3,22 @@
 # GPU or a real corpus.
 #
 # Data: .venv/bin/python -m minideepseek.data.prepare curriculum \
-#     --input data/raw/pretrain_t2t_mini.jsonl --out-dir data/tokenized_smoke \
+#     --input data/pretrain_t2t_mini.jsonl --out-dir data/tokenized_smoke \
 #     --seq-lens 2048 4096 8192 --max-records 3000 --vocab-limit 2048
 base_config: configs/pretrain/debug_smoke.yaml
 out_dir: checkpoints/curriculum_debug
 mode: pretrain
 stages:
   - seq_len: 2048
-    tokenized_path: data/tokenized_smoke/pretrain_2k.npz
+    tokenized_path: data/tokenization/smoke/pretrain_2k.npz
     until_step: 1
     batch_tokens: 2048
   - seq_len: 4096
-    tokenized_path: data/tokenized_smoke/pretrain_4k.npz
+    tokenized_path: data/tokenization/smoke/pretrain_4k.npz
     until_step: 2
     batch_tokens: 4096
   - seq_len: 8192
-    tokenized_path: data/tokenized_smoke/pretrain_8k.npz
+    tokenized_path: data/tokenization/smoke/pretrain_8k.npz
     until_step: 3
     batch_tokens: 8192
     activation_checkpointing: true

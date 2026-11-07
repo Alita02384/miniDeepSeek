@@ -1,5 +1,5 @@
 # 145M MoE pretraining, sized for 4x RTX 4090/3090 (24 GB) and the local
-# MiniMind corpus in data/raw/pretrain_t2t.jsonl.
+# MiniMind corpus in data/pretrain_t2t.jsonl.
 #
 # Used as the `base_config` of configs/pretrain/curriculum_145m_4x4090.yaml;
 # every stage overrides seq_len / tokenized_path / steps.
@@ -25,7 +25,7 @@ schedule:
   min_lr_ratio: 0.1
   decay_start_ratio: 0.8
 data:
-  tokenized_path: data/tokenized/pretrain_4k.npz
+  tokenized_path: data/tokenization/pretrain_4k.npz
   # Global (all-rank) micro-batch budget: 4 GPUs x 4096 tokens = one 4K pack each.
   batch_tokens: 16384
   batch_tokens_final: 16384

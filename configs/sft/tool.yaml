@@ -1,0 +1,48 @@
+# Tool-use specialist: tool/tool_call subset of sft_t2t_mini + general slice.
+model_file: configs/model/mini_145m_a60m.yaml
+model:
+  flavor: mini_145m_a60m
+  seq_len: 4096
+  n_mtp_layers: 1
+  swiglu_limit: 10.0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+optim:
+  kind: hybrid
+  lr: 0.00002
+  muon_lr: 0.00002
+  adamw_lr: 0.00002
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 30
+  decay: cosine
+  min_lr_ratio: 0.1
+  decay_start_ratio: 0.8
+data:
+  tokenized_path: data/tokenization/sft_tool.npz
+  batch_tokens: 32768
+  shuffle: true
+  seed: 1234
+  domain: tool
+train:
+  steps: 300
+  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+  resume_data: false
+  resume_optimizer: false
+  resume_step: false
+  grad_accum: 8
+  log_every: 10
+  ckpt_every: 100
+  out_dir: checkpoints/sft_tool
+  mtp_weight: 0.3
+  mtp_weight_final: 0.1
+  mtp_decay_ratio: 0.8
+  balance_loss_coeff: 0.0001
+  index_topk_final: 64
+  index_topk_warmup_ratio: 0.05
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32

@@ -20,7 +20,7 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/processed/grpo/world/train.jsonl
+  path: data/grpo_world_train.jsonl
   shuffle: true
   seed: 1234
   domain: world

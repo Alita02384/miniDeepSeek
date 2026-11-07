@@ -1,0 +1,57 @@
+# OPD with the two specialists available now; the code teacher is added later.
+model_file: configs/model/mini_145m_a60m.yaml
+model:
+  flavor: mini_145m_a60m
+  seq_len: 4096
+  n_mtp_layers: 0
+  swiglu_limit: 10.0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+optim:
+  kind: hybrid
+  lr: 0.000005
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 0
+  decay: constant
+  min_lr_ratio: 1.0
+data:
+  path: data/opd_prompts_mixed.jsonl
+  domain: mixed
+train:
+  steps: 500
+  grad_accum: 1
+  log_every: 1
+  ckpt_every: 50
+  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+  resume_step: false
+  out_dir: checkpoints/opd_general_tool
+rl:
+  method: opd
+  prompts_per_step: 32
+  max_new_tokens: 1024
+  temperature: 0.8
+  thinking_ratio: 0.1
+  max_turns: 3
+  teacher_weights:
+    general: 0.5
+    tool: 0.5
+teachers:
+  - name: general_teacher
+    key: general
+    checkpoint: checkpoints/grpo_general/final
+    flavor: mini_145m_a60m
+    seq_len: 4096
+    weight: 0.5
+  - name: tool_teacher
+    key: tool
+    checkpoint: checkpoints/grpo_tool/final
+    flavor: mini_145m_a60m
+    seq_len: 4096
+    weight: 0.5
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32

@@ -44,6 +44,7 @@ from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
+from .agent_rollout import ToolRolloutEngine
 from .reward import RewardResult, group_advantages
 from .rollout import RolloutGroup, RolloutSample, TorchRolloutEngine
 
@@ -110,7 +111,18 @@ class GRPOTrainer:
         self.dist = distributed or DistributedContext(device=model.device)
         self.records = list(records)
         self.reward_fn = reward_fn
-        self.engine = engine or TorchRolloutEngine(model, tokenizer)
+        if engine is None:
+            if any(record.multi_turn and record.domain == "tool" for record in records):
+                engine = ToolRolloutEngine(
+                    model,
+                    tokenizer,
+                    max_turns=config.rl.max_turns,
+                    thinking_ratio=config.rl.thinking_ratio,
+                    max_tool_calls=config.rl.max_tool_calls,
+                )
+            else:
+                engine = TorchRolloutEngine(model, tokenizer)
+        self.engine = engine
         self.optimizer = build_optimizer(model, config.optim)
         self.scheduler = WarmupDecaySchedule(
             self.optimizer,
@@ -157,7 +169,7 @@ class GRPOTrainer:
             raise RuntimeError("advantage/sample accounting mismatch")
 
         batch, response_mask = self.engine.build_batch(flat_samples, self.model.device)
-        length = sum(sample.response_length for sample in flat_samples)
+        length = sum(sample.num_loss_tokens for sample in flat_samples)
         if length == 0:
             raise RuntimeError("all sampled responses are empty")
         if self.config.rl.log_domain_routing:
@@ -189,7 +201,7 @@ class GRPOTrainer:
             )
             routing_stats = {}
         old_logprobs = torch.tensor(
-            [value for sample in flat_samples for value in sample.sampling_logprobs],
+            [value for sample in flat_samples for value in sample.loss_logprobs()],
             dtype=torch.float32,
             device=self.model.device,
         )
@@ -202,7 +214,7 @@ class GRPOTrainer:
             [
                 advantages[index]
                 for index, sample in enumerate(flat_samples)
-                for _ in range(sample.response_length)
+                for _ in range(sample.num_loss_tokens)
             ],
             dtype=torch.float32,
             device=self.model.device,
@@ -259,7 +271,13 @@ class GRPOTrainer:
             seed=self.config.model.seed + self.step_index,
         )
         rewards = [
-            [self.reward_fn(sample.response_text, group.record) for sample in group.samples]
+            [
+                self.reward_fn(
+                    sample.response_text,
+                    sample.record or group.record,
+                )
+                for sample in group.samples
+            ]
             for group in groups
         ]
         self.optimizer.zero_grad(set_to_none=True)
@@ -419,6 +437,15 @@ def build_grpo_trainer(
     from .backends import build_rollout_engine
 
     engine = build_rollout_engine(config, model, tokenizer)
+    if any(record.multi_turn and record.domain == "tool" for record in records):
+        engine = ToolRolloutEngine(
+            model,
+            tokenizer,
+            generator=getattr(engine, "generator", None),
+            max_turns=config.rl.max_turns,
+            thinking_ratio=config.rl.thinking_ratio,
+            max_tool_calls=config.rl.max_tool_calls,
+        )
     trainer = GRPOTrainer(
         config,
         model,
