@@ -45,7 +45,7 @@ rl:
   max_tool_calls: 4
 reward:
   kind: tool
-  reward_model_path: ../internlm2-1_8b-reward
+  reward_model_path: internlm2-1_8b-reward
   reward_model_dtype: float16
   length_bonus: 0.5
   think_bonus: 1.0

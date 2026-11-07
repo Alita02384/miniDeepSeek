@@ -43,7 +43,7 @@ rl:
   thinking_ratio: 0.9
 reward:
   kind: general
-  reward_model_path: ../internlm2-1_8b-reward
+  reward_model_path: internlm2-1_8b-reward
   reward_model_dtype: float16
   length_bonus: 0.5
   think_bonus: 1.0

@@ -15,5 +15,5 @@ limit: 200
 out_path: reports/eval_tool.json
 reward:
   kind: tool
-  reward_model_path: ../internlm2-1_8b-reward
+  reward_model_path: internlm2-1_8b-reward
   reward_model_dtype: float16

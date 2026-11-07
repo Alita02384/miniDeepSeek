@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smoke-check the local InternLM2 reward model.
 
-    python scripts/check_reward_model.py --path ../internlm2-1_8b-reward
+    python scripts/check_reward_model.py --path internlm2-1_8b-reward
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from minideepseek.rl.reward_model import LocalRewardModel  # noqa: E402
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--path", default="../internlm2-1_8b-reward")
+    parser.add_argument("--path", default="internlm2-1_8b-reward")
     parser.add_argument("--dtype", default="float16")
     parser.add_argument("--prompt", default="请用一句话介绍你自己。")
     parser.add_argument("--response", default="你好，我是一个语言模型。")

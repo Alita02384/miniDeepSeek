@@ -645,8 +645,8 @@
 
 - **commit**: `0e0da48` feat: add local reward-model smoke check
 - **做了什么**：
-  - 下载 `internlm/internlm2-1_8b-reward` 到代码根同级
-    `../internlm2-1_8b-reward`（3.2 GB，未进 git）；HF 主站 SSL 不稳定，
+  - 下载 `internlm/internlm2-1_8b-reward` 到代码根下
+    `internlm2-1_8b-reward`（3.2 GB，未进 git）；HF 主站 SSL 不稳定，
     用 `hf-mirror.com` 的 `resolve/main` 直链下载；
   - `pyproject` 的 `hf` extra 补 `sentencepiece`、`protobuf`（InternLM2
     tokenizer 需要）；

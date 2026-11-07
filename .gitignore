@@ -32,3 +32,6 @@ dist/
 runs/
 dist/
 hf/
+
+# 本地 reward model（3.2GB，不入库）
+internlm2-1_8b-reward/

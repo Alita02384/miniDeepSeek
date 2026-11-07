@@ -31,10 +31,10 @@ if [ -f data/SHA256SUMS ]; then
 fi
 .venv/bin/python -m pytest -q
 
-if [ -d ../internlm2-1_8b-reward ]; then
-  .venv/bin/python scripts/check_reward_model.py --path ../internlm2-1_8b-reward
+if [ -d internlm2-1_8b-reward ]; then
+  .venv/bin/python scripts/check_reward_model.py --path internlm2-1_8b-reward
 else
-  echo "WARNING: ../internlm2-1_8b-reward not found; general GRPO will fail without a reward model" >&2
+  echo "WARNING: internlm2-1_8b-reward not found; general GRPO will fail without a reward model" >&2
 fi
 
 echo "Server environment ready. Next: bash scripts/run_pipeline.sh"

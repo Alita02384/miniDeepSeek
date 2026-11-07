@@ -103,10 +103,10 @@ general/tool 的配置使用 MiniMind 的 `internlm2-1_8b-reward`：
 ```yaml
 reward:
   kind: general   # 或 tool
-  reward_model_path: ../internlm2-1_8b-reward
+  reward_model_path: internlm2-1_8b-reward
 ```
 
-把 reward model 放在代码根同级目录（`../internlm2-1_8b-reward`）。没有它时
+把 reward model 放在代码根目录下（`internlm2-1_8b-reward`）。没有它时
 general GRPO 只有 shaping、没有主信号；tool 分支仍可用工具+GT reward，但
 无工具分支会退化。下载与许可按 InternLM2 官方仓库执行。
 
@@ -114,10 +114,37 @@ general GRPO 只有 shaping、没有主信号；tool 分支仍可用工具+GT re
 
 ```bash
 export HF_HOME="$PWD/.cache/huggingface"
-.venv/bin/python scripts/check_reward_model.py --path ../internlm2-1_8b-reward
+.venv/bin/python scripts/check_reward_model.py --path internlm2-1_8b-reward
 ```
 
-## 6. 断点 / 常见问题
+## 6. reward model 资源
+
+实测（CPU/M5，16GB）：加载后最大 RSS 约 **3.15GB**；单条短回答打分约
+**2–4s**。模型参数 **1.70B**：
+
+| 精度 | 权重 | 说明 |
+|---|---:|---|
+| fp16/bf16 | **3.4GB** | 配置默认 |
+| fp32 | 6.8GB | 不建议 |
+
+单次 forward 约 `2 × 1.7B × tokens` FLOPs：
+
+| 序列 token | TFLOP |
+|---:|---:|
+| 256 | 0.87 |
+| 512 | 1.74 |
+| 1024 | 3.48 |
+
+24GB 卡上按 fp16 估算，每个 rank 约 **5–6GB**（权重 3.4GB + 激活/CUDA
+上下文）。注意当前实现是**每个 rank 各加载一份 RM**，4 卡就是 4 份；
+actor 训练状态另算。general GRPO 每 step 约 6×32=192 次打分，按 4090
+10–20% MFU 估算约 **20–60s/step 仅 RM**；CPU 按 2–4s/条则要 6–13min/step，
+不可训练。tool 分支只在无工具调用时用 RM，调用数更少。
+
+如果要省显存/时间：把 RM 放独立卡并在 rank0 汇总打分，或把 `get_score`
+改成 `get_scores` 批量打分（当前逐条调用）。
+
+## 7. 断点 / 常见问题
 
 - **续跑**：再执行同一条 `run_pipeline.sh`；stage final 存在即跳过。
 - **OOM**：先看是 tokenize、pretrain 8K 还是 tool rollout。tool rollout 的
@@ -128,7 +155,7 @@ export HF_HOME="$PWD/.cache/huggingface"
 - **reward model OOM**：1.8B fp16 约 3.6 GB；与 145M actor 同卡一般够，
   不够就放 CPU（很慢）或换 HTTP judge。
 
-## 7. code 专家补齐后
+## 8. code 专家补齐后
 
 1. 把 code SFT/GRPO 数据放进 `data/`（`sft_code.jsonl`、
    `grpo_code_train.jsonl`）；
