@@ -511,3 +511,19 @@
   - 分布式 NaN 快照需要所有 rank 同时进入 `save()`，单 rank 失败时仍可能
     等待集合通信（与现有 DDP/FSDP 失败语义一致，未额外处理）；
   - 可视化刻意不引入 matplotlib，复杂交互（缩放/悬停数值）暂不支持。
+
+## 2026-11-07 UTF-8 文本 I/O 修复
+
+- **commit**: `3cd3ebd` fix: 文本读写显式使用 UTF-8，避免依赖进程 locale
+- **做了什么**: 22 处 `read_text`/`write_text` 补 `encoding="utf-8"`
+  （checkpoint/dataset meta、config YAML、eval 报告、HF 导出、verl 数据、
+  `nan_report.json` 等）；新增 `tests/test_encoding.py`，在 C/ASCII locale 下
+  验证 checkpoint、dataset、config、eval 报告的中文 round-trip。
+- **实现了什么**: 不再依赖 `LANG`/Windows 默认编码；在 `LC_CTYPE=C` 且关闭
+  UTF-8 mode 时，含中文的 meta/report/config 仍可读写。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed
+  - `.venv/bin/python -m pytest -q` → 204 passed（工作树；其中 3 个为并行
+    未提交的 activation checkpointing 测试，本 commit 自身为 201）
+- **未完成 / 风险**: 工作树同时存在 activation checkpointing / 数据打包优化
+  的未提交改动，不属于本 commit；两者已在同一工作树上通过全量测试。

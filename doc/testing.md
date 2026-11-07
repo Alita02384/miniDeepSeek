@@ -7,7 +7,7 @@
 
 ```bash
 ./scripts/setup_env.sh          # 一次性
-.venv/bin/python -m pytest -q   # 197 passed, ~40s on CPU；无 transformers 时 HF 的 6 个测试跳过
+.venv/bin/python -m pytest -q   # 201 passed, ~40s on CPU；无 transformers 时 HF 的 6 个测试跳过
 .venv/bin/ruff check src tests  # All checks passed
 ```
 
