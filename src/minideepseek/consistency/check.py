@@ -105,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     print(text)
     return 0 if report["passed"] else 1
 

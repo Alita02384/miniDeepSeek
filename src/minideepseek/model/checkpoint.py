@@ -117,7 +117,9 @@ def save_checkpoint(
     }
     if save_rng:
         meta["rng"] = capture_rng_state()
-    (directory / META_FILE).write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    (directory / META_FILE).write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return meta
 
 
@@ -170,7 +172,7 @@ def read_metadata(directory: str | Path) -> dict[str, Any]:
     meta_path = Path(directory) / META_FILE
     if not meta_path.exists():
         raise FileNotFoundError(f"checkpoint metadata not found: {meta_path}")
-    return json.loads(meta_path.read_text())
+    return json.loads(meta_path.read_text(encoding="utf-8"))
 
 
 # -- safetensors export -------------------------------------------------------
@@ -203,7 +205,7 @@ def export_safetensors(
     payload = dict(config or {})
     payload.update(extra or {})
     (path.parent / SAFETENSORS_CONFIG).write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False)
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return path
 
@@ -231,7 +233,7 @@ def save_distributed_checkpoint(directory: str | Path, model, *, step: int = 0) 
     state = {"model": {k: v.detach().cpu() for k, v in model.state_dict().items()}}
     dcp.save(state, storage_writer=FileSystemWriter(str(directory)))
     (directory / "dcp_meta.json").write_text(
-        json.dumps({"step": int(step), "format": "dcp"}, indent=2)
+        json.dumps({"step": int(step), "format": "dcp"}, indent=2), encoding="utf-8"
     )
     return directory
 

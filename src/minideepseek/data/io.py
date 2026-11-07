@@ -92,7 +92,7 @@ def save_flat_dataset(
     np.save(_sidecar_path(path, "target_mask"), np.asarray(target_mask, dtype=bool))
     np.save(_sidecar_path(path, "offsets"), np.asarray(offsets, dtype=np.int64))
     path.with_suffix(".json").write_text(
-        json.dumps(meta, indent=2, ensure_ascii=False)
+        json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     return path
 

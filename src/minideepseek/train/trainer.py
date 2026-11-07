@@ -805,7 +805,8 @@ class Trainer:
         try:
             path.mkdir(parents=True, exist_ok=True)
             (path / "nan_report.json").write_text(
-                json.dumps(report, indent=2, ensure_ascii=False, default=str)
+                json.dumps(report, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
             )
         except OSError as write_error:  # pragma: no cover
             print(f"failed to write non-finite report: {write_error}", flush=True)

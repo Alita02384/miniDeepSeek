@@ -208,7 +208,9 @@ def _summarize(domain: str, samples: list[EvalSample]) -> EvalReport:
 def write_report(report: EvalReport, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+    path.write_text(
+        json.dumps(report.as_dict(), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     markdown_path = path.with_suffix(".md")
     lines = [
         f"# Evaluation report: {report.domain}",
@@ -234,5 +236,5 @@ def write_report(report: EvalReport, path: str | Path) -> Path:
                 "",
             ]
         )
-    markdown_path.write_text("\n".join(lines))
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
     return path

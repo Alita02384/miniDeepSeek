@@ -54,5 +54,8 @@ def run_lm_eval(
 
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(results, indent=2, ensure_ascii=False, default=str))
+        path.write_text(
+            json.dumps(results, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
     return results

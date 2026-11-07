@@ -65,7 +65,7 @@ class MiniDeepSeekTokenizer:
         if self._vocab_limit is not None and self._vocab_limit < 3:
             raise ValueError("vocab_limit must be at least 3")
         self._tokenizer = Tokenizer.from_file(str(self.tokenizer_file))
-        self._config = json.loads(self.config_file.read_text())
+        self._config = json.loads(self.config_file.read_text(encoding="utf-8"))
         self._template_source = self._config.get("chat_template")
         self._env = jinja2.Environment(
             trim_blocks=True, lstrip_blocks=True, autoescape=False

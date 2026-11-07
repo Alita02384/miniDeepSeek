@@ -65,7 +65,8 @@ def write_verl_dataset(records: Sequence[GRPORecord], path: str | Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [to_verl_record(record) for record in records]
     path.write_text(
-        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n"
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
     )
     try:
         import pandas as pd
@@ -217,7 +218,7 @@ def flatten_overrides(config: dict[str, Any], prefix: str = "") -> list[str]:
 def write_verl_config(config: dict[str, Any], path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config, sort_keys=False))
+    path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return path
 
 

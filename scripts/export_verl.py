@@ -67,7 +67,9 @@ def main() -> int:
     command = "python -m verl.trainer.main_ppo \\\n  " + " \\\n  ".join(
         flatten_overrides(config)
     )
-    (out / "run.sh").write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + command + "\n")
+    (out / "run.sh").write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n" + command + "\n", encoding="utf-8"
+    )
     (out / "run.sh").chmod(0o755)
     print(json.dumps({"out_dir": str(out), "command": command}, indent=2, ensure_ascii=False))
     return 0

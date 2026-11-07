@@ -39,7 +39,7 @@ class SFTDataset:
         self.meta: dict[str, Any] = {}
         meta_path = self.path.with_suffix(".json")
         if meta_path.exists():
-            self.meta = json.loads(meta_path.read_text())
+            self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
     def __len__(self) -> int:
         return int(len(self.offsets) - 1)

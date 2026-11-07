@@ -153,7 +153,7 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
     program = code + "\n\n" + str(tests) + "\n"
     with tempfile.TemporaryDirectory() as directory:
         script = Path(directory) / "candidate.py"
-        script.write_text(program)
+        script.write_text(program, encoding="utf-8")
         try:
             completed = subprocess.run(
                 [sys.executable, "-I", str(script)],

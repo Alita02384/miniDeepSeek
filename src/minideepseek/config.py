@@ -96,7 +96,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"config not found: {path}")
-    data = yaml.safe_load(path.read_text())
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise TypeError(f"top-level YAML must be a mapping: {path}")
     return data
@@ -203,7 +203,10 @@ def load_config(
 def dump_config(config: BaseConfig, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config.to_dict(), sort_keys=False, allow_unicode=True))
+    path.write_text(
+        yaml.safe_dump(config.to_dict(), sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
     return path
 
 

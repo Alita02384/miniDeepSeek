@@ -86,13 +86,15 @@ def export_hf(
         source = tokenizer_dir / name
         if source.exists():
             shutil.copy2(source, out_dir / name)
-    payload = json.loads((out_dir / "config.json").read_text())
+    payload = json.loads((out_dir / "config.json").read_text(encoding="utf-8"))
     payload["auto_map"] = {
         "AutoConfig": "configuration_minideepseek.MiniDeepSeekConfig",
         "AutoModelForCausalLM": "modeling_minideepseek.MiniDeepSeekForCausalLM",
     }
     payload["architectures"] = ["MiniDeepSeekForCausalLM"]
-    (out_dir / "config.json").write_text(json.dumps(payload, indent=2) + "\n")
+    (out_dir / "config.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
     return out_dir
 
 
@@ -100,7 +102,7 @@ def export_checkpoint(checkpoint: str | Path, out_dir: str | Path, **kwargs) -> 
     """Export ``<checkpoint>/model.pt`` written by ``model.checkpoint``."""
     checkpoint = Path(checkpoint)
     state = torch.load(checkpoint / "model.pt", map_location="cpu", weights_only=True)
-    meta = json.loads((checkpoint / "meta.json").read_text())
+    meta = json.loads((checkpoint / "meta.json").read_text(encoding="utf-8"))
     config = meta.get("config", {})
     model_cfg = config.get("model", {})
     if kwargs.get("flavor") is None:
