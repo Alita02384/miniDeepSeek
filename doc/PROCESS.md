@@ -586,3 +586,23 @@
   - `rl/reward.py::code_reward` 目前是全通过=1、否则=0 的二值奖励，145M 上大概率恒 0，
     方案要求改成部分分（未实施）；
   - 代码 reward 直接 `subprocess` 跑模型生成代码、无沙箱，长期使用需加固。
+
+## 2026-11-07（补充：GRPO 数据量与词表评估）
+
+- **commit**: 见本条 commit
+- **做了什么**: `doc/data_plan_145m.md` 新增 §1.4（GRPO 数据量口径）与 §1.5（词表要不要换）：
+  按 200/500/1000/2000 步给出 in-band prompt 数与原始池需求；对比 5 个公开 tokenizer 的
+  tok/byte 与 embedding/LM-head 算力，结论是不换公开词表。
+- **实现了什么**:
+  - 实测 5 个 tokenizer 在中文/英文/Python/GSM CoT 上的 tok/byte：
+    minimind-6400 = 0.245/0.283/0.426/0.444；SmolLM-49k = 0.549/0.183/0.290/0.317；
+    Qwen2.5-151k = 0.207/0.179/0.241/0.309；TinyLlama-32k = 0.410/0.193/0.339/0.335；
+    GPT-2-50k = 0.709/0.194/0.455/0.259；
+  - 把 LM head 算力（2×768×vocab）折进"每字节有效算力"后：英文/Python 上 49k 与 6.4k 基本打平
+    （36.1 vs 37.3、57.3 vs 56.2），中文上 6.4k 便宜 3.4×；151k 词表 embedding 116.5M 不可行。
+- **验证**:
+  - tokenizer 数据由 `tokenizers` 库直接加载各家 `tokenizer.json` 实测，非估算；
+  - `src/minideepseek/rl/opd.py` 文件头确认使用 full-vocabulary reverse KL，且注释写明依赖 6400 词表。
+- **未完成 / 风险**:
+  - 未实际训练 16k 自定义词表，文中 0.21/0.24/0.36 是按 6.4k→49k 插值的估计值；
+  - 词表若不换，代码/英文的 token 成本要长期用"短样本 + 只做 Python"来对冲。
