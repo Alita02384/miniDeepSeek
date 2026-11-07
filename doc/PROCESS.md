@@ -609,6 +609,7 @@
 
 ## 2026-11-07 general/tool specialist + flat data + one-click pipeline
 
+- **commit**: `30baa59` feat: general/tool specialists, flat data, multi-turn tool RL
 - **做了什么**：
   - 新增 `data/build.py`：从 `minimind/dataset` 生成平铺 `data/*.jsonl`
     （general/tool SFT、general/tool GRPO、OPD prompt pool）；
