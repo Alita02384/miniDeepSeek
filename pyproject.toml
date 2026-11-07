@@ -21,7 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
 # HF format / verl / vLLM are optional; CPU tests only need the base install.
-hf = ["transformers>=4.46,<5"]
+hf = ["transformers>=4.46,<5", "sentencepiece>=0.2", "protobuf>=4"]
 # CUDA-only rollout and RL stack.  Install explicitly on the training cluster.
 vllm = ["vllm>=0.10"]
 verl = ["verl", "vllm>=0.10"]
