@@ -705,3 +705,24 @@
   MinHash 约需数十 GB 内存/数十分钟；正式去重需要独立的 exact/分布式实现。
 - **依据**：D45 已把 pretrain 打包缓冲降到 ~9 B/token；SFT builder 也改成
   `array`/`bytearray`，604M token 约 6 GB 而不是 ~50 GB。
+
+### D63. 预训练预算 1.2B → 3B，并把 code/tool 加进混料
+
+- **原方案**：`curriculum_145m_4x4090.yaml` 用 MiniMind `pretrain_t2t.jsonl` 单源，
+  1.2B token（2.2B 可用，1 epoch）。
+- **新方案**：3B token 七源混料——中文通用 40%、英文教育 15%、中文教育 15%、
+  **code 15%**、合成教材 10%、**tool 3%**、math 2%（见 `doc/data_plan_145m.md` §3.2）。
+- **依据**：实测现有语料 general 96.1% / code 2.1% / **tool 0%**；三专家路线下
+  code 与 tool 必须进预训练打底。145M 上 3B 是甜点，5B 以上边际收益低。
+- **影响**：`pretrain_3b.yaml` 待建；`data/tokenization/pretrain_*.npz` 需按新混料
+  重新打包（当前 tokenization 只覆盖 MiniMind 单源）；`available_tokens` 需实测替换。
+
+### D64. 三专家 SFT 数据量按"饱和点"而非"按数据集大小"
+
+- **原方案**：`configs/sft/*.yaml` 统一 500 step × 32,768 token = 16.4M token/专家。
+- **新方案**：general 40–60k 条（15–20M token）、code 25–35k（12M）、
+  tool 5–10k（4–6M，2–3 epoch），比例约 4:2:1。
+- **依据**：general 多样性无界；code 受 145M 容量限制（不是"好学"）；
+  tool 是窄格式技能，少而重复优于多而杂（见 `doc/specialist_data_145m.md` §3）。
+- **影响**：各专家 `steps` 不再统一；tool 需要多 epoch 采样；
+  general 数据须先从 `sft_t2t.jsonl` 过滤掉 code/math/tool 再抽样。

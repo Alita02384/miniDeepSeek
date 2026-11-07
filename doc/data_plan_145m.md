@@ -1,106 +1,36 @@
-# 145M MoE 数据方案（预训练 / 数学·代码 SFT / 数学·代码 GRPO）
+# 145M MoE 数据方案（code / tool / general 三专家）
 
 > 对象：`mini_145m_a60m`（145.84M 总参 / 60.91M 激活）、6400 词表、4K 主训上下文。
-> 目标：**数据量不大，但每一条都要能用**。本文只定"用哪些源、怎么筛、怎么转成仓库格式"，
-> 不含实现代码；落地顺序见 §9。
+> 专家划分：**code、tool-use、general**（原 math / world 已取消，见 `doc/decisions.md`）。
+> 目标：数据量不大，但每一条都要能用。
+>
+> 配套：`doc/specialist_data_145m.md`（现有语料实测 + SFT 甜点量 + 能否直接提取）、
+> `doc/moe_specialization.md`（专家分化与数据排布）。
 >
 > 与路线图的关系：`miniDeepSeek_technical_roadmap.md` §4 是 60M / 6B token 的基线，
-> 本文是 145M 的收敛版；预算、难度、语言三处偏离，记在 `doc/decisions.md`。
+> 本文是 145M / 3B / 三专家的收敛版；预算、领域、难度三处偏离记录在 `doc/decisions.md`。
 
 ---
 
 ## 0. 结论速览
 
-| 阶段 | 预算 | 推荐主料 | 一句话口径 |
+| 阶段 | 预算 | 主料 | 一句话口径 |
 |---|---|---|---|
-| 预训练 | 1.2B tokens（1 epoch） | minimind 中文 + fineweb-edu + cosmopedia-v2 + TinyStories + codeparrot-clean + finemath | 换掉"单一 MiniMind 2.2B"，同样 1.2B 但质量高一档 |
-| 数学 SFT | ~12M tokens（约 40k 条） | Orca-Math 过滤 + GSM8K train + GSM8K_zh + MetaMathQA(GSM) | 只要小学应用题难度，答案必须能解析成数字 |
-| 代码 SFT | ~12M tokens（约 30k 条） | Magicoder OSS-Instruct + self-oss-instruct-50k + MBPP train | 只做 Python、单文件、≤60 行 |
-| 数学 GRPO | 2–4k prompt | GSM8K train + GSM8K_zh + 自建简单算术 | 难度靠 rollout 通过率筛，不靠数据集难度标签 |
-| 代码 GRPO | 1–2k prompt | MBPP train/sanitized + open-r1 verifiable(过滤) + TACO EASY | 必须有测试；且要给**部分分**，否则恒 0 |
+| 预训练 | **3B tokens** | MiniMind 中文 + fineweb-edu + chinese-fineweb-edu + **code 15%** + cosmopedia + **tool 3%** | 现有 2.2B 语料 code 仅 2.1%、tool 为 0，必须补 |
+| general SFT | 40–60k 条（15–20M tok） | 从 `sft_t2t.jsonl` 过滤 | 剔除代码/数学/tool 后再抽 |
+| code SFT | 25–35k 条（12M tok） | 现有语料抽 10–30k + Magicoder + self-oss | 现有只能到"代码问答"档，要补可执行代码 |
+| tool SFT | 5–10k 条（4–6M tok，2–3 epoch） | 已有 `data/sft_tool.jsonl` | 窄格式技能，少而重复 |
+| code GRPO | 1–2k 题 | MBPP + open-r1 + TACO EASY | 先改 reward 部分分，否则恒 0 |
+| tool GRPO | 3–5k prompt | 现有 + xLAM / ToolACE | 已有 reward，补 prompt 多样性 |
+| general GRPO | 现有池 | `grpo_general_train.jsonl` | 保持 |
 
 ---
 
-## 1. 三个硬约束（先看这个，再选数据）
+## 1. 三个硬约束
 
 ### 1.1 词表只有 6400：实测 fertility
 
-用仓库自带 `tokenizer/tokenizer.json` 实测（`tok/byte`，越小越省）：
-
-| 内容 | tok/byte | 说明 |
-|---|---|---|
-| 中文正文 | 0.233 | 最省，词表原生覆盖 |
-| 英文正文 | 0.330 | 比中文贵 ~40% |
-| Python 源码 | 0.38–0.44 | 标识符被切碎 |
-| JavaScript | 0.471 | 比 Python 还贵，`const` 都被切成 `con`+`st` |
-| C++ | 0.546 | 最贵，`std::vector` 之类基本逐字符 |
-| GSM8K 风格 CoT | 0.444 | 数字+短句，切得也碎 |
-| LaTeX 公式 | 0.458 | `\frac` `\sqrt` 逐字符切 |
-
-具体伤害：
-
-```text
-"def compute_mean(values):"  -> ['def','Ġcomput','e','_','me','an','(','val','ues','):','Ċ']   11 tokens
-"    return value\n"         -> ['ĠĠ','Ġ','Ġreturn','Ġvalue','Ċ']                              5 tokens
-"  return value\n" (2 空格)   -> ['Ġ','Ġreturn','Ġvalue','Ċ']                                  4 tokens
-"\treturn value\n" (tab)     -> ['ĉ','re','t','urn','Ġvalue','Ċ']                              6 tokens
-```
-
-**结论**：
-
-1. 代码数据**只做 Python**：C++ 的 tok/byte 比 Python 高 ~23%，关键字还被切碎；JS 只高 ~6% 但收益不值当；
-2. 代码样本**限短**（≤60 行、≤400 tokens 输出），深缩进大函数不划算；
-3. 数学数据**避开 LaTeX 重灾区**（MATH 级证明、`\begin{}` 公式），用小学应用题的散文 CoT；
-4. 中英混料时，中文 token 成本约是英文的 70%，但英文数据质量高得多，不要为了省 token 全用中文。
-
-### 1.2 难度天花板
-
-145M 总参 / 61M 激活的容量大约相当于一个 100M 级 dense。经验上：
-
-| 任务 | 现实预期 | 该不该进训练 |
-|---|---|---|
-| GSM8K（小学应用题） | SFT 后 5–20%，GRPO 后可能 +3–8pt | ✅ 主战场 |
-| MATH（竞赛）/ AIME / Olympiad | ≈0，reward 恒 0 | ❌ 不要 |
-| MBPP（函数级、有测试） | 5–15% | ✅ 但只做 GRPO 起步 |
-| APPS interview / Codeforces / TACO HARD | ≈0 | ❌ 不要 |
-| HumanEval | 只评测 | ❌ 不训练 |
-
-**所以"较简单的数学/代码 SFT 数据"这个判断是对的**：Orca-Math / GSM8K / MBPP 这一档就是上限，
-再往上加只会稀释梯度。同理 GRPO 的 prompt 池必须以"该模型当前能偶尔做对"为准。
-
-### 1.3 预算（按现有配置算出来的）
-
-- 预训练：`configs/pretrain/curriculum_145m_4x4090.yaml` → **1.2B tokens**（2.2B 可用，1 epoch）。
-- SFT：`configs/sft/*.yaml` 500 step × `batch_tokens: 32768` → **16.4M tokens/领域**（单 epoch）。
-- GRPO：`configs/grpo/*.yaml` 200 step × `prompts_per_step: 32` → **6,400 次 prompt 采样**；
-  pool 有 2–4k 条就够跑 2–3 轮，不必堆到几万。口径见 §1.4。
-
-### 1.4 GRPO 的"数据量"到底指什么
-
-容易被误解的一点：GRPO 的瓶颈不是**题目数**，是 **rollout 次数**和**难度分布**。
-按当前配置每步 32 prompt × group 8 → 256 条轨迹：
-
-| 训练步数 | prompt 抽样次数 | rollout 条数 | 建议 in-band pool | 对应原始题目池 |
-|---|---|---|---|---|
-| 200（当前配置） | 6,400 | 51,200 | 2–4k | 7–10k |
-| 500 | 16,000 | 128,000 | 5–8k | 20k |
-| 1,000 | 32,000 | 256,000 | 10–15k | 35–50k |
-| 2,000 | 64,000 | 512,000 | 20–30k | 70k+ |
-
-三个要点：
-
-1. **"2–4k"是过滤后的 in-band 数量，不是原始池**。数学的原始池其实很大
-   （GSM8K 7.5k + GSM8K_zh 8.8k + MetaMathQA GSM 子集 ~50k + Orca-Math 200k + 可无限生成的简单算术），
-   真正稀缺的是"模型当前能做对 10–90%"的题，通常只占 30–50%。
-2. **复用 prompt 不丢人**：GRPO 是 on-policy，策略每步都在变，同一道题下一轮就是新样本；
-   这与 SFT 里"同一条样本重复 3 遍 = 过拟合"完全不同。但超过 8–10 epoch 会开始背题、
-   对格式/测试过拟合，需要重算难度带换血。
-3. **代码侧的原始池是真稀缺**：MBPP 只有 494 题，open-r1 过滤后 1–2k，TACO EASY 几千；
-   要扩到 1 万级只能自建（见 §6.2 的 oracle 反推），这也是代码 GRPO 比数学 GRPO 难做的根因。
-
-### 1.5 词表：6400 要不要换成公开 tokenizer
-
-用同一批样本实测（tok/byte，越小越省；`emb@768` 是按本项目 dim=768 算的 embedding 参数量）：
+同一批样本，tok/byte（越小越省）：
 
 | tokenizer | vocab | emb@768 | 中文 | 英文 | Python | GSM CoT |
 |---|---|---|---|---|---|---|
@@ -110,387 +40,295 @@
 | TinyLlama-32k | 32,000 | 24.6M | 0.410 | 0.193 | 0.339 | 0.335 |
 | GPT-2-50k | 50,257 | 38.6M | 0.709 | 0.194 | 0.455 | 0.259 |
 
-只比 tok/byte 会得出错误结论，要把 **LM head 的算力**一起算：每 token 的 head 是 `2 × 768 × vocab`，
-而 body（61M 激活）约 `2 × 60.9M ≈ 122 MFLOPs`。
+缩进与标识符的实测成本：
+
+```text
+"    return value\n"  -> 5 tokens      "  return value\n" (2 空格) -> 4 tokens
+"\treturn value\n"    -> 6 tokens
+"def compute_mean(values):" -> 11 tokens（comput|e|_|me|an 被切碎）
+```
+
+**结论**：
+
+1. 代码数据**只做 Python**（C++ 比 Python 再贵 ~23%，JS 贵 ~6% 但收益不值）；
+2. 代码样本**限短**（≤60 行、≤400 token 输出）；
+3. 数学/工具数据避开 LaTeX 与超长 JSON schema；
+4. 中英混料别为省 token 全用中文——英文数据质量高得多。
+
+### 1.2 难度天花板
+
+145M 总参 / 61M 激活约等于 100M 级 dense：
+
+| 任务 | 现实预期 | 该不该进训练 |
+|---|---|---|
+| general 指令跟随 | 可用 | ✅ 主战场 |
+| 函数级 Python（MBPP 档） | 5–15% | ✅ code 主战场 |
+| 单/双工具调用（给定 schema） | 20–50% | ✅ tool 主战场 |
+| 多轮 agent / 复杂 API 编排 | ≈0 | ❌ 不要 |
+| Codeforces / APPS competition | ≈0 | ❌ 不要 |
+
+### 1.3 预算（按现有配置算）
+
+- 预训练：`configs/pretrain/curriculum_145m_4x4090.yaml` 现为 **1.2B**；本文建议提到 **3B**
+  （2.2B 现有 + 新增 code/tool/英文语料），145M 上 5B 以上边际收益很低。
+- SFT：`configs/sft/*.yaml` 500 step × `batch_tokens: 32768` → **16.4M token/专家**（1 epoch）。
+- GRPO：`configs/grpo/*.yaml` 200 step × `prompts_per_step: 32` → **6,400 次 prompt 采样**。
+
+---
+
+## 2. 词表：保持 6400
+
+只比 tok/byte 会得出"换大词表更省"的错误结论，要把 **LM head 算力**一起算：
+每 token head 是 `2 × 768 × vocab`，而 body（61M 激活）约 `2 × 60.9M ≈ 122 MFLOPs`。
 
 | vocab | head MFLOPs/token | 中文 MFLOPs/byte | 英文 | Python |
 |---|---|---|---|---|
 | 6,400 | 9.8 | **32.3** | 37.3 | 56.2 |
-| 49,152 | 75.5 | 108.4（3.4×） | 36.1（≈） | 57.3（≈） |
-| 151,665 | 233.0 | —（embedding 就 116.5M，不可行） | | |
+| 49,152 | 75.5 | 108.4（3.4×） | 36.1（≈打平） | 57.3（≈打平） |
+| 151,665 | 233.0 | —（embedding 116.5M，不可行） | | |
 
-**结论**：
+再加上 `rl/opd.py` 用 **full-vocabulary reverse KL**（文件头注释明确写了依赖 6400 词表），
+GRPO 也要全词表 logprob——大词表在 RL 阶段是 8–24 倍的 logits 量。
 
-1. **当前 6400 在中文上是最优解之一**（0.245，仅次于 Qwen 151k 的 0.207），
-   而 SmolLM / GPT-2 / TinyLlama 的中文是 0.41–0.71，直接出局；
-2. 6400 的短板是英文和代码（比 SmolLM 贵 55% / 47%），但把 head 算力折进去后，
-   **英文和代码上"更大词表"只是打平**（37.3 vs 36.1、56.2 vs 57.3），并不是免费提速；
-   真正的差距在中文，而中文恰恰是我们必须保留的能力；
-3. **RL 阶段是决定性约束**：`rl/opd.py` 用的是 **full-vocabulary reverse KL**（文件头注释明确写了
-   "6,400-token vocabulary makes the full-vocabulary KL cheap"），GRPO 也要全词表 logprob。
-   151k 词表在 rollout + KL 上是 ~24× 的 logits 量，49k 是 ~7.7×，这条比 tok/byte 重要得多。
-
-**所以：不要换公开 tokenizer**。公开词表里没有"既中文好、又适合 145M、又适合全词表 KL"的选项。
-
-真要改进词表，唯一值得做的是**在自己的混料上重训一个 16k BPE**（预计 中文 ~0.21 / 英文 ~0.24 /
-Python ~0.36，embedding 12.3M），但必须现在就做——预训练一旦开跑，
-re-tokenize 全部数据 + 重加 `<|im_start|>`/`<|im_end|>`/`<think>` 等 special token + 改
-`vocab_size` 的代价就不可接受了；同时这是对 AGENTS.md §1.1/§7 "不动 MiniMind 词表" 的偏离，
-必须写进 `doc/decisions.md`。
+**结论：不换公开词表。** 真要改进，只能现在（预训练开跑前）自己训 16k BPE，
+预计中文 ~0.21 / 英文 ~0.24 / Python ~0.36、embedding 12.3M；这属于对
+AGENTS.md §1.1/§7 的偏离，需写 `doc/decisions.md`。
 
 ---
 
-## 2. 预训练：1.2B 高质量混料
+## 3. 预训练：3B 混料
 
-### 2.1 清单
+### 3.1 现状与缺口【实测】
 
-| 组 | 数据集 | 取量 | 许可 | 备注 |
+`data/pretrain_t2t.jsonl`（8.28 GB，~2.2B token）抽样 3 万条：
+
+| 类别 | 占比 | 说明 |
+|---|---|---|
+| general | 96.1% | 中文合成指令/问答文风 |
+| code | 2.1% | "教你怎么写代码"的对话，不是源码 |
+| math | 1.8% | 解题对话 |
+| **tool** | **0.0%** | 完全没有 |
+
+### 3.2 配比
+
+| 组 | token | 占比 | 来源 | 许可 |
 |---|---|---|---|---|
-| 中文通用 | `minimind/dataset/pretrain_t2t.jsonl`（本地已有） | 360M tok | CC-BY-NC-4.0 | 非商用；现成，无需下载 |
-| 英文教育网页 | `HuggingFaceFW/fineweb-edu`（`sample-10BT`） | 300M tok | ODC-By | 取 `int_score ≥ 4`，按 URL 去重 |
-| 合成教材 | `HuggingFaceTB/smollm-corpus` → `cosmopedia-v2` | 240M tok | ODC-By | 只留 `format ∈ {textbook, blog, story}`，去重后抽样 |
-| 简单英文叙事 | `roneneldan/TinyStories` | 120M tok | CDLA-Sharing-1.0 | **只在前 1/3 步数用**，当语言热身，后期关掉 |
-| Python 代码 | `codeparrot/codeparrot-clean` | 120M tok | permissive（带 `license` 列） | `license` 白名单 + `autogenerated == False` + `line_max ≤ 200` |
-| 数学网页 | `HuggingFaceTB/finemath` → `finemath-4plus` | 60M tok | ODC-By | 低权重；对 145M 偏难，只提供"数学语感" |
+| 中文通用 | 1.2B | 40% | 现有 MiniMind `pretrain_t2t.jsonl` | CC-BY-NC-4.0 |
+| 英文教育 | 450M | 15% | `HuggingFaceFW/fineweb-edu` `sample-10BT`（`int_score ≥ 4`） | ODC-By |
+| 中文教育 | 450M | 15% | `opencsg/chinese-fineweb-edu` | Apache-2.0 |
+| **code** | **450M** | **15%** | `codeparrot/codeparrot-clean`（license 白名单）/ `smollm-corpus:python-edu` | permissive / ODC-By |
+| 合成教材 | 300M | 10% | `smollm-corpus:cosmopedia-v2` | ODC-By |
+| **tool** | **90M** | **3%** | API 文档 + schema 扁平文本（见 §5.3） | 混合 |
+| math | 60M | 2% | `finemath-4plus` 少量 | ODC-By |
 
-合计 1.2B，每个源只用 1 epoch，满足"单源 ≤ 4 epoch"的验收线。
+### 3.3 过滤
 
-### 2.2 为什么这么配
+沿用 `data/quality.py`（实测 Python 源码 `accepted=True`），额外加：
 
-- **中文 30%**：词表原生、评测含中文；也是 MiniMind 现有底座，保留可比性。
-- **英文教育网页 25% + 合成教材 20%**：小模型最缺的是"干净、有信息密度"的文本；
-  Cosmopedia 是教科书口吻，比 CommonCrawl 噪声低，且句式规整，适合 61M 激活容量。
-- **TinyStories 10%**：对 145M 这一档，语法/连贯性收益极大；但它没有知识，
-  所以只在早期用，不占总预算大头（也可以用 `WeightedBatchMixer` 做前 300M token 加权）。
-- **代码 10% / 数学 5%**：预训练阶段只需要"见过语法和符号"，不需要学会解题；
-  真正的领域能力交给 SFT/GRPO。比例再高会挤掉通用语言能力。
-- 没选 `the-stack-v2`：67B 全量对我们没意义，且 license 过滤成本高；
-  `codeparrot-clean` 自带 `license` / `autogenerated` / `line_max` 列，筛起来最省事。
+1. code：`license` 白名单、`autogenerated=False`、`line_max ≤ 200`、`alpha_frac ≥ 0.3`、≤8KB；
+2. tool：只保留"函数名 + 参数 + 一句描述"，schema 深度 ≤ 2、参数 ≤ 6 个；
+3. 全部：MinHash 文档级 + 段落级去重；13-gram 对评测集查污染；
+4. 抽样 2k 条跑 `prepare fertility`，确认三类 tok/byte 不劣化。
 
-### 2.3 过滤口径
+### 3.4 注意：数据是成块的
 
-沿用 `src/minideepseek/data/quality.py`（已实测：Python 源码 `accepted=True`，
-`alnum_ratio≈0.60 / symbol_ratio≈0.13`，不会被"符号过多"误杀），额外加：
-
-1. `code` 域：`license` 白名单（MIT/Apache-2.0/BSD/ISC/MPL/Unlicense）、`autogenerated=False`、
-   `line_max ≤ 200`、`alpha_frac ≥ 0.3`、文件 ≤ 8KB；
-2. `math` 域：公式密度 ≤ 0.02（避 LaTeX 重页）、`has_answer_marker` 不强求（网页常常没有）；
-3. 全部：MinHash 文档级去重 + 段落级去重（仓库已有）、13-gram 对评测集查污染；
-4. 抽样 2k 条跑 `python -m minideepseek.data.prepare fertility`，确认中/英/码三类 tok/byte 不劣化。
-
-### 2.4 落地命令（示意）
-
-```bash
-pip install -U "huggingface_hub[cli]" datasets
-
-# 1) fineweb-edu sample-10BT（只下 10BT 那一份，不要 default）
-hf download HuggingFaceFW/fineweb-edu --repo-type dataset \
-  --include "sample/10BT/*" --local-dir data/raw/fineweb_edu
-
-# 2) cosmopedia-v2 / python-edu 同仓不同 config
-hf download HuggingFaceTB/smollm-corpus --repo-type dataset \
-  --include "cosmopedia-v2/*" --local-dir data/raw/smollm
-
-# 3) TinyStories
-hf download roneneldan/TinyStories --repo-type dataset --local-dir data/raw/tinystories
-
-# 4) codeparrot-clean（~50GB，建议先 stream 过滤再落盘，别整仓下载）
-python - <<'PY'
-from datasets import load_dataset
-ds = load_dataset("codeparrot/codeparrot-clean", split="train", streaming=True)
-PY
-
-# 5) finemath-4plus
-hf download HuggingFaceTB/finemath --repo-type dataset \
-  --include "finemath-4plus/*" --local-dir data/raw/finemath
-```
-
-> `HuggingFaceTB/smollm-corpus` 的 `python-edu` 只有 S3 blob id，要另写 boto3 拉取；
-> 我们已有 `codeparrot-clean` 兜底，**不建议**为预训练再搭 S3 管线。
+现有语料按来源成块拼接（pretrain 在 58% 处有一段 code 15.2%）。
+**不要按文件顺序训练**，会变成"先学通用、最后学 tool"；按领域分组 + 打乱 batch 顺序，
+详见 `doc/moe_specialization.md` §4。
 
 ---
 
-## 3. 数学 SFT（较简单）
+## 4. code 专家（缺口最大）
 
-### 3.1 来源
+### 4.1 SFT：目标 25–35k 条
 
-| 优先级 | 数据集 | 规模 | 许可 | 用法 |
-|---|---|---|---|---|
-| P0 | `microsoft/orca-math-word-problems-200k` | 200,035 | MIT | 小学应用题 + GPT-4 Turbo CoT，**本档最合适** |
-| P0 | `openai/gsm8k`（train） | 7,473 | MIT | 金标 CoT（`<<48/2=24>>` 计算标注），去掉标注符号保留算式 |
-| P0 | `meta-math/GSM8K_zh` | 8,792 | MIT | 中文 GSM8K，自带 `question_zh / answer_zh / answer_only`，词表友好 |
-| P1 | `meta-math/MetaMathQA` | 395,000 | MIT | 只取 GSM 子集（`type` 以 `GSM_` 开头），提供**换述多样性** |
-| P2 | `TIGER-Lab/MathInstruct` | 262,039 | 需核对 | 只取 GSM/初等代数来源，作为补充 |
-| ❌ | `AI-MO/NuminaMath-CoT`（859k）、`open-r1/OpenR1-Math-220k`（93.7k/225k）、`agentica-org/DeepScaleR`（40k） | — | Apache/MIT | **偏难**，只从中抽"短解 + 整数答案"的小子集，或直接不用 |
+| 来源 | 规模 | 许可 | 用法 |
+|---|---|---|---|
+| 现有 `sft_t2t.jsonl` 提取 | ~154 万条含代码块，过滤后 10–30k | 随 MiniMind（CC-BY-NC） | **起步用**，但只到"代码问答"档 |
+| `ise-uiuc/Magicoder-OSS-Instruct-75K` | 75,197 | MIT | 按 `lang=="python"` 过滤，主料 |
+| `bigcode/self-oss-instruct-sc2-exec-filter-50k` | 50,661 | ODC-By | 已做执行过滤，质量最稳 |
+| `m-a-p/CodeFeedback-Filtered-Instruction` | 156,526 | Apache-2.0 | 取简单子集 |
+| `iamtarun/python_code_instructions_18k_alpaca` | 18,612 | 需核对 | 只留含 `def` + docstring |
+| `google-research-datasets/mbpp` train | 374 / 120 | CC-BY-4.0 | "写函数"范式锚点 |
 
-### 3.2 过滤（按顺序）
+**过滤规则**（缺一不可）：
 
-1. **答案可解析**：最终答案能抽成单个数字（含分数/小数）；抽不出的直接丢
-   （否则 GRPO 阶段 `math_reward` 判不了）；
-2. **CoT 长度**：40–300 tokens（用 6400 词表实际 tokenize 后量）；<20 的是"直接给答案"，>300 的不适合小模型；
-3. **步骤数**：1–5 步；6 步以上（竞赛风格）降低权重；
-4. **去重**：问题归一化（去空格/标点、数字保留）后 MinHash 去重；Orca-Math 内部重复率不低；
-5. **语言配比**：英文 70% / 中文 30%，中文来自 GSM8K_zh 与后续自译；
-6. **难度配比**：单步 40% / 两步 40% / 三步及以上 20%。
-
-### 3.3 转成仓库格式
-
-SFT 走 `src/minideepseek/data/sft.py`，吃 `{"messages": [...]}`，chat template 会自动生成
-`<think>…</think>`（Qwen3 风格模板，已确认）。所以：
-
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Natalia 四月份向 48 个朋友卖了夹子…"},
-    {"role": "assistant",
-     "content": "答案：72",
-     "reasoning_content": "五月份卖了 48/2 = 24 个；两个月共 48 + 24 = 72 个。"}
-  ],
-  "domain": "math",
-  "source": "gsm8k_zh",
-  "license": "MIT",
-  "quality_score": 0.9,
-  "has_verifier": true
-}
+```text
+ast.parse 通过 且 至少一个 def
+单文件、≤60 行、≤400 token
+只 import 标准库（numpy/pandas/torch/requests 全丢）
+禁 input() / 网络 / 写文件
+按函数名 + AST 归一化去重
 ```
+
+**注意**：从现有语料抽出来的样本抽样看，混杂 CSS 问答、架构描述、伪代码，
+必须强过滤；它们覆盖不到"函数签名 + 单元测试"这一档，所以 GRPO 仍需外补。
+
+### 4.2 GRPO：目标 1–2k 题
+
+| 来源 | 规模 | 说明 |
+|---|---|---|
+| `MBPP`（full + sanitized train） | 494 | 函数级、测试现成，**先跑通这条** |
+| `open-r1/verifiable-coding-problems-python_decontaminated-tested` | 15,068 | 自带 `fn_name/input/output`，过滤短题取 500–1k |
+| `BAAI/TACO` EASY | 25,443 中筛 | 需 `input_output` 非空、无图、题面 <800 字符 |
+| 自建 oracle（codeparrot 反推） | 无限 | 真实函数→删函数体→用原函数生成测试 |
+
+### 4.3 前置条件：改 `code_reward`
+
+当前 `rl/reward.py::code_reward` 是"整段测试 exit code 0 → 1.0，否则 0.0"。
+145M 上会恒 0、无梯度。**必须先改成按测试给部分分**（路线图 §4.4.2 本来就写"部分通过按比例"），
+并逐条 assert 跑。
+
+---
+
+## 5. tool 专家（数据已有，补多样性）
+
+### 5.1 现状
+
+`data/sft_tool.jsonl`（158 MB）与 `data/grpo_tool_train.jsonl`（89 MB）已就绪，
+来源是 MiniMind `sft_t2t_mini` 尾部 13.5 万条 tool 块 + `agent_rl`。
+
+风险：`source` 全是 `agent_rl`、`license: unknown`、中文合成、schema 风格单一。
+
+### 5.2 补强清单
+
+| 数据集 | 规模 | 许可 | 用途 |
+|---|---|---|---|
+| `Salesforce/xlam-function-calling-60k` | 60k | CC-BY-4.0 | 英文 schema + call，GRPO prompt 池首选 |
+| `Team-ACE/ToolACE` | 11,300 | Apache-2.0 | 高质量多轮 |
+| `glaiveai/glaive-function-calling-v2` | 112,960 | Apache-2.0 | 量大取子集 |
+| `NousResearch/hermes-function-calling-v1` | ~11.5k | Apache-2.0 | JSON mode + 单轮 |
+| `nvidia/When2Call` | 15k sft / 9k pref | CC-BY-4.0 | 专治"该不该调用" |
+
+配比：SFT 保持中文 75% + 英文 25%；GRPO prompt 池补到 3–5k，缓解同批 schema 反复刷。
+
+### 5.3 预训练里的 3% tool
+
+不存在现成的"tool 预训练语料"，这一层只要三样：
+
+1. **API 文档文本**（函数名 + 参数 + 描述），来源：ToolBench API 描述、xLAM/ToolACE 的 schema；
+2. **扁平化的 schema→call 文本**：直接拿 `data/sft_tool.jsonl` 的 `tools` 字段拼；
+3. **工具使用叙述**：StackExchange 的 "how do I call X API" 问答。
+
+作用只是把 JSON 语法和"工具调用"语境喂进去；真正的能力靠 SFT/GRPO。
+
+---
+
+## 6. general 专家
+
+### 6.1 SFT：40–60k 条
+
+`minimind/dataset/sft_t2t.jsonl`（14.10 GB，约 857 万条）实测构成：
+**general 72.4% / code 18.0% / math 9.5%**，末尾还有 tool 块。
+所以**不能整份直接当通用专家数据**，否则通用专家会吃进 18% 代码、和 code 专家抢路由。
+
+过滤规则（按内容，不按行号——数据是成块的）：
+
+```python
+drop if "```" in record
+drop if "\\frac" / "\\boxed" / "解方程" in record
+drop if message.get("tools") or message.get("tool_calls")
+drop if len(turns) < 2 or not assistant content
+```
+
+过滤后仍有百万级，抽 40–60k 即可。
+
+### 6.2 预训练
+
+见 §3.2 的 fineweb-edu / chinese-fineweb-edu / cosmopedia 三组，共 1.2B。
+
+---
+
+## 7. GRPO 的数据量口径
+
+GRPO 的瓶颈不是题目数，是 **rollout 次数**和**难度分布**。按每步 32 prompt × group 8：
+
+| 训练步数 | prompt 抽样 | rollout 条数 | 建议 in-band pool | 原始池 |
+|---|---|---|---|---|
+| 200（当前） | 6,400 | 51,200 | 2–4k | 7–10k |
+| 500 | 16,000 | 128,000 | 5–8k | 20k |
+| 1,000 | 32,000 | 256,000 | 10–15k | 35–50k |
+| 2,000 | 64,000 | 512,000 | 20–30k | 70k+ |
 
 要点：
 
-- **CoT 放 `reasoning_content`，答案放 `content` 且以 `答案：X` / `Answer: X` 结尾**
-  —— `rl/reward.py` 的 `extract_answer` 先找 `\boxed{}`，再找 `answer:`/`答案是` 标记，最后才退回"最后一个数字"，
-  有了标记就不会被 CoT 里的中间数字干扰；
-- 不要伪造 `<think>`：模板会加，数据里不要再套一层；
-- `#### 72`、`<<48/2=24>>` 这类 GSM8K 原生标记必须在转换时清掉。
-
-### 3.4 目标量
-
-约 **35–40k 条 / 12M tokens**（75% 数学 + 25% 通用，通用沿用 `sft_t2t_mini.jsonl`）。
-按 500 step × 32,768 tokens 正好 1 epoch 左右，不要重复 3 遍以上。
+1. **"2–4k"是过滤后的 in-band 数量**；数学/代码原始池都很大，稀缺的是"当前能做对 10–90%"的题；
+2. **复用 prompt 不丢人**：on-policy 下策略每步在变，同一题下一轮就是新样本；
+   超过 8–10 epoch 才开始背题；
+3. **代码池是真稀缺**：MBPP 只有 494，open-r1 过滤后 1–2k，要上万只能自建。
 
 ---
 
-## 4. 代码 SFT（较简单）
+## 8. 划分与污染
 
-### 4.1 来源
+| 集合 | 用途 |
+|---|---|
+| MBPP `test`/`sanitized test`、HumanEval、HumanEval+、LiveCodeBench | ❌ 禁止训练 |
+| APPS `test`、TACO `test`、Codeforces | ❌ 禁止训练 |
+| BFCL / τ-bench / ToolBench 测试集 | ❌ 禁止训练（tool 评测） |
+| C-Eval / CMMLU | ❌ 禁止训练 |
+| GSM8K test（若保留 math 能力评估） | ❌ 禁止训练 |
 
-| 优先级 | 数据集 | 规模 | 许可 | 用法 |
-|---|---|---|---|---|
-| P0 | `ise-uiuc/Magicoder-OSS-Instruct-75K` | 75,197 | MIT | 字段 `lang/problem/solution`；**按 `lang=="python"` 过滤**，真实开源片段生成，难度适中 |
-| P0 | `bigcode/self-oss-instruct-sc2-exec-filter-50k` | 50,661 | ODC-By | 已做**执行过滤**，质量最稳；字段 `instruction/response` |
-| P0 | `google-research-datasets/mbpp`（`full` train 374 + `sanitized` train 120） | 494 | CC-BY-4.0 | 函数级、带测试，作为"写函数"范式的锚点样本 |
-| P1 | `iamtarun/python_code_instructions_18k_alpaca` | 18,612 | 需核对 | 简单但噪声大，只保留含 `def` + 有 docstring 的 |
-| P2 | `ise-uiuc/Magicoder-Evol-Instruct-110K` | 111,183 | Apache-2.0 | 偏难，低权重（≤10%），只取短样本 |
-| ❌ | APPS / TACO / Codeforces / CodeContests 的题面 | — | — | 竞赛题，SFT 阶段不要；只留作 GRPO 池 |
-
-### 4.2 过滤
-
-1. `ast.parse` 通过，且至少含 1 个 `def`；
-2. 单文件、≤60 行、≤400 tokens；
-3. 只允许标准库 import（`numpy/pandas/torch/requests` 一律丢）；
-4. 禁止 `input()` / 网络 / 文件写入（否则 GRPO 跑测试会卡住）；
-5. 代码块内不要重复：按函数名+归一化后的 AST 去重；
-6. 保持 4 空格缩进（2 空格虽省 1 token/行，但会破坏 Python 生态惯例，不划算）。
-
-### 4.3 转成仓库格式
-
-```json
-{
-  "messages": [
-    {"role": "user", "content": "写一个函数 `mean(values)`，返回列表平均值…"},
-    {"role": "assistant",
-     "content": "```python\ndef mean(values):\n    return sum(values) / len(values)\n```",
-     "reasoning_content": "先判空，再求和除以长度…"}
-  ],
-  "domain": "code",
-  "source": "magicoder_oss",
-  "license": "MIT"
-}
-```
-
-- 代码必须放在 ```` ```python ```` 围栏里：`rl/reward.py` 的 `_extract_code` 只认这个（或 `py`）围栏；
-- 模型输出里**不要**出现测试代码，测试只在 reward 侧注入。
-
-### 4.4 目标量
-
-约 **25–30k 条 / 12M tokens**（75% 代码 + 25% 通用）。
-
----
-
-## 5. 数学 GRPO 数据
-
-### 5.1 prompt 池
-
-| 优先级 | 来源 | 可用量 | 说明 |
-|---|---|---|---|
-| P0 | **自建 easy tier**（程序生成） | 5–10k | 1–3 步算术/百分比/单价×数量/单位换算，答案精确可验；用于**冷启动**，保证奖励有方差 |
-| P0 | `openai/gsm8k` train | 7,473 | 主战场；用 `question`，`answer` 去掉 `<<>>` 只留 `#### N` 的数字 |
-| P0 | `meta-math/GSM8K_zh` | 8,792 | 中文 GSM8K，`answer_only` 即参考答案；与英文集按题号互斥采样 |
-| P1 | `meta-math/MetaMathQA`（GSM 子集） | ~50k | 换述题，增加 phrasing 多样性；答案在 `response` 末尾 "The answer is: X" |
-| P2 | `TinyGSM/TinyGSM` | 11.8M 行（抽样 100 行 question 全不重复） | 注意它给的是 **POT 代码**（`code` 字段返回答案），不是自然语言答案；体量偏大，建议只抽样几千条、按答案去重后当"简单题补充" |
-| ❌ | MATH / DeepScaleR / OpenMathReasoning | — | 145M 上 pass rate ≈ 0，只贡献 0 奖励 |
-
-### 5.2 格式
-
-```json
-{
-  "prompt": [{"role": "user", "content": "Mark has 10 crayons…"}],
-  "domain": "math",
-  "reference_answer": "4",
-  "verifier": "math_exact_match",
-  "difficulty": "easy",
-  "source": "gsm8k_train",
-  "license": "MIT"
-}
-```
-
-`reference_answer` 必须是**裸数字**（`"72"`，不是 `"#### 72"`、不是 `"72 clips"`），
-因为 `math_correct` 会先字符串归一化再数值比较。
-
-### 5.3 难度带（关键）
-
-对 145M，**数据集标签不等于难度**。正确做法：
-
-1. 先用 SFT 后的 checkpoint 对每个 prompt 采样 `group_size=8`，统计 pass rate；
-2. 只保留 `0.125 < pass_rate < 0.875` 的题（有梯度信号），其余丢掉或留到后期；
-3. 每 50 step 用新 policy 重算一次，把"已经会了"和"永远不会"的两端换掉；
-4. 起步顺序：自建 easy → GSM8K 前半（短题）→ GSM8K 全量。
-
-> 建议 `group_size` 从 8 提到 16：小模型奖励方差大，8 条里常常 0 正样本，advantage 全 0。
-
----
-
-## 6. 代码 GRPO 数据
-
-### 6.1 现状约束（先读这条）
-
-仓库 `rl/reward.py::code_reward` 的契约是：
-
-- 从 `record.rubric["tests"]`（或 `rubric["test_code"]`）取一段 **Python 脚本**；
-- 把它拼在模型输出代码后面，`python -I` 跑，**exit code 0 即 1.0，否则 0.0**；
-- 没有部分分，`compiled` 只记录不影响总分。
-
-对 145M 这基本等于"全 0 奖励"。上线前必须改两件事：
-
-1. **按测试给部分分**（如 `0.1*compiled + 0.9*passed_ratio`），路线图 §4.4.2 本来就写的是"部分通过按比例"；
-2. **逐条 assert 单独跑**，而不是整段脚本一把梭；否则第一条失败后面全不执行。
-
-另外：当前实现是 `subprocess` 直接跑模型生成的代码，**无沙箱**（可读写临时目录、可起进程）。
-只在可信数据 + 受控机器上跑；要长期用建议加 `-S`、禁网、资源限制。
-
-### 6.2 来源
-
-| 优先级 | 来源 | 规模 | 测试形态 | 说明 |
-|---|---|---|---|---|
-| P0 | `google-research-datasets/mbpp`（`full` train 374 / `sanitized` train 120） | 494 | function call | 最简单，题面短，天然适合小模型；先跑通这条链路 |
-| P0 | `open-r1/verifiable-coding-problems-python_decontaminated-tested` | 15,068 | `function_call` + `stdin_stdout` | 字段现成：`verification_info.test_cases[{fn_name,input,output,type}]`，平均 65 条测试；**过滤到短题 + 有 `fn_name`** 后取 1–2k |
-| P1 | `BAAI/TACO`（`train` 25,443，`apache-2.0`） | 25k | `input_output` | 只取 `difficulty=="EASY"`、非空 `input_output`、`picture_num=="0"`、题面 < 800 字符；需 IO→harness 转换 |
-| P1 | 自建：`codeparrot-clean` 反推 | 数千 | function call | 取简单函数 → 保留签名+docstring 删函数体 → 用原函数做 oracle 生成 5–10 个测试；难度天然匹配 |
-| ❌ | Codeforces / CodeContests / APPS interview+competition | — | — | 对 145M 过难，白跑 rollout |
-
-> `open-r1` 的 `test_reward` 字段是"金标能否通过测试"的校验结果（抽样看到全是 1.0），
-> **不是难度分**，不要拿它当难度筛选依据。
-
-### 6.3 格式（测试注入）
-
-```json
-{
-  "prompt": [{"role": "user", "content": "Write a function `add(a, b)` that returns the sum."}],
-  "domain": "code",
-  "verifier": "unit_test",
-  "difficulty": "easy",
-  "source": "mbpp",
-  "license": "cc-by-4.0",
-  "rubric": {
-    "tests": "assert add(1, 2) == 3\nassert add(-1, 1) == 0\nassert add(0, 0) == 0\n"
-  }
-}
-```
-
-转换要点：
-
-- `function_call` 型：`assert {fn_name}({args}) == {output}`，`args` 用 `json`/`ast.literal_eval` 还原；
-- `stdin_stdout` 型：生成 harness —— 把 `input` 写进 `sys.stdin`，捕获 `stdout` 与期望逐字符比对；
-- 测试脚本**独立于候选代码**，不要 `from solution import *`（同文件拼接，直接调用函数名）；
-- 每题至少 3 条测试，且留 1–2 条**不放进 prompt** 的隐藏测试做 reward hacking 检查。
-
-### 6.4 目标量
-
-1–2k 题起步（MBPP 494 + open-r1 过滤 500 + TACO EASY 500 + 自建 500）。
-200 step × 32 prompt 的配置下，这些题足够跑 2–3 轮。
-
----
-
-## 7. 划分与污染
-
-| 集合 | 用途 | 来源 |
-|---|---|---|
-| GSM8K `train` | math SFT + GRPO prompt | ✅ 训练 |
-| GSM8K `test` | math 评测 | ❌ 禁止出现在训练集 |
-| MATH `test` / `Math-500` | 评测（我们的模型大概率 0 分，留作对照） | ❌ |
-| MBPP `test`/`sanitized test`、HumanEval、HumanEval+、LiveCodeBench | 代码评测 | ❌ |
-| APPS `test`、TACO `test` | 代码评测 | ❌ |
-| C-Eval / CMMLU | 中文通用评测 | ❌ |
-
-所有训练 JSONL 落盘前跑一遍：
+落盘前跑：
 
 ```bash
 python -m minideepseek.data.prepare contamination \
-    --train data/processed/sft/math/train.jsonl \
-    --eval  data/processed/eval/gsm8k_test.jsonl --n 13
+    --train data/processed/sft/code/train.jsonl \
+    --eval  data/processed/eval/humaneval.jsonl --n 13
 ```
 
-另外注意 **跨集泄漏**：GSM8K_zh 是 GSM8K 的翻译，两者按题号去重后再分 train/val；
-MetaMathQA 源自 GSM8K/MATH train，不要重复计入预算。
+注意跨集泄漏：`sft_t2t` 里已含代码/数学，用于 general 时必须先过滤；
+MBPP 的 train 与 test 不可混。
 
 ---
 
-## 8. 与本仓库的对接
+## 9. 与本仓库的对接
 
 | 阶段 | 命令 | 输入格式 |
 |---|---|---|
-| 预训练 | `python -m minideepseek.data.prepare curriculum --input … --out-dir data/tokenized/hq` | `{"text","domain","source"}` |
-| SFT | `python -m minideepseek.data.prepare sft --input … --output data/tokenized/sft_math.npz` | `{"messages":[…]}` |
-| GRPO | `python -m minideepseek.data.prepare grpo --input … --domain math --verifier math_exact_match` | `{"prompt","reference_answer","rubric"}`（也认 `question`/`answer` 简写） |
-| 混料 | `data/manifests/*.yaml` + `minideepseek.data.manifest` | `sources[{name,path,domain,license,weight,available_tokens,max_epochs}]` |
+| 预训练 | `prepare curriculum --input … --out-dir data/tokenized/hq` | `{"text","domain","source"}` |
+| SFT | `prepare sft --input … --output data/tokenized/sft_code.npz` | `{"messages":[…]}` |
+| GRPO | `prepare grpo --input … --domain code --verifier unit_test` | `{"prompt","reference_answer","rubric"}` |
+| 混料 | `data/manifests/*.yaml` + `manifest` | `sources[{name,path,domain,license,weight,available_tokens,max_epochs}]` |
 
-需要新增的 manifest（建议）：
+需要新增/修改：
 
-- `data/manifests/pretrain_hq_1_2b.yaml`（§2 的 6 源）
-- `data/manifests/sft_math_simple.yaml` / `sft_code_simple.yaml`（§3 / §4）
-- `data/manifests/grpo_math_simple.yaml` / `grpo_code_simple.yaml`（§5 / §6）
-
----
-
-## 9. 实施顺序（建议）
-
-1. **数据侧先跑通代码 GRPO 的最小闭环**：MBPP 494 题 → 转 `rubric.tests` → 在 debug 模型上跑 1 step，
-   确认 reward 不是恒 0/恒 1；同时把 `code_reward` 改成部分分。
-2. **数学 SFT**：GSM8K train + GSM8K_zh（小、干净）先训 100 step 看 loss 与生成格式，
-   再并入 Orca-Math 过滤集。
-3. **代码 SFT**：Magicoder python 子集 + self-oss-instruct，先 30k 封顶。
-4. **预训练混料**：先在 200M token 的小配比上验证 fertility 与 loss 曲线，再上 1.2B。
-5. **GRPO 难度标定**：用 SFT checkpoint rollout 一遍 pool，按 pass rate 重排 prompt。
+- `data/manifests/pretrain_3b.yaml`（§3.2 七源）
+- `data/manifests/specialists.yaml`：加 `code` 段（当前注明 "code expert is intentionally absent"）
+- `configs/{sft,grpo}/tool.yaml`、`general.yaml`；`math/world.yaml` 归档
+- `data/processed/eval/code.jsonl`（HumanEval/MBPP test）
 
 ---
 
-## 附：本文用到的数据集清单（速查）
+## 10. 实施顺序
+
+1. **code SFT**：先 Magicoder + self-oss 组 25k，跑 100 step 看生成格式；
+2. **改 `code_reward` 为部分分**，再接 MBPP 494 题跑通 GRPO 闭环；
+3. **pre-train 升到 3B**：加 code 15% + tool 3%，必须在重新 tokenize 前定；
+4. **general 过滤**：从 `sft_t2t.jsonl` 抽 40–60k，验证不含代码/数学/tool；
+5. **tool 补强**：xLAM/ToolACE 进 GRPO prompt 池；
+6. **分化实验**：按 `doc/moe_specialization.md` 做领域 batch + 平衡损失退火。
+
+---
+
+## 附：数据集速查
 
 | 名称 | 类型 | 规模 | 许可 | 字段 |
 |---|---|---|---|---|
-| `microsoft/orca-math-word-problems-200k` | math SFT | 200,035 | MIT | `question`, `answer` |
-| `openai/gsm8k` | math SFT/GRPO | 7,473 / 1,319 | MIT | `question`, `answer` |
-| `meta-math/GSM8K_zh` | math SFT/GRPO（中） | 8,792 | MIT | `question_zh`, `answer_zh`, `answer_only` |
-| `meta-math/MetaMathQA` | math SFT/GRPO | 395,000 | MIT | `query`, `response`, `type` |
-| `TIGER-Lab/MathInstruct` | math SFT | 262,039 | 核对 | `instruction`, `output`, `source` |
-| `TinyGSM/TinyGSM` | math（POT 代码） | 11.8M 行 | MIT | `question`, `code` |
+| `sft_t2t.jsonl`（本地） | general SFT | ~857 万条 | CC-BY-NC-4.0 | `conversations` |
+| `sft_t2t_mini.jsonl`（本地） | general + tool | 90.6 万条 | CC-BY-NC-4.0 | `conversations` |
 | `ise-uiuc/Magicoder-OSS-Instruct-75K` | code SFT | 75,197 | MIT | `lang`, `problem`, `solution` |
 | `bigcode/self-oss-instruct-sc2-exec-filter-50k` | code SFT | 50,661 | ODC-By | `instruction`, `response` |
-| `iamtarun/python_code_instructions_18k_alpaca` | code SFT | 18,612 | 核对 | `instruction`, `input`, `output` |
+| `m-a-p/CodeFeedback-Filtered-Instruction` | code SFT | 156,526 | Apache-2.0 | `query`, `answer`, `lang` |
 | `google-research-datasets/mbpp` | code SFT/GRPO | 374 / 120 | CC-BY-4.0 | `text`, `code`, `test_list` |
 | `open-r1/verifiable-coding-problems-python_decontaminated-tested` | code GRPO | 15,068 | 核对 | `problem`, `verification_info.test_cases` |
 | `BAAI/TACO` | code GRPO | 25,443 | Apache-2.0 | `question`, `input_output`, `difficulty` |
+| `Salesforce/xlam-function-calling-60k` | tool SFT/GRPO | 60k | CC-BY-4.0 | `query`, `tools`, `answers` |
+| `Team-ACE/ToolACE` | tool SFT | 11,300 | Apache-2.0 | `system`, `conversations` |
+| `glaiveai/glaive-function-calling-v2` | tool SFT | 112,960 | Apache-2.0 | `system`, `chat` |
+| `nvidia/When2Call` | tool GRPO | 15k sft | CC-BY-4.0 | 调用决策 |
 | `HuggingFaceFW/fineweb-edu` | pretrain | 10BT 子集 | ODC-By | `text`, `int_score` |
-| `HuggingFaceTB/smollm-corpus` | pretrain | 39.1M docs | ODC-By | `text` / `blob_id` |
-| `roneneldan/TinyStories` | pretrain | 2.1M | CDLA-Sharing-1.0 | `text` |
-| `HuggingFaceTB/finemath` | pretrain | 6.7M（4plus） | ODC-By | `text`, `int_score` |
-| `codeparrot/codeparrot-clean` | pretrain | — | permissive | `content`, `license`, `autogenerated` |
+| `opencsg/chinese-fineweb-edu` | pretrain | 1.2M 行 | Apache-2.0 | `text` |
+| `HuggingFaceTB/smollm-corpus` | pretrain | 39.1M docs | ODC-By | `text` |
+| `codeparrot/codeparrot-clean` | pretrain code | — | permissive | `content`, `license`, `autogenerated` |
+| `HuggingFaceTB/finemath` | pretrain math | 6.7M（4plus） | ODC-By | `text`, `int_score` |
