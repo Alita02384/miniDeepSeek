@@ -954,6 +954,7 @@ def build_trainer(
         config.model,
         device=device,
         dtype=config.model.dtype,
+        activation_checkpointing=config.train.activation_checkpointing,
     )
     if context.enabled:
         model.model = apply_parallelism(

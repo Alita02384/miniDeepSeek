@@ -111,6 +111,7 @@ def measure(
     device: torch.device,
     dtype: str,
     batch_docs: int = 1,
+    activation_checkpointing: bool = False,
 ) -> dict:
     settings = load_config(ModelSettings, ROOT / "configs" / "model" / f"{flavor}.yaml")
     settings.device = str(device)
@@ -119,7 +120,12 @@ def measure(
     # Derive index_topk from the sequence length, exactly like a training run.
     settings.index_topk = None
 
-    model = build_model(settings, device=device, dtype=None)
+    model = build_model(
+        settings,
+        device=device,
+        dtype=None,
+        activation_checkpointing=activation_checkpointing,
+    )
     generator = torch.Generator().manual_seed(0)
     sequences = [
         torch.randint(
@@ -156,6 +162,7 @@ def measure(
         "tokens": tokens,
         "device": str(device),
         "dtype": dtype,
+        "activation_checkpointing": activation_checkpointing,
         "params_total": int(report["total"]),
         "params_active": int(report["active_estimate"]),
         "saved_mib": counter.total / 2**20,
@@ -187,6 +194,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--docs", type=int, default=1, help="documents per micro-batch")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float32"])
+    parser.add_argument(
+        "--activation-checkpointing",
+        action="store_true",
+        help="measure with per-block recompute (the 8K-stage setting)",
+    )
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args(argv)
 
@@ -204,12 +216,14 @@ def main(argv: list[str] | None = None) -> int:
                 device=device,
                 dtype=args.dtype,
                 batch_docs=args.docs,
+                activation_checkpointing=args.activation_checkpointing,
             )
             results.append(result)
             peak = result.get("cuda_peak_alloc_mib")
             extra = f" cuda_peak={peak / 1024:.2f}GiB" if peak else ""
             print(
                 f"{flavor:24s} seq={seq_len:5d} docs={args.docs} "
+                f"ac={int(args.activation_checkpointing)} "
                 f"saved={result['saved_mib'] / 1024:6.2f}GiB "
                 f"({result['mib_per_token']:.3f} MiB/tok) "
                 f"fwd={result['fwd_mflops_per_token']:.1f} MFLOP/tok{extra}",

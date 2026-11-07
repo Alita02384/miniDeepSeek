@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.utils.checkpoint import checkpoint as _checkpoint
 
 from .attention import DeepSeekV4Attention, PackedAttentionMetadata
 from .config import BlockConfig, ModelConfig, MTPConfig
@@ -154,6 +155,22 @@ class DeepSeekV4Model(nn.Module):
         )
         if config.tie_word_embeddings:
             self.lm_head.weight = self.tok_embeddings.weight
+        # Activation checkpointing (per block).  Off by default: it trades ~30%
+        # extra compute for a large drop in peak activation memory, which is
+        # what makes long-context stages fit on 24 GB cards.  The flag is set by
+        # the training config (``train.activation_checkpointing``).
+        self.grad_checkpointing = False
+
+    def _run_block(self, block: nn.Module, *args):
+        """Call one transformer block, recomputing it in backward if enabled.
+
+        Non-reentrant checkpointing keeps ``no_grad``/autocast behaviour intact
+        and works with FSDP2 (the recompute re-issues the all-gather).
+        """
+        if self.grad_checkpointing and self.training and torch.is_grad_enabled():
+            return _checkpoint(block, *args, use_reentrant=False)
+        return block(*args)
+
 
     def collect_indexer_loss(self) -> torch.Tensor | None:
         """Sum the CSA indexer distillation losses from the last forward."""
@@ -208,7 +225,8 @@ class DeepSeekV4Model(nn.Module):
             mtp_tokens, valid = roll_mtp_sequence(
                 tokens, shift=depth, fill_value=0, positions=positions
             )
-            prev_hc_hidden, prediction = block(
+            prev_hc_hidden, prediction = self._run_block(
+                block,
                 self.tok_embeddings(mtp_tokens),
                 prev_hc_hidden,
                 mtp_tokens.detach().long(),
@@ -235,7 +253,7 @@ class DeepSeekV4Model(nn.Module):
         h = self.tok_embeddings(tokens)
         h = h.unsqueeze(1).repeat(1, self.hc_mult, 1)
         for layer in self.layers.values():
-            h = layer(h, tokens, attention_metadata, positions)
+            h = self._run_block(layer, h, tokens, attention_metadata, positions)
         prev_hc = h
         hidden = self.hc_head(h)
         hidden = self.norm(hidden)

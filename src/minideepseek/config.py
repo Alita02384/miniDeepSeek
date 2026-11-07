@@ -360,6 +360,9 @@ class TrainSettings(BaseConfig):
     mtp_weight_final: float | None = None
     mtp_decay_ratio: float = 0.8
     balance_loss_coeff: float = 1e-4
+    #: Per-block activation checkpointing: ~30% slower, much lower peak memory.
+    #: Needed for 8K stages (and 220m@4K) on 24 GB cards.
+    activation_checkpointing: bool = False
     resume: str | None = None
     # Skip already-consumed micro-batches when resuming the same dataset.  A
     # curriculum stage uses a different dataset, so it sets this to false.

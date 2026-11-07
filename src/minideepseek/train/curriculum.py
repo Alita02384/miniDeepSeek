@@ -12,6 +12,7 @@ position/bookkeeping bugs of dynamically changing packing length.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from ..config import BaseConfig, TrainConfig, load_config
 __all__ = [
     "CurriculumSettings",
     "CurriculumStage",
+    "latest_stage_checkpoint",
     "run_curriculum",
     "validate_stages",
 ]
@@ -41,6 +43,8 @@ class CurriculumStage(BaseConfig):
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
     index_topk: int | None = None
+    #: Per-stage activation checkpointing (the 8K stage needs it on 24 GB cards).
+    activation_checkpointing: bool | None = None
 
 
 @dataclass
@@ -107,6 +111,8 @@ def _stage_config(
         )
     if stage.batch_warmup_ratio is not None:
         config.data.batch_warmup_ratio = float(stage.batch_warmup_ratio)
+    if stage.activation_checkpointing is not None:
+        config.train.activation_checkpointing = bool(stage.activation_checkpointing)
     config.train.steps = int(stage.until_step)
     config.train.schedule_steps = int(schedule_steps)
     config.train.out_dir = str(out_dir / f"stage_{index:02d}_seq{stage.seq_len}")
@@ -116,8 +122,31 @@ def _stage_config(
     return config
 
 
+def latest_stage_checkpoint(stage_dir: str | Path) -> Path | None:
+    """Newest ``final``/``step_*`` checkpoint of one stage, if it exists."""
+    directory = Path(stage_dir)
+    if not directory.is_dir():
+        return None
+    if (directory / "final").is_dir():
+        return directory / "final"
+    periodic = [
+        child
+        for child in directory.iterdir()
+        if child.is_dir() and re.fullmatch(r"step_\d+", child.name)
+    ]
+    if not periodic:
+        return None
+    return max(periodic, key=lambda path: int(path.name.split("_")[1]))
+
+
 def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
-    """Run all stages in order, resuming each from the previous checkpoint."""
+    """Run all stages in order, resuming each from the previous checkpoint.
+
+    Re-running the same command continues an interrupted run: a stage prefers
+    its own newest checkpoint over the previous stage's ``final``, and the
+    trainer stops at the cumulative ``until_step`` target, so finished stages
+    are no-ops.
+    """
     validate_stages(settings.stages)
     base = load_config(TrainConfig, settings.base_config)
     out_dir = Path(settings.out_dir)
@@ -125,12 +154,14 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
     resume: str | None = None
     final_step = int(settings.stages[-1].until_step)
     for index, stage in enumerate(settings.stages):
+        stage_dir = out_dir / f"stage_{index:02d}_seq{stage.seq_len}"
+        own = latest_stage_checkpoint(stage_dir)
         config = _stage_config(
             base,
             stage,
             out_dir=out_dir,
             index=index,
-            resume=resume,
+            resume=str(own) if own is not None else resume,
             schedule_steps=final_step,
         )
         from .run import run as run_stage

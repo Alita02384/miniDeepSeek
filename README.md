@@ -89,7 +89,8 @@ NPROC_PER_NODE=8 ./scripts/train_opd.sh     configs/opd/three_teacher.yaml
 ```text
 configs/
 ├── model/{debugmodel,mini_220m_a80m,mini_145m_a60m,mini_60m_dense_d768}.yaml
-├── pretrain/{debug_smoke,pilot_0.6b,full_6b,dense_control_1b}.yaml
+├── pretrain/{debug_smoke,pilot_0.6b,full_6b,dense_control_1b,pretrain_145m}.yaml
+├── pretrain/{length_curriculum,curriculum_145m_4x4090,curriculum_debug_smoke}.yaml
 ├── sft/{debug_smoke,math,code,world}.yaml
 ├── grpo/{debug_math,math,code,world,math_vllm}.yaml
 ├── opd/{debug_three_teacher,single_math,three_teacher}.yaml
@@ -106,8 +107,12 @@ configs/
   --model-config configs/model/mini_145m_a60m.yaml
 ```
 
+单机 4×4090/3090（24 GB）跑 145M + 2K→4K→8K 的完整流程见
+[doc/server_runbook.md](doc/server_runbook.md)；显存/时长预算见
+[doc/hardware_budget.md](doc/hardware_budget.md)。
+
 ```bash
-# 数据
+# 数据（本地语料已在 data/raw/，manifest 见 data/manifests/pretrain_local.yaml）
 .venv/bin/python -m minideepseek.data.prepare pretrain --input ... --output ...
 .venv/bin/python -m minideepseek.data.prepare sft      --input ... --output ...
 .venv/bin/python -m minideepseek.data.prepare grpo     --input ... --output ...

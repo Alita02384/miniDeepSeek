@@ -8,6 +8,7 @@ torchtitan's packed/varlen attention metadata.  No padding is stored.
 from __future__ import annotations
 
 import json
+from array import array
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -135,14 +136,19 @@ def pack_documents(
     max_tokens: int | None = None,
     pad_token_id: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Greedily pack documents into variable-length packs of <= ``seq_len`` tokens."""
-    inputs: list[int] = []
-    positions: list[int] = []
-    masks: list[bool] = []
-    offsets: list[int] = [0]
-    current_ids: list[int] = []
-    current_pos: list[int] = []
-    current_mask: list[bool] = []
+    """Greedily pack documents into variable-length packs of <= ``seq_len`` tokens.
+
+    Buffers are ``array.array``/``bytearray`` instead of Python lists: a
+    2B-token corpus would need ~70 GB as lists and only ~18 GB here, which is
+    what lets the 2K/4K/8K curriculum datasets be built on a single node.
+    """
+    inputs = array("i")
+    positions = array("i")
+    masks = bytearray()
+    offsets = array("q", [0])
+    current_ids = array("i")
+    current_pos = array("i")
+    current_mask = bytearray()
     total = 0
 
     def flush() -> None:
@@ -153,7 +159,9 @@ def pack_documents(
         positions.extend(current_pos)
         masks.extend(current_mask)
         offsets.append(len(inputs))
-        current_ids, current_pos, current_mask = [], [], []
+        current_ids = array("i")
+        current_pos = array("i")
+        current_mask = bytearray()
 
     for doc in docs:
         if not doc:
@@ -171,11 +179,14 @@ def pack_documents(
         if max_tokens is not None and total >= max_tokens:
             break
     flush()
+    del pad_token_id
+    if inputs.itemsize != 4:  # pragma: no cover - non-32-bit-int platforms
+        raise RuntimeError(f"array('i') has itemsize {inputs.itemsize}, expected 4")
     return (
-        np.asarray(inputs, dtype=np.int32),
-        np.asarray(positions, dtype=np.int32),
-        np.asarray(masks, dtype=bool),
-        np.asarray(offsets, dtype=np.int64),
+        np.frombuffer(inputs, dtype=np.int32),
+        np.frombuffer(positions, dtype=np.int32),
+        np.frombuffer(masks, dtype=np.uint8).view(bool),
+        np.frombuffer(offsets, dtype=np.int64),
     )
 
 

@@ -604,3 +604,50 @@
 - **影响**：旧 `metrics.jsonl` 仍可解析（字段只增不减）；开 `val_every`
   且 val 改善时多一个 `best/` 目录；`keep_last_ckpt=0` 时不删除任何
   checkpoint（与旧行为一致）。
+
+### D54. 按 block 的激活重算（`train.activation_checkpointing`）
+
+- **问题**：`gather_attention` 把 `[T, window+top-k, head_dim]` 实体化，4K 时
+  145M 档 saved 激活 12.3 GiB，8K 约 25 GiB，24 GB 卡上的 8K 阶段必然 OOM；
+  加卡无效（激活不随卡数切分）。
+- **实际**：`DeepSeekV4Model.grad_checkpointing` + `_run_block()`，用
+  `torch.utils.checkpoint(..., use_reentrant=False)` 包每个 transformer block
+  和 MTP block；由 `train.activation_checkpointing`（或课程阶段的同名字段）
+  打开，默认关闭。实测 145M@4K saved 激活 12.27 GiB → 0.53 GiB。
+- **依据**：README 早已把“激活重计算”列为未实现；这是 24 GB 卡跑 8K 的最小改动。
+- **影响**：开启后前后向多约 30% 计算；router 的 `tokens_per_expert_E` 在重算时
+  会再统计一次（`update_expert_biases` 只用 `sign(counts.mean()-counts)`，
+  对 load-balance 更新无影响，只有日志里的 expert-load 计数翻倍）。
+
+### D55. 数据打包改用 `array` / `bytearray` 缓冲
+
+- **问题**：`pack_documents` 用 Python `list[int]` 累积 token，2B token 语料约需
+  70 GB 内存，`data.prepare` 在正式语料上会直接 OOM（此前只有 debug 小数据）。
+- **实际**：输入/positions 用 `array("i")`、mask 用 `bytearray`，最后
+  `np.frombuffer` 零拷贝转 numpy；每个 token 约 9 B（2B token ≈ 18 GB）。
+- **依据**：B9 只修了读取侧的 mmap，写入侧仍是 Python list。
+- **影响**：pack 结果逐字节不变（现有 `test_data.py` 全过）；`data.prepare`
+  在 64 GB 机器上可处理 2B token，32 GB 机器需用 `--max-tokens` 限流。
+
+### D56. 本地语料进 `data/raw/`，manifest 自包含
+
+- **问题**：`data/manifests/pretrain_6b.yaml` 指向 `../minimind/...` 与多个未下载
+  语料，服务器上既拿不到也不符合“项目自包含”的约束。
+- **实际**：`minimind` 的 `pretrain_t2t.jsonl`（8.5M 文档、约 2.3B token）与
+  `pretrain_t2t_mini.jsonl` 复制到 `data/raw/`；新增
+  `data/manifests/pretrain_local.yaml`（1.2B token 预算、单源、1 epoch），
+  6B manifest 里的 minimind 路径也改到 `data/raw/`。
+- **依据**：当前阶段不下载 6B 混合语料；单源通用语料足够跑通方法与曲线。
+- **影响**：配置只引用 `data/...` 相对路径；语料本身被 `.gitignore` 忽略，
+  服务器上按 `doc/server_runbook.md` 用 rsync 传。
+
+### D57. 课程阶段内的断点续跑
+
+- **问题**：`run_curriculum` 只把上一阶段的 `final` 传给下一阶段；某个阶段中途
+  崩溃后重跑会从该阶段起点重新训练（数小时白跑）。
+- **实际**：新增 `latest_stage_checkpoint()`，每个阶段优先续自己的
+  `final`/`step_*`，再由 `Trainer.train()` 的 `while self.step < until_step`
+  停在累计目标上；已完成的阶段重跑是 no-op。`CurriculumStage` 同时新增
+  `activation_checkpointing` 字段，让 8K 阶段单独开启重算。
+- **依据**：`until_step` 本来就是累计语义，续跑无需改训练循环。
+- **影响**：同一条课程命令可反复执行；阶段切换仍用 `resume_data=False`。

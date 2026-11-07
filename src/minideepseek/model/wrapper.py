@@ -69,6 +69,7 @@ class MiniDeepSeekModel:
         device: torch.device | str = "cpu",
         init_weights: bool = True,
         dtype: str | torch.dtype | None = None,
+        activation_checkpointing: bool = False,
     ):
         from .model import DeepSeekV4Model
 
@@ -77,6 +78,7 @@ class MiniDeepSeekModel:
         if init_weights:
             self.model.init_weights()
         self.model.to(device)
+        self.model.grad_checkpointing = bool(activation_checkpointing)
         self.device = torch.device(device)
         self.autocast_dtype = _resolve_autocast_dtype(dtype, self.device)
 
@@ -456,6 +458,7 @@ def build_model(
     indexer_loss_coeff: Any = UNSET,
     init_weights: bool = True,
     dtype: str | torch.dtype | None = None,
+    activation_checkpointing: bool = False,
 ) -> MiniDeepSeekModel:
     """Build a miniDeepSeek model from a bundled flavor or a resolved spec.
 
@@ -500,7 +503,11 @@ def build_model(
             indexer_loss_coeff=indexer_loss_coeff,
         )
     return MiniDeepSeekModel(
-        config, device=device, init_weights=init_weights, dtype=dtype
+        config,
+        device=device,
+        init_weights=init_weights,
+        dtype=dtype,
+        activation_checkpointing=activation_checkpointing,
     )
 
 

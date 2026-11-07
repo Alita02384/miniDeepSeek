@@ -1,0 +1,55 @@
+# 145M MoE pretraining, sized for 4x RTX 4090/3090 (24 GB) and the local
+# MiniMind corpus in data/raw/pretrain_t2t.jsonl.
+#
+# Used as the `base_config` of configs/pretrain/curriculum_145m_4x4090.yaml;
+# every stage overrides seq_len / tokenized_path / steps.
+model_file: configs/model/mini_145m_a60m.yaml
+model:
+  flavor: mini_145m_a60m
+  seq_len: 4096
+  n_mtp_layers: 1
+  swiglu_limit: 10.0
+  device: auto
+  dtype: bfloat16
+  seed: 1234
+optim:
+  kind: hybrid
+  lr: 0.0006
+  muon_lr: 0.0006
+  adamw_lr: 0.0006
+  weight_decay: 0.1
+  grad_clip: 1.0
+schedule:
+  warmup_steps: 300
+  decay: cosine
+  min_lr_ratio: 0.1
+  decay_start_ratio: 0.8
+data:
+  tokenized_path: data/tokenized/pretrain_4k.npz
+  # Global (all-rank) micro-batch budget: 4 GPUs x 4096 tokens = one 4K pack each.
+  batch_tokens: 16384
+  batch_tokens_final: 16384
+  batch_warmup_ratio: 0.0
+  shuffle: true
+  seed: 1234
+train:
+  # Cumulative target of the 4K stage; the curriculum overrides this per stage.
+  steps: 6400
+  grad_accum: 8
+  log_every: 10
+  ckpt_every: 200
+  keep_last_ckpt: 3
+  out_dir: checkpoints/pretrain_145m
+  mtp_weight: 0.3
+  mtp_weight_final: 0.1
+  mtp_decay_ratio: 0.8
+  balance_loss_coeff: 0.0001
+  index_topk_final: 64
+  index_topk_warmup_ratio: 0.05
+  # 2K/4K fit 24 GB without recompute; the 8K stage turns this on.
+  activation_checkpointing: false
+distributed:
+  mode: fsdp2
+  param_dtype: bfloat16
+  reduce_dtype: float32
+  reshard_after_forward: true

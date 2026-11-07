@@ -6,7 +6,7 @@ seq_len: 4096
 total_tokens: 6000000000
 sources:
   - name: minimind_general
-    path: ../minimind/dataset/pretrain_t2t_mini.jsonl
+    path: data/raw/pretrain_t2t_mini.jsonl
     domain: general
     license: CC-BY-NC-4.0
     weight: 0.15
