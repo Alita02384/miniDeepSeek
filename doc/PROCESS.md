@@ -668,3 +668,27 @@
     服务器无此限制；
   - 1.8B RM 在 CPU 上只做了单次打分/1 步 GRPO，未测 CUDA 批量吞吐；
   - 完整 2.3B token tokenization 与 145M GPU 训练仍未执行。
+
+## 2026-11-07（三专家数据分工 / MoE 分化）
+
+- **commit**: `2cf3aa5` docs: 三专家数据分工、MoE 分化方法与 145M 数据方案更新
+- **做了什么**:
+  - 新增 `doc/specialist_data_145m.md`：MiniMind 预训练/SFT 的领域构成、块状分布、
+    三专家 SFT 甜点量、能否从现有语料提取；
+  - 新增 `doc/moe_specialization.md`：领域同质 batch、平衡损失退火、路由指标验证、
+    学习率计划的定位；
+  - 重写 `doc/data_plan_145m.md`：专家改为 code/tool/general，预训练 3B 七源混料；
+  - `doc/decisions.md` 追加 D63（1.2B→3B + code/tool 入混料）、D64（SFT 量按饱和点）。
+- **实现了什么**（可验证的数据，不是"写完了"）:
+  - `pretrain_t2t.jsonl` 抽样 3 万条：general 96.1% / code 2.1% / math 1.8% / **tool 0%**；
+  - `sft_t2t_mini.jsonl` 905,718 条，tool 块位于第 771,075–905,718 行（134,644 条，14.9%）；
+  - `sft_t2t.jsonl` 14.10 GB、约 857 万条，general 72.4% / code 18.0% / math 9.5%；
+    按位置采样发现 code 在 83% 处占 72.6%、math 在 75% 处占 22.8%——数据是成块拼接的；
+  - 由此确定：general 需按内容过滤后抽样，不能按行号截取。
+- **验证**:
+  - 全部数字由本地文件分窗口采样得到（12 窗口 × 4000 行）；
+  - 未下载任何外部数据；外部数据集仅查 HF 元信息（规模/许可/字段）。
+- **未完成 / 风险**:
+  - 现存 `pretrain_t2t.jsonl` 仍是 2.2B 单源，3B 七源混料尚未落地（无 manifest、未打包）；
+  - `code_reward` 仍是二值奖励，code GRPO 上线前必须先改部分分；
+  - MoE 分化方案（领域 batch + 平衡损失退火）只有设计，未在 145M 上验证。
