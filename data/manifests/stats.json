@@ -1,4 +1,8 @@
 {
+  "eval_debug_math.jsonl": {
+    "bytes": 8714,
+    "sha256": "9bb1444117e052afa295b8517d5059480e6e24db0d33c98207661ff1b7702f2e"
+  },
   "eval_general.jsonl": {
     "bytes": 2548411,
     "sha256": "4f2c442109cf55b2ea1e0b3e08afa5fa7a929c8d705abd95ff0f261308762e39"
@@ -7,6 +11,10 @@
     "bytes": 9889192,
     "sha256": "43768e687abe9fd64cba7f24ac4657cea044a8e63beb41bd0166837bc13554cb"
   },
+  "grpo_debug_math.jsonl": {
+    "bytes": 19984,
+    "sha256": "5cb23793bbfc129fdb072c7b541e1bbfb50e0ba3fe57a3a3ada622ec33686931"
+  },
   "grpo_general_train.jsonl": {
     "bytes": 22284796,
     "sha256": "945bf5aaed71076b6d7c4c9803aad3c79ec59af1f1ea59268e46ae53fb4ef722"
@@ -14,6 +22,10 @@
   "grpo_tool_train.jsonl": {
     "bytes": 89193627,
     "sha256": "2e993b9103b636eadf36c4ef9a524ce41e2bb0934e648b36b4cff10a1315396e"
+  },
+  "opd_debug_prompts.jsonl": {
+    "bytes": 16936,
+    "sha256": "5bac4491b70b69ab51399063aca6ffa26da5273e3a9b12726a7e7b982970b146"
   },
   "opd_prompts_general.jsonl": {
     "bytes": 22005372,

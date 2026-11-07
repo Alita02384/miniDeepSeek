@@ -10,6 +10,13 @@ sources:
   grpo_tool:
   - ../minimind/dataset/agent_rl.jsonl
   - ../minimind/dataset/agent_rl_math.jsonl
+  code_sft: null
+  code_grpo: null
+  code_eval: null
+missing:
+- eval_code
+- grpo_code
+- sft_code
 notes:
 - sft_general is copied verbatim from sft_t2t_mini.jsonl
 - sft_tool is the tool/tool_call subset plus a general slice
