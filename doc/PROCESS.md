@@ -527,3 +527,39 @@
     未提交的 activation checkpointing 测试，本 commit 自身为 201）
 - **未完成 / 风险**: 工作树同时存在 activation checkpointing / 数据打包优化
   的未提交改动，不属于本 commit；两者已在同一工作树上通过全量测试。
+
+## 2026-11-07 24GB 卡上的 145M 2K→4K→8K 路径
+
+- **commit**: `a8db9e2` feat: 24GB 卡上的 145M 2K→4K→8K 训练路径
+- **做了什么**:
+  - `DeepSeekV4Model.grad_checkpointing` + `_run_block()`：按 block
+    `torch.utils.checkpoint(use_reentrant=False)`；`train.activation_checkpointing`
+    与 `CurriculumStage.activation_checkpointing` 两个开关；
+  - `pack_documents` 用 `array("i")`/`bytearray` + `np.frombuffer`，逐字节等价；
+  - `run_curriculum` 新增 `latest_stage_checkpoint()`：阶段内续跑、重复执行幂等；
+  - 新增 `configs/pretrain/pretrain_145m.yaml`、
+    `configs/pretrain/curriculum_145m_4x4090.yaml`、
+    `configs/pretrain/curriculum_debug_smoke.yaml`；
+  - 语料复制到 `data/raw/`（2.3B token，8.3 GB），新增
+    `data/manifests/pretrain_local.yaml`，6B manifest 的 minimind 路径改到 `data/raw/`；
+  - `scripts/measure_activation_budget.py` 增加 `--activation-checkpointing`；
+  - 新增 `doc/server_runbook.md`（上传、环境、数据、上卡检查、训练、续跑、降级）。
+- **实现了什么**:
+  - 145M@4K saved 激活 **12.27 GiB → 0.53 GiB**（实测，CPU bf16 autocast）；
+    8K 不开重算约 25 GiB（24 GB 必 OOM），开重算预估 12–15 GiB；
+  - debug 模型 2K→4K→8K 三阶段课程在 CPU 上 21 s 跑完，产出三个 `final/`；
+  - 3000 文档在 2K/4K/8K 三种打包长度下都产出可用数据集（33 s）。
+- **验证**:
+  - `.venv/bin/python -m pytest -q` → 204 passed（含 3 个新的 checkpointing 测试）；
+  - `.venv/bin/ruff check src tests scripts` → All checks passed；
+  - `scripts/train_curriculum.py --config configs/pretrain/curriculum_debug_smoke.yaml`
+    → 3 阶段 until_step 1/2/3 全部完成；
+  - `measure_activation_budget.py --flavor mini_145m_a60m --seq-len 4096`
+    → ac=0: 12.27 GiB, ac=1: 0.53 GiB；
+  - `manifest --manifest data/manifests/pretrain_local.yaml` → ok: true。
+- **未完成 / 风险**:
+  - 8K + 重算的 **真实 CUDA 峰值未实测**（本机无 GPU），runbook §3 给了上卡
+    先跑 `measure_activation_budget.py --device cuda` 的顺序；
+  - 数据准备仍是“每个长度一次全量扫描”，三阶段需并行跑（约 4.5 h/阶段）；
+    单遍多长度打包未实现；
+  - 220M 档在 24 GB 上 4K 需重算、8K 需 chunked attention（未实现）。
