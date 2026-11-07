@@ -563,3 +563,26 @@
   - 数据准备仍是“每个长度一次全量扫描”，三阶段需并行跑（约 4.5 h/阶段）；
     单遍多长度打包未实现；
   - 220M 档在 24 GB 上 4K 需重算、8K 需 chunked attention（未实现）。
+
+## 2026-11-07
+
+- **commit**: `0f8b9bb` docs: 新增 145M 数据方案（预训练/SFT/GRPO 数据源与筛选口径）
+- **做了什么**: 新增 `doc/data_plan_145m.md`：按 145M/61M 激活、6400 词表、4K 上下文收敛
+  路线图 §4 的数据方案；给出预训练 1.2B 六源混料、数学/代码 SFT 各 12M token 的来源与
+  过滤规则、数学/代码 GRPO 的 prompt 池与难度带做法，以及与 `data/manifests`、
+  `prepare` CLI、`rl/reward.py` 的对接格式。
+- **实现了什么**:
+  - 用仓库自带 tokenizer 实测 fertility：中文 0.233、英文 0.330、Python 0.38–0.44、
+    JS 0.471、C++ 0.546 tok/byte；4 空格缩进 5 token/行，2 空格 4 token/行；
+  - 逐个核对候选数据集的规模/许可/字段（HF API + dataset card），确认
+    Orca-Math 200k(MIT)、GSM8K_zh 8,792(MIT)、Magicoder-OSS 75k(MIT)、
+    self-oss-instruct 50k(ODC-By)、MBPP 374+120(CC-BY-4.0)、
+    open-r1 verifiable 15,068（含 fn_name/input/output 测试）、TACO 25,443(Apache-2.0)。
+- **验证**:
+  - `score_text()` 对仓库 Python 源码与 GSM8K 样本均 `accepted=True`，现有质量过滤不会误杀；
+  - 文档内每条规模/许可均来自本次 API 查询，未使用记忆值。
+- **未完成 / 风险**:
+  - 只出方案，**未写下载/过滤/转换脚本**，也未新增 manifest；
+  - `rl/reward.py::code_reward` 目前是全通过=1、否则=0 的二值奖励，145M 上大概率恒 0，
+    方案要求改成部分分（未实施）；
+  - 代码 reward 直接 `subprocess` 跑模型生成代码、无沙箱，长期使用需加固。
