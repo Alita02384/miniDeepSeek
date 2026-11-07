@@ -90,8 +90,13 @@ code 只放 2% 则更多是**工程现实**：
 
 ### 3.1 总量从哪来
 
-SFT 预算是 `steps × batch_tokens`。当前 `configs/sft/*.yaml` 是 500 step × 32,768 token
-= **16.4M token / 专家**。想要更多就同步调 `steps`，但 **SFT 超过 1–2 epoch 就是浪费**。
+SFT 预算 = `steps × batch_tokens × grad_accum`（`batch_tokens` 是全局 micro-batch，
+一个 optimizer step 要跑 `grad_accum` 次）。当前 `configs/sft/*.yaml` 是
+500 × 32,768 × 8 = **131M token / 专家**。
+
+这比下面表里的 15–20M token 数据大 8 倍，等于要把 60k 条数据看 8 遍。
+**两条路选一条**：把 `steps` 降到 60–80（推荐），或把数据扩到 ~40 万条。
+**SFT 超过 1–2 epoch 就是浪费**，所以默认建议前者。
 
 ### 3.2 甜点表
 

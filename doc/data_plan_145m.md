@@ -71,7 +71,10 @@
 
 - 预训练：`configs/pretrain/curriculum_145m_4x4090.yaml` 现为 **1.2B**；本文建议提到 **3B**
   （2.2B 现有 + 新增 code/tool/英文语料），145M 上 5B 以上边际收益很低。
-- SFT：`configs/sft/*.yaml` 500 step × `batch_tokens: 32768` → **16.4M token/专家**（1 epoch）。
+- SFT：`configs/sft/*.yaml` 500 step × `batch_tokens: 32768` × `grad_accum: 8`
+  → **131M token/专家**（`batch_tokens` 是全局 micro-batch，per-step 要再乘 grad_accum）。
+  注意这与 §0 的 40–60k 条数据（约 15M token）差 8 倍，等于跑 8 个 epoch；
+  **要么把 steps 降到 60–80，要么把数据扩到 40 万条**，建议前者。
 - GRPO：`configs/grpo/*.yaml` 200 step × `prompts_per_step: 32` → **6,400 次 prompt 采样**。
 
 ---

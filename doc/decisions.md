@@ -720,6 +720,8 @@
 ### D64. 三专家 SFT 数据量按"饱和点"而非"按数据集大小"
 
 - **原方案**：`configs/sft/*.yaml` 统一 500 step × 32,768 token = 16.4M token/专家。
+  （**更正**：`batch_tokens` 是全局 micro-batch，一个 optimizer step 还要乘
+  `grad_accum=8`，实际是 500 × 32,768 × 8 = **131M token/专家**；16.4M 的说法漏乘了累积步数。）
 - **新方案**：general 40–60k 条（15–20M token）、code 25–35k（12M）、
   tool 5–10k（4–6M，2–3 epoch），比例约 4:2:1。
 - **依据**：general 多样性无界；code 受 145M 容量限制（不是"好学"）；
