@@ -66,7 +66,9 @@ def scrub(path: Path, *, dry_run: bool) -> dict[str, int]:
         for line in source:
             if not line.strip():
                 continue
-            if is_identity(line):
+            # ``source == identity`` records are this script's own output: drop
+            # them too so re-running replaces instead of duplicating.
+            if is_identity(line) or '"source": "identity"' in line:
                 dropped += 1
                 continue
             if not dry_run:
