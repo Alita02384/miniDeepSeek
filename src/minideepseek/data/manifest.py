@@ -66,9 +66,14 @@ class ManifestReport(BaseConfig):
 
 def _fingerprint(path: str) -> str | None:
     candidate = Path(path)
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return jsonl_fingerprint(candidate)
+    if candidate.is_file():
+        return jsonl_fingerprint(candidate)
+    # Packed datasets keep the arrays in ``.npy`` sidecars and only a JSON meta
+    # next to the logical ``.npz`` path; fingerprint the meta in that case.
+    meta = candidate.with_suffix(".json")
+    if meta.is_file():
+        return jsonl_fingerprint(meta)
+    return None
 
 
 def load_manifest(path: str | Path) -> DataManifest:

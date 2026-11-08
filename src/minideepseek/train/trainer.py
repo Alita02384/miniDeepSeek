@@ -163,6 +163,7 @@ class Trainer:
         train_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]],
         *,
         val_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]] | None = None,
+        val_sources: dict[str, Callable[[], Iterable[PackedBatch]]] | None = None,
         tokenizer_hash: str | None = None,
         run_name: str | None = None,
         distributed: DistributedContext | None = None,
@@ -212,6 +213,7 @@ class Trainer:
             if val_batches is not None
             else None
         )
+        self._val_sources = dict(val_sources or {})
         self._ar_state = (
             AnticipatoryState(
                 AnticipatoryConfig(
@@ -655,6 +657,15 @@ class Trainer:
                     "val_tokens": val["tokens"],
                     "tokens_seen": self._tokens_seen,
                 }
+                # Per-domain validation: one aggregate above, one loss per
+                # domain here so general/code/tool regressions are separable.
+                for name, factory in self._val_sources.items():
+                    per = self.evaluate(
+                        factory(), max_steps=self.config.train.val_steps
+                    )
+                    val_record[f"val_loss_{name}"] = per["loss"]
+                    val_record[f"val_main_loss_{name}"] = per["main_loss"]
+                    val_record[f"val_tokens_{name}"] = per["tokens"]
                 if self.logger is not None:
                     self.logger.log(self.step, val_record, echo=True)
                 self._maybe_save_best(val["loss"])
@@ -968,6 +979,7 @@ def build_trainer(
     train_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]],
     *,
     val_batches: Iterable[PackedBatch] | Callable[[], Iterable[PackedBatch]] | None = None,
+    val_sources: dict[str, Callable[[], Iterable[PackedBatch]]] | None = None,
     tokenizer_hash: str | None = None,
     distributed: DistributedContext | None = None,
 ) -> tuple[Trainer, MiniDeepSeekModel]:
@@ -990,6 +1002,7 @@ def build_trainer(
         model,
         train_batches,
         val_batches=val_batches,
+        val_sources=val_sources,
         tokenizer_hash=tokenizer_hash,
         distributed=context,
     )

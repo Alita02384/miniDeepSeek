@@ -828,3 +828,14 @@
     本次提交时尚未全部完成；
   - 训练侧 per-domain val 还未接线（`train.val_path` 只支持单文件）；
   - `scripts/build_external_data.py` 未做跨源去重（依赖上游去重）。
+
+## 2026-11-08（续）分域验证接线
+
+- **做了什么**: `TrainSettings.val_sources` + `CurriculumStage.val_sources`；
+  `trainer.evaluate` 按域复用，训练循环每 `val_every` 步额外写
+  `val_loss_<domain>` / `val_main_loss_<domain>` / `val_tokens_<domain>`；
+  `manifest._fingerprint` 支持只有 sidecar 的 packed 数据集。
+- **实现了什么**: 三套配置（base 4K + 课程 2K/4K/8K）各自解析出 3 个 val 源。
+- **验证**: `pytest -q` → 221 passed（新增 2 条：trainer 分域 val、curriculum val_sources）；
+  `ruff check` 通过；配置解析打印每阶段 val 文件名正确。
+- **未完成**: 打包仍在跑（`data/tokenization/pack.log`）。

@@ -242,10 +242,23 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
             persistent_warmup=False,
         )
         _validate_dataset(val_dataset, tokenizer, config, label="val")
+    val_sources = {}
+    for spec in config.train.val_sources:
+        val_source, val_factory = load_dataset(
+            config,
+            mode,
+            path=spec.path,
+            shard_rank=0,
+            shard_world_size=1,
+            persistent_warmup=False,
+        )
+        _validate_dataset(val_source, tokenizer, config, label=f"val[{spec.domain}]")
+        val_sources[spec.domain] = val_factory
     trainer, model = build_trainer(
         config,
         batches,
         val_batches=val_batches,
+        val_sources=val_sources or None,
         tokenizer_hash=tokenizer.sha256,
         distributed=context,
     )

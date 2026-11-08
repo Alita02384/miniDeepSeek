@@ -54,6 +54,14 @@ train:
   balance_loss_coeff: 0.0001
   index_topk_final: 64
   index_topk_warmup_ratio: 0.05
+  # Per-domain validation: one 1M-token pack per domain, logged as
+  # val_loss_<domain> in metrics.jsonl next to the aggregate val_loss.
+  val_every: 200
+  val_steps: 10
+  val_sources:
+    - {path: data/tokenization/val_general_4k.npz, weight: 1.0, domain: general}
+    - {path: data/tokenization/val_code_4k.npz, weight: 1.0, domain: code}
+    - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
   # 2K/4K fit 24 GB without recompute; the 8K stage turns this on.
   activation_checkpointing: false
 distributed:

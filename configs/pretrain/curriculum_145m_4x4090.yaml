@@ -22,6 +22,10 @@ stages:
       - {path: data/tokenization/pretrain_general_2k.npz, weight: 0.82, domain: general}
       - {path: data/tokenization/pretrain_code_2k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_2k.npz, weight: 0.03, domain: tool}
+    val_sources:
+      - {path: data/tokenization/val_general_2k.npz, weight: 1.0, domain: general}
+      - {path: data/tokenization/val_code_2k.npz, weight: 1.0, domain: code}
+      - {path: data/tokenization/val_tool_2k.npz, weight: 1.0, domain: tool}
   - seq_len: 4096
     until_step: 8011
     batch_tokens: 16384
@@ -31,6 +35,10 @@ stages:
       - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
       - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_4k.npz, weight: 0.03, domain: tool}
+    val_sources:
+      - {path: data/tokenization/val_general_4k.npz, weight: 1.0, domain: general}
+      - {path: data/tokenization/val_code_4k.npz, weight: 1.0, domain: code}
+      - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
   - seq_len: 8192
     until_step: 11444
     # One 8K pack per rank; 24 GB needs per-block recompute at this length.
@@ -43,3 +51,7 @@ stages:
       - {path: data/tokenization/pretrain_general_8k.npz, weight: 0.82, domain: general}
       - {path: data/tokenization/pretrain_code_8k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_8k.npz, weight: 0.03, domain: tool}
+    val_sources:
+      - {path: data/tokenization/val_general_8k.npz, weight: 1.0, domain: general}
+      - {path: data/tokenization/val_code_8k.npz, weight: 1.0, domain: code}
+      - {path: data/tokenization/val_tool_8k.npz, weight: 1.0, domain: tool}

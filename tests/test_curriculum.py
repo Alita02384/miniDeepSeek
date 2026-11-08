@@ -107,3 +107,25 @@ def test_curriculum_stage_sources_weights_must_sum_to_one():
     )
     with pytest.raises(ValueError, match="weights must sum to 1.0"):
         validate_stages([stage])
+
+
+def test_curriculum_stage_val_sources(tmp_path):
+    base = _config()
+    stage = CurriculumStage(
+        seq_len=4096,
+        tokenized_path="b.npz",
+        until_step=20,
+        val_sources=[
+            {"path": "vg.npz", "weight": 1.0, "domain": "general"},
+            {"path": "vc.npz", "weight": 1.0, "domain": "code"},
+        ],
+    )
+    validate_stages([stage])
+    config = _stage_config(
+        base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20
+    )
+    assert [source.domain for source in config.train.val_sources] == [
+        "general",
+        "code",
+    ]
+    assert config.train.val_sources[0].path == "vg.npz"

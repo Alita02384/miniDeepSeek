@@ -152,6 +152,28 @@ python -m minideepseek.data.prepare pretrain \
 
 ---
 
+## 7.1 分域验证怎么用
+
+```yaml
+train:
+  val_every: 200
+  val_steps: 10
+  val_sources:
+    - {path: data/tokenization/val_general_4k.npz, weight: 1.0, domain: general}
+    - {path: data/tokenization/val_code_4k.npz, weight: 1.0, domain: code}
+    - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
+```
+
+每 200 步会在 `metrics.jsonl` 追加一条记录，除整体的 `val_loss`，还有：
+
+```text
+val_loss_general  val_main_loss_general  val_tokens_general
+val_loss_code     val_main_loss_code     val_tokens_code
+val_loss_tool     val_main_loss_tool     val_tokens_tool
+```
+
+课程三段各自指向本长度的 val pack（`val_*_2k/4k/8k.npz`），所以 2K 阶段不会喂 4K 的包。
+
 ## 8. 当前状态
 
 | 项 | 状态 |
@@ -163,7 +185,7 @@ python -m minideepseek.data.prepare pretrain \
 | 按域打包的 npz | ✅ `data/tokenization/pretrain_{general,code,tool}_{2k,4k,8k}.npz`（`scripts/build_pretrain_packs.sh`） |
 | 分域验证集 | ✅ `data/tokenization/val_{general,code,tool}_{2k,4k,8k}.npz`（各 1M token，训练跳过） |
 | OPD teacher 锁定 | ❌ 已回滚（不采用，见 §6） |
-| 训练侧 val 接线 | ⚠️ 配置里还没有 `val_batches`（`train/run.py` 只接 train） |
+| 训练侧 val 接线 | ✅ `train.val_sources` + `CurriculumStage.val_sources`，每域单独评估 |
 
 ### 8.1 流式打包
 

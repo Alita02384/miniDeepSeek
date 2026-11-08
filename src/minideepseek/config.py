@@ -377,6 +377,9 @@ class TrainSettings(BaseConfig):
     # Stage changes (pretrain -> SFT -> RL) start their own step counter.
     resume_step: bool = True
     val_path: str | None = None
+    #: Per-domain validation packs.  Each entry is evaluated separately so
+    #: ``metrics.jsonl`` carries ``val_loss_<domain>`` next to the aggregate.
+    val_sources: list[DataSourceSettings] = field(default_factory=list)
     val_every: int = 0
     val_steps: int = 10
     # Loss-spike stability controls (roadmap section 3.6). Defaults keep the

@@ -42,6 +42,8 @@ class CurriculumStage(BaseConfig):
     #: Optional per-domain sources for this stage (domain-homogeneous batches).
     #: Takes precedence over ``tokenized_path`` when set.
     sources: list[dict] | None = None
+    #: Optional per-domain validation packs for this stage.
+    val_sources: list[dict] | None = None
     batch_tokens: int | None = None
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
@@ -131,6 +133,12 @@ def _stage_config(
         )
     if stage.batch_warmup_ratio is not None:
         config.data.batch_warmup_ratio = float(stage.batch_warmup_ratio)
+    if stage.val_sources:
+        from ..config import DataSourceSettings
+
+        config.train.val_sources = [
+            DataSourceSettings(**dict(item)) for item in stage.val_sources
+        ]
     if stage.activation_checkpointing is not None:
         config.train.activation_checkpointing = bool(stage.activation_checkpointing)
     config.train.steps = int(stage.until_step)

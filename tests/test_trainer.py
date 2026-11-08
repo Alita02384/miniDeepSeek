@@ -450,3 +450,30 @@ def test_trainer_logs_domain_id_from_mixer(tmp_path):
         for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
     ]
     assert [record["domain_id"] for record in records] == [0.0, 1.0]
+
+
+def test_trainer_logs_per_domain_val_loss(tmp_path):
+    train_batch = from_sequences([[1, 2, 3, 4, 5, 6]])
+    val_general = [from_sequences([[7, 8, 9, 10]])]
+    val_code = [from_sequences([[11, 12, 13, 14, 15]])]
+    config = _config(tmp_path, steps=1, grad_accum=1, val_every=1, val_steps=1)
+    trainer, _model = build_trainer(
+        config,
+        [train_batch],
+        val_batches=lambda: iter(val_general),
+        val_sources={
+            "general": lambda: iter(val_general),
+            "code": lambda: iter(val_code),
+        },
+        tokenizer_hash="stub",
+    )
+    trainer.train(1)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
+    ]
+    val_record = records[-1]
+    assert "val_loss" in val_record
+    assert "val_loss_general" in val_record
+    assert "val_loss_code" in val_record
+    assert val_record["val_tokens_general"] > 0
