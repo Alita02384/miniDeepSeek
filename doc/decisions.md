@@ -755,3 +755,18 @@
   `cispo` + `epsilon_high=5.0`（MiniMind 默认），旧配置默认仍为 `grpo`。
 - **未照搬**：MiniMind 的 KL(ref) 项与 PPO 未引入；当前 GRPO 仍是
   correctness-first 的 torch 实现。
+
+### D65. 领域同质 batch：预训练默认开，OPD 默认关
+
+- **原方案**：`data.sources` 用 `WeightedBatchMixer` 按 micro-batch 交错，`trainer` 只记全局
+  router 指标，分不出"哪个领域用了哪些专家"。
+- **新方案**：
+  - `data.lockstep`（默认 `true`）：mixer 的配额按 **optimizer step** 分配，每个 slot 连续产出
+    `grad_accum` 个同源 batch；`trainer` 每步记录 `domain_id`（`data.sources` 下标，-1 为单源）。
+  - `rl.teacher_lockstep`（默认 `false`）：OPD 每步只从一个 teacher 抽 prompt。
+- **依据**：
+  - 分化收益来自 batch 内 router 统计一致性，不需要连续多步同域（`doc/batching.md` §4）；
+  - OPD 的 teacher-pure step **没有公开证据**，且多 teacher 混 batch 是主流写法，
+    因此只提供开关、不默认启用，等 A/B 结果。
+- **影响**：多源训练的 batch 顺序语义改变（同域连续 `grad_accum` 个），旧 run 的 batch 序列不可
+  直接对比；`metrics.jsonl` 多一列 `domain_id`；单源训练路径不受影响。

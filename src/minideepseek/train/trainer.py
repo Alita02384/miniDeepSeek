@@ -97,6 +97,10 @@ class StepMetrics:
     mem_peak_mb: float | None = None
     router: dict[str, float] = field(default_factory=dict)
     swiglu: dict[str, float] = field(default_factory=dict)
+    #: Index of the active ``data.sources`` domain (-1 when single-source).
+    #: Under ``data.lockstep`` every micro-batch of a step shares it, so the
+    #: per-step routing metrics are already per-domain.
+    domain_id: int = -1
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -121,6 +125,8 @@ class StepMetrics:
             payload[f"mtp_loss_d{depth}"] = value
         # Memory counters are absent on CPU; omit them instead of logging a
         # misleading zero.
+        if self.domain_id >= 0:
+            payload["domain_id"] = float(self.domain_id)
         for key in ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb"):
             value = getattr(self, key)
             if value is not None:
@@ -516,8 +522,12 @@ class Trainer:
         accum = max(int(self.config.train.grad_accum), 1)
         micro_metrics: list[StepMetrics] = []
         mtp_weight = self._mtp_weight()
+        step_domain = -1
         for micro in range(accum):
             batch, routing_record = self._next_training_batch()
+            current = getattr(self._batch_iter, "current_index", None)
+            if current is not None:
+                step_domain = int(current)
             with self._gradient_sync(micro == accum - 1):
                 micro_metrics.append(
                     self._forward_backward(
@@ -568,6 +578,7 @@ class Trainer:
             mtp_losses=mtp_losses,
             router=_merge_dicts([m.router for m in micro_metrics]),
             swiglu=_merge_dicts([m.swiglu for m in micro_metrics]),
+            domain_id=step_domain,
         )
         if self._first_loss is None:
             self._first_loss = averaged.loss

@@ -12,6 +12,7 @@ import argparse
 import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from ..config import TrainConfig, load_config
 from ..data.pretrain import BatchTokenSchedule, PackedPretrainDataset
@@ -126,12 +127,22 @@ def load_dataset(
         sources = []
         meta_sources = []
         child_datasets = []
+        seen_names: dict[str, int] = {}
         for spec in config.data.sources:
             dataset = _load_single_dataset(mode, spec.path)
             child_datasets.append(dataset)
+            # Log by domain: ``trainer`` records ``domain_id`` from the active
+            # source so per-step routing metrics are already per-domain.
+            base_name = spec.domain or Path(spec.path).stem
+            seen_names[base_name] = seen_names.get(base_name, 0) + 1
+            name = (
+                base_name
+                if seen_names[base_name] == 1
+                else f"{base_name}#{seen_names[base_name]}"
+            )
             sources.append(
                 BatchSource(
-                    name=spec.path,
+                    name=name,
                     factory=_batch_factory(
                         config,
                         mode,
@@ -156,6 +167,8 @@ def load_dataset(
             total_batches=total_batches,
             seed=config.data.seed,
             shuffle=config.data.shuffle,
+            batches_per_step=max(int(config.train.grad_accum), 1),
+            lockstep=bool(config.data.lockstep),
         )
         return (
             MixedDataset(meta={"sources": meta_sources}, datasets=list(child_datasets)),

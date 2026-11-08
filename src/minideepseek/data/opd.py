@@ -34,6 +34,44 @@ class OPDPrompt:
         }
 
 
+def sample_prompts(
+    prompts: list[OPDPrompt],
+    *,
+    count: int,
+    seed: int,
+    step: int,
+    lockstep: bool = False,
+    teacher_weights: dict[str, float] | None = None,
+) -> list[OPDPrompt]:
+    """Draw one optimizer step's prompt batch deterministically.
+
+    ``lockstep=True`` draws every prompt of the step from a single teacher
+    (teachers weighted by ``teacher_weights``), which keeps the step
+    domain-homogeneous.  ``False`` samples the mixed pool, the standard
+    multi-teacher formulation.  Both are deterministic in ``seed + step``.
+    """
+    import random
+
+    pool = list(prompts)
+    if not pool:
+        return []
+    count = min(max(int(count), 1), len(pool))
+    rng = random.Random(seed + step)
+    if lockstep:
+        by_teacher: dict[str, list[OPDPrompt]] = {}
+        for prompt in pool:
+            by_teacher.setdefault(prompt.teacher_key, []).append(prompt)
+        keys = sorted(by_teacher)
+        weights = [float((teacher_weights or {}).get(key, 1.0)) for key in keys]
+        if sum(weights) <= 0:
+            weights = [1.0] * len(keys)
+        key = rng.choices(keys, weights=weights, k=1)[0]
+        pool = by_teacher[key]
+        count = min(count, len(pool))
+    rng.shuffle(pool)
+    return pool[:count]
+
+
 def load_opd_prompts(path: str | Path) -> list[OPDPrompt]:
     prompts = []
     for item in iter_jsonl(path):

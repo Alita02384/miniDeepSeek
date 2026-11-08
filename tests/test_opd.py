@@ -166,3 +166,34 @@ def test_load_teacher_ignores_mtp_and_uses_runtime_topk(tmp_path):
             source.forward(batch, use_mtp=False)[0],
             loaded.forward(batch, use_mtp=False)[0],
         )
+
+
+def test_sample_prompts_lockstep_draws_from_one_teacher():
+    from minideepseek.data.opd import OPDPrompt, sample_prompts
+
+    prompts = [
+        OPDPrompt(
+            prompt=[{"role": "user", "content": f"q{index}"}],
+            teacher_key="general" if index < 10 else "code",
+            domain="general" if index < 10 else "code",
+        )
+        for index in range(20)
+    ]
+    mixed = sample_prompts(prompts, count=8, seed=1, step=0)
+    assert len(mixed) == 8
+    assert len({prompt.teacher_key for prompt in mixed}) >= 1
+    for step in range(8):
+        locked = sample_prompts(
+            prompts,
+            count=8,
+            seed=1,
+            step=step,
+            lockstep=True,
+            teacher_weights={"general": 1.0, "code": 1.0},
+        )
+        assert len(locked) == 8
+        assert len({prompt.teacher_key for prompt in locked}) == 1
+    # Deterministic in (seed, step).
+    assert [p.prompt[0]["content"] for p in mixed] == [
+        p.prompt[0]["content"] for p in sample_prompts(prompts, count=8, seed=1, step=0)
+    ]

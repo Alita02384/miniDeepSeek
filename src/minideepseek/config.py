@@ -316,6 +316,10 @@ class DataSettings(BaseConfig):
     shuffle: bool = True
     seed: int = 1234
     domain: str = "general"
+    #: With ``data.sources``, keep every optimizer step domain-homogeneous:
+    #: one source per step, ``grad_accum`` consecutive micro-batches from it.
+    #: ``False`` interleaves sources at micro-batch granularity instead.
+    lockstep: bool = True
 
 
 @dataclass
@@ -467,6 +471,10 @@ class RLSettings(BaseConfig):
     thinking_ratio: float = 0.1
     max_tool_calls: int = 4
     teacher_weights: dict[str, float] = field(default_factory=dict)
+    #: OPD: draw every step's prompts from a single teacher instead of the
+    #: mixed pool.  Off by default -- mixed steps are the standard multi-teacher
+    #: formulation and the benefit of teacher-pure steps is unmeasured here.
+    teacher_lockstep: bool = False
     # "torch" is the correctness-first path; "vllm" is CUDA-only and optional.
     rollout_backend: str = "torch"
     vllm_model_path: str | None = None

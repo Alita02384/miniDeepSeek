@@ -71,6 +71,8 @@
 
 - 预训练：`configs/pretrain/curriculum_145m_4x4090.yaml` 现为 **1.2B**；本文建议提到 **3B**
   （2.2B 现有 + 新增 code/tool/英文语料），145M 上 5B 以上边际收益很低。
+  有效 batch 建议 131k → **262k**（`grad_accum` 16，显存不变），3B ÷ 262k ≈ 11.4k 步；
+  课程三段的 `until_step` 要按新 token/step 重算——见 `doc/batching.md` §1–§3。
 - SFT：`configs/sft/*.yaml` 500 step × `batch_tokens: 32768` × `grad_accum: 8`
   → **131M token/专家**（`batch_tokens` 是全局 micro-batch，per-step 要再乘 grad_accum）。
   注意这与 §0 的 40–60k 条数据（约 15M token）差 8 倍，等于跑 8 个 epoch；
@@ -137,7 +139,8 @@ AGENTS.md §1.1/§7 的偏离，需写 `doc/decisions.md`。
 
 现有语料按来源成块拼接（pretrain 在 58% 处有一段 code 15.2%）。
 **不要按文件顺序训练**，会变成"先学通用、最后学 tool"；按领域分组 + 打乱 batch 顺序，
-详见 `doc/moe_specialization.md` §4。
+详见 `doc/moe_specialization.md` §4。落地方式是 `data.sources` + `data.lockstep: true`
+（每 step 同域、`metrics.jsonl` 记 `domain_id`），见 `doc/batching.md` §5。
 
 ---
 
@@ -190,30 +193,6 @@ ast.parse 通过 且 至少一个 def
 
 `data/sft_tool.jsonl`（158 MB）与 `data/grpo_tool_train.jsonl`（89 MB）已就绪，
 来源是 MiniMind `sft_t2t_mini` 尾部 13.5 万条 tool 块 + `agent_rl`。
-
-风险：`source` 全是 `agent_rl`、`license: unknown`、中文合成、schema 风格单一。
-
-### 5.2 补强清单
-
-| 数据集 | 规模 | 许可 | 用途 |
-|---|---|---|---|
-| `Salesforce/xlam-function-calling-60k` | 60k | CC-BY-4.0 | 英文 schema + call，GRPO prompt 池首选 |
-| `Team-ACE/ToolACE` | 11,300 | Apache-2.0 | 高质量多轮 |
-| `glaiveai/glaive-function-calling-v2` | 112,960 | Apache-2.0 | 量大取子集 |
-| `NousResearch/hermes-function-calling-v1` | ~11.5k | Apache-2.0 | JSON mode + 单轮 |
-| `nvidia/When2Call` | 15k sft / 9k pref | CC-BY-4.0 | 专治"该不该调用" |
-
-配比：SFT 保持中文 75% + 英文 25%；GRPO prompt 池补到 3–5k，缓解同批 schema 反复刷。
-
-### 5.3 预训练里的 3% tool
-
-不存在现成的"tool 预训练语料"，这一层只要三样：
-
-1. **API 文档文本**（函数名 + 参数 + 描述），来源：ToolBench API 描述、xLAM/ToolACE 的 schema；
-2. **扁平化的 schema→call 文本**：直接拿 `data/sft_tool.jsonl` 的 `tools` 字段拼；
-3. **工具使用叙述**：StackExchange 的 "how do I call X API" 问答。
-
-作用只是把 JSON 语法和"工具调用"语境喂进去；真正的能力靠 SFT/GRPO。
 
 ---
 

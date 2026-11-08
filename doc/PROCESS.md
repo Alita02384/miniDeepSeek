@@ -742,3 +742,26 @@
   - 多卡下按 `1/Σn_i(本地)` 缩放，前提是各 rank token 数相等（packed batch 满足）；
     若将来做变长 shard，需要改成全局 `Σn`（一次 all-reduce）；
   - `target_tokens == 0` 的极端 batch 不会跳过 optimizer step（与改动前行为一致）。
+
+## 2026-11-08 领域同质 batch 与 OPD teacher 锁定
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - `data/mix.py`：`WeightedBatchMixer` 新增 `lockstep` / `batches_per_step`，
+    配额可按 optimizer step 分配；新增 `current_index` / `current_source`
+    与 `_MixerIterator`（迭代器同时暴露当前源）；
+  - `train/run.py`：多源时按 `domain` 命名 source，并把 `grad_accum` 传成 `batches_per_step`；
+  - `train/trainer.py`：每步记录 `domain_id` 到 `metrics.jsonl`；
+  - `data/opd.py::sample_prompts` + `rl/opd.py`：`rl.teacher_lockstep` 开关（默认 false）；
+  - `config.py`：`DataSettings.lockstep`（默认 true）、`RLSettings.teacher_lockstep`；
+  - 新增 `doc/batching.md`，并把 `doc/data_plan_145m.md` 的预算/数据排布指向它。
+- **实现了什么**:
+  - `lockstep=True` 时，连续 `grad_accum` 个 batch 来自同一源（单测断言每 4 个一组同源）；
+  - 多源训练时 `domain_id` 按 step 写入 metrics（单测断言两条记录为 0.0 / 1.0）。
+- **验证**:
+  - `.venv/bin/python -m pytest -q` → **218 passed**（新增 4 条）；
+  - `.venv/bin/ruff check src tests scripts` → All checks passed。
+- **未完成 / 风险**:
+  - 按域打包的 `pretrain_{general,code,tool,mixed}_*.npz` 未生成（依赖 code 数据）；
+  - 262k 配置与课程 `until_step` 未改（仍是 131k）；
+  - OPD teacher 锁定默认关，收益未验证。

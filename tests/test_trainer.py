@@ -423,3 +423,30 @@ def test_training_report_is_written_during_run(tmp_path):
     document = report.read_text(encoding="utf-8")
     assert "<svg" in document
     assert "miniDeepSeek" in document
+
+
+def test_trainer_logs_domain_id_from_mixer(tmp_path):
+    from minideepseek.data.mix import BatchSource, WeightedBatchMixer
+
+    def factory(tag):
+        def generate():
+            for _ in range(4):
+                yield from_sequences([[tag, 1, 2, 3]])
+
+        return generate
+
+    sources = [
+        BatchSource("general", factory(10), weight=0.5),
+        BatchSource("code", factory(20), weight=0.5),
+    ]
+    mixer = WeightedBatchMixer(
+        sources, total_batches=2, seed=0, batches_per_step=1, lockstep=True
+    )
+    config = _config(tmp_path, steps=2, grad_accum=1)
+    trainer, _model = build_trainer(config, lambda: iter(mixer), tokenizer_hash="stub")
+    trainer.train(2)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
+    ]
+    assert [record["domain_id"] for record in records] == [0.0, 1.0]
