@@ -16,6 +16,7 @@ from minideepseek.config import (
 from minideepseek.data.sft import SFTDataset
 from minideepseek.data.sft import iter_batches as sft_batches
 from minideepseek.model import from_sequences
+from minideepseek.train.distributed import scale_gradients
 from minideepseek.train.losses import iter_moe_layers, update_expert_biases
 from minideepseek.train.trainer import build_trainer
 
@@ -80,6 +81,54 @@ def test_gradient_accumulation(tmp_path):
     trainer, _model = build_trainer(config, [batch, batch], tokenizer_hash="stub")
     summary = trainer.train(1)
     assert summary["tokens"] == 2 * int(batch.target_mask.sum())
+
+
+def test_gradient_accumulation_weights_by_target_tokens(tmp_path):
+    """A step's gradient must be the token-weighted mean, not the mean of means.
+
+    The two micro-batches below carry 3 and 5 target tokens, so equal weighting
+    would give batch A 5/8 instead of 3/8 of the influence.
+    """
+    batch_a = from_sequences([[1, 2, 3, 4]], target_masks=[[False, True, True, True]])
+    batch_b = from_sequences(
+        [[5, 6, 7, 8, 9, 10]], target_masks=[[False, True, True, True, True, True]]
+    )
+    config = _config(tmp_path, steps=1, grad_accum=2, balance_loss_coeff=0.0)
+    trainer, model = build_trainer(
+        config, [batch_a, batch_b], tokenizer_hash="stub"
+    )
+    model.model.zero_grad(set_to_none=True)
+
+    metric_a = trainer._forward_backward(batch_a, 0.3, None, micro_index=0)
+    metric_b = trainer._forward_backward(batch_b, 0.3, None, micro_index=1)
+    assert (metric_a.tokens, metric_b.tokens) == (3, 5)
+    scale = 1.0 / (metric_a.tokens + metric_b.tokens)
+    scale_gradients(model.model, scale)
+
+    named = [(name, param) for name, param in model.model.named_parameters() if param.grad is not None]
+    actual = {name: param.grad.detach().clone() for name, param in named}
+
+    # Reference: sum of per-token losses over both micro-batches, then / total tokens.
+    model.model.zero_grad(set_to_none=True)
+    loss_a = trainer.model.compute_loss(batch_a, mtp_weight=0.3).total * metric_a.tokens
+    loss_b = trainer.model.compute_loss(batch_b, mtp_weight=0.3).total * metric_b.tokens
+    grads = torch.autograd.grad(
+        loss_a + loss_b,
+        [param for _, param in model.model.named_parameters() if param.requires_grad],
+        allow_unused=True,
+    )
+    expected = {
+        name: (grad * scale if grad is not None else None)
+        for (name, _), grad in zip(
+            [(n, p) for n, p in model.model.named_parameters() if p.requires_grad], grads
+        )
+    }
+    assert actual, "no gradients were accumulated"
+    for name, value in actual.items():
+        want = expected.get(name)
+        if want is None:
+            continue
+        assert torch.allclose(value, want, atol=1e-6, rtol=1e-4), name
 
 
 def test_sft_trainer(tmp_path):

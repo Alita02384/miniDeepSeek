@@ -288,6 +288,21 @@ def all_reduce_gradients(model: nn.Module, world_size: int) -> None:
         parameter.grad.div_(world_size)
 
 
+def scale_gradients(model: nn.Module, factor: float) -> None:
+    """Multiply every accumulated gradient by ``factor`` in place.
+
+    Used to turn the sum of per-micro-batch token losses into a token-weighted
+    mean once the accumulation loop has finished.  ``DTensor`` shards support
+    the in-place multiply, so this is FSDP2-safe (each rank scales its own
+    shard, no collective needed).
+    """
+    if factor == 1.0:
+        return
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            parameter.grad.mul_(factor)
+
+
 def gather_model_state_dict(
     model: nn.Module, *, all_ranks: bool = False
 ) -> dict[str, torch.Tensor]:

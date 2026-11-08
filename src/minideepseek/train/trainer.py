@@ -53,6 +53,7 @@ from .distributed import (
     init_distributed,
     load_model_state_dict,
     load_optimizer_state_dict,
+    scale_gradients,
 )
 from .losses import (
     capture_gate_scores,
@@ -410,7 +411,6 @@ class Trainer:
         micro_index: int = 0,
     ) -> StepMetrics:
         batch = batch.to(self.device)
-        accum = max(int(self.config.train.grad_accum), 1)
         metrics = StepMetrics(mtp_weight=mtp_weight)
 
         def run_forward() -> tuple[Tensor, StepMetrics]:
@@ -495,7 +495,14 @@ class Trainer:
                 loss=loss_value,
                 metrics=metrics,
             )
-        (total / accum).backward()
+        # ``compute_loss`` returns a per-token *mean*, so scaling by the
+        # micro-batch's main-head target count turns it into the token-level
+        # *sum*.  ``train_step`` divides by the step's total target count after
+        # the accumulation loop, making the step gradient the token-weighted
+        # mean instead of the mean of per-micro-batch means.  The two differ
+        # whenever SFT micro-batches carry different numbers of assistant
+        # tokens (they do: the response-only mask is unevenly distributed).
+        (total * float(metrics.tokens)).backward()
         return metrics
 
     # -- one training step ----------------------------------------------------
@@ -525,6 +532,13 @@ class Trainer:
         self._prefetch_step(accum)
         if self.dist.enabled and self.dist.mode == "ddp":
             all_reduce_gradients(self.model.model, self.dist.world_size)
+        # Gradients currently hold the sum of per-micro-batch token losses.
+        # Divide once by the step's target tokens to get the token-weighted
+        # mean.  Under equal per-rank token counts (packed batches) this equals
+        # the global token mean, matching the DDP average above.
+        target_tokens = sum(int(metric.tokens) for metric in micro_metrics)
+        if target_tokens > 0:
+            scale_gradients(self.model.model, 1.0 / target_tokens)
         grad_norm = clip_grad_norm(self.model.model, self.config.optim.grad_clip)
         self._sync_expert_usage()
         update_expert_biases(self.model.model)

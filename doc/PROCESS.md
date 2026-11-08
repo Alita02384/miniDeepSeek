@@ -719,3 +719,26 @@
   - code 数据尚未提供，code reward 权重只是首版；
   - 3-teacher OPD 未实际跑过；
   - MiniMind 的 KL(ref) / PPO 没有照搬，当前仍是 GRPO/CISPO + 可验证/奖励模型。
+
+## 2026-11-08 梯度累积按 token 数加权
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - `trainer._forward_backward` 由 `(total / accum).backward()` 改为
+    `(total * n_i).backward()`（`n_i` = 该 micro-batch 的主头 target 数）；
+  - `train_step` 在累积循环结束后统一除以 `Σn_i`，新增
+    `train/distributed.py::scale_gradients`（DTensor 原地缩放，FSDP2 安全）；
+  - 新增回归测试 `test_gradient_accumulation_weights_by_target_tokens`。
+- **为什么**: `compute_loss` 返回的是**每个 micro-batch 内的 token 均值**，
+  等权平均只有在各 micro-batch target 数相同时才等于真实的 token 加权均值。
+  SFT 的 response-only mask 使各 micro-batch 的 assistant token 数差异很大
+  （例：3 vs 5 → 等权把 5/8 的影响力给错了批），预训练因为 pack 等长所以原本无偏。
+- **验证**:
+  - `.venv/bin/python -m pytest -q` → **214 passed**（新增 1 条，对照
+    `torch.autograd.grad` 的参考梯度，atol=1e-6）；
+  - `.venv/bin/ruff check src tests scripts` → All checks passed；
+  - 测试里断言两个 micro-batch 的 target 数确实为 3 和 5，排除"恰好相等"的假通过。
+- **未完成 / 风险**:
+  - 多卡下按 `1/Σn_i(本地)` 缩放，前提是各 rank token 数相等（packed batch 满足）；
+    若将来做变长 shard，需要改成全局 `Σn`（一次 all-reduce）；
+  - `target_tokens == 0` 的极端 batch 不会跳过 optimizer step（与改动前行为一致）。
