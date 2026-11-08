@@ -765,3 +765,33 @@
   - 按域打包的 `pretrain_{general,code,tool,mixed}_*.npz` 未生成（依赖 code 数据）；
   - 262k 配置与课程 `until_step` 未改（仍是 131k）；
   - OPD teacher 锁定默认关，收益未验证。
+
+## 2026-11-08 外部语料下载（code + pretrain）
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - 新增 `scripts/fetch_external_data.py`：按 shard 列表从 HF 拉取 17 个数据集，
+    外层 8 次重试 + 断点续传，落 `download/<group>/<dataset>/`，结束后写
+    `download/manifest.json`（bytes + sha256 + 上游 revision）；
+  - `download/README.md`：逐数据集的实测行数、过滤后可用量、6400 词表 token 估算、
+    复现命令、许可与评测边界；
+  - `.gitignore` 忽略 `download/*`，只保留 README；
+  - `doc/decisions.md` D66 记录“按 token 预算取 shard”的口径与 xLAM gated 的影响。
+- **实现了什么**:
+  - 50 个文件 / 21.66 GB，覆盖 pretrain 5 源、code SFT 6 源、code GRPO 2 源、eval 2 源；
+  - 过滤后可用量（6400 词表抽样估算）：英文教育 641M、中文教育 1.23B、
+    预训练 code ~750M（≤200 行口径）、合成教材 902M、math 419M、tool ~65M；
+  - code SFT 可用 ~21.6 万条 / 131M token；GRPO 题池 MBPP 494 + LeetCode 2,641 +
+    TACO EASY 3,940 + open-r1 15,068；
+  - `Salesforce/xlam-function-calling-60k` 实测 gated（401），已从清单移除并记录替代方案。
+- **验证**:
+  - `python scripts/fetch_external_data.py --dry-run` → 50 files / 17 datasets；
+  - 全部 parquet / Arrow stream / json / jsonl 可解析，行数取 parquet metadata 或
+    Arrow batch 汇总；token 用 `minimind/model/tokenizer.json` 每文件抽样 2,000 行估算；
+  - `ruff check scripts/fetch_external_data.py` → All checks passed；
+  - HumanEval 164、HumanEval+ 164、MBPP test 500/257、TACO test 1,000 行数与上游一致。
+- **未完成 / 风险**:
+  - 尚未 tokenize，也没有写 `data/manifests/pretrain_3b.yaml` 的 `available_tokens`；
+  - codeparrot 需 license 白名单过滤，当前 token 估算是“permissive + ≤200 行”口径；
+  - python_code_instructions / open-r1 无 license 声明，正式训练前要确认；
+  - `opencsg/chinese-fineweb-edu` v1 已 deprecated，暂按计划使用 MAP-CC slice。
