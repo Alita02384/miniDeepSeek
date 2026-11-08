@@ -245,6 +245,39 @@ drop if len(turns) < 2 or not assistant content
 
 ---
 
+### 6.3 身份（identity）数据
+
+MiniMind 的语料里教模型说"我是由 **jingyaogong** 开发的高效小参数 AI 模型"，
+这段身份数据在 SFT / GRPO / OPD / eval 里都有残留。已用
+`scripts/scrub_identity.py` 清掉，并换成本项目自己的身份。
+
+**清理口径**：记录文本命中 `jingyaogong | gongjy | minimind | 小参数AI模型`
+就整条删除（多轮记录里只要有一轮命中就删，避免把旧身份留在历史里）。
+
+| 文件 | 删除 | 保留 |
+|---|---|---|
+| `sft_general.jsonl` | 28,136 | 877,582 |
+| `sft_tool.jsonl` | 5,484 | 99,552 |
+| `grpo_general_train.jsonl` | 4 | 17,460 |
+| `grpo_tool_train.jsonl` | 774 | 33,960 |
+| `eval_general.jsonl` | 1 | 1,939 |
+| `eval_tool.jsonl` | 79 | 3,780 |
+| `opd_prompts_general.jsonl` | 4 | 17,460 |
+| `opd_prompts_tool.jsonl` | 464 | 19,536 |
+| `opd_prompts_mixed.jsonl` | 468 | 36,996 |
+
+预训练三个文件 **一条都没有**（`grep -i` 全 0），所以不用动。
+
+**新身份**（17 条，`data/identity_sft.jsonl`，同时追加到 `sft_general.jsonl`）：
+
+```text
+我是 mini-deepseek，一个基于 DeepSeek-V4 架构的小型 MoE 语言模型，由 chengjionghao 训练。
+```
+
+覆盖的问法：你是谁 / 叫什么 / 什么模型 / 谁训练的 / 开发者是谁 / 哪个团队 /
+是不是 DeepSeek 官方 / 和 DeepSeek 什么关系 / 参数多大 / 训练数据 / 能做什么，
+外加 6 条英文问法。刻意**不包含**"你是 MiniMind 吗"这类把旧名字重新引回语料的问法。
+
 ## 7. GRPO 的数据量口径
 
 GRPO 的瓶颈不是题目数，是 **rollout 次数**和**难度分布**。按每步 32 prompt × group 8：

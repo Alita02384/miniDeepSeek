@@ -854,3 +854,18 @@
 - **验证**: `prepare manifest --manifest data/manifests/pretrain_3b.yaml` → errors 为空
   （仅有 packed 路径待服务器生成的 warning）；`wc -l` 与统计一致。
 - **未完成**: 打包仍在服务器上做；本机 `data/tokenization/` 只剩 debug 数据。
+
+## 2026-11-09 清理 MiniMind 身份数据并换成本项目身份
+
+- **做了什么**: 新增 `scripts/scrub_identity.py`；对 9 个 SFT/GRPO/OPD/eval 文件
+  按 `jingyaogong | gongjy | minimind | 小参数AI模型` 整条删除；生成
+  `data/identity_sft.jsonl`（17 条）并追加到 `data/sft_general.jsonl`。
+- **实现了什么**:
+  - 删除：sft_general 28,136 / sft_tool 5,484 / grpo_general 4 / grpo_tool 774 /
+    eval_general 1 / eval_tool 79 / opd_general 4 / opd_tool 464 / opd_mixed 468；
+  - 预训练三个文件复查为 0 命中，未改动；
+  - 新身份："我是 mini-deepseek，基于 DeepSeek-V4 架构的小型 MoE，由 chengjionghao 训练"。
+- **验证**:
+  - `grep -c -i -E 'jingyaogong|gongjy|minimind' data/*.jsonl` → 全部 0；
+  - `encode_sft_record` 对身份样本可编码（66 token，50 个 target，think 空块正常）。
+- **风险**: 身份数据只有 17 条，145M 模型可能记得不牢；需要时可在 OPD/SFT 里加权。
