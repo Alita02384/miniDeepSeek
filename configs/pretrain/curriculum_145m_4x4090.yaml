@@ -1,34 +1,45 @@
 # 145M MoE, 2K -> 4K -> 8K length curriculum on 4x 24 GB cards (4090/3090).
 #
-# Token budget: ~1.2B tokens over ~2.2B available (one pass, no repeats).
-#   2K stage: 1400 steps x 131072 tokens = 0.18B
-#   4K stage: 5000 steps x 131072 tokens = 0.66B
-#   8K stage: 1400 steps x 262144 tokens = 0.37B
+# Token budget: 3.0B over ~5.3B available (one pass, no repeats), 262,144
+# tokens per optimizer step (batch_tokens 16384 x grad_accum 16):
+#   2K stage:  1717 steps x 262144 = 0.450B   (general 369M / code 67.5M / tool 13.5M)
+#   4K stage:  6294 steps x 262144 = 1.650B   (general 1353M / code 247.5M / tool 49.5M)
+#   8K stage:  3433 steps x 262144 = 0.900B   (general 738M / code 135M / tool 26M)
+# Stage ranges are disjoint in the source files (skip_tokens), so the model
+# never sees the same tokens twice.
 # Every step count is cumulative; the trainer stops at `until_step`, so
 # re-running this command resumes where the previous run stopped.
 base_config: configs/pretrain/pretrain_145m.yaml
-out_dir: checkpoints/curriculum_145m
+out_dir: checkpoints/curriculum_145m_3b
 mode: pretrain
 stages:
   - seq_len: 2048
-    tokenized_path: data/tokenization/pretrain_2k.npz
-    until_step: 1400
-    # Global micro-batch: 4 GPUs x 2048 = one 2K pack per rank, warming to two.
-    batch_tokens: 8192
-    batch_tokens_final: 16384
-    batch_warmup_ratio: 0.1
-  - seq_len: 4096
-    tokenized_path: data/tokenization/pretrain_4k.npz
-    until_step: 6400
+    until_step: 1717
     batch_tokens: 16384
     batch_tokens_final: 16384
     batch_warmup_ratio: 0.0
+    sources:
+      - {path: data/tokenization/pretrain_general_2k.npz, weight: 0.82, domain: general}
+      - {path: data/tokenization/pretrain_code_2k.npz, weight: 0.15, domain: code}
+      - {path: data/tokenization/pretrain_tool_2k.npz, weight: 0.03, domain: tool}
+  - seq_len: 4096
+    until_step: 8011
+    batch_tokens: 16384
+    batch_tokens_final: 16384
+    batch_warmup_ratio: 0.0
+    sources:
+      - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
+      - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
+      - {path: data/tokenization/pretrain_tool_4k.npz, weight: 0.03, domain: tool}
   - seq_len: 8192
-    tokenized_path: data/tokenization/pretrain_8k.npz
-    until_step: 7800
+    until_step: 11444
     # One 8K pack per rank; 24 GB needs per-block recompute at this length.
-    batch_tokens: 32768
-    batch_tokens_final: 32768
+    batch_tokens: 16384
+    batch_tokens_final: 16384
     batch_warmup_ratio: 0.0
     index_topk: 2048
     activation_checkpointing: true
+    sources:
+      - {path: data/tokenization/pretrain_general_8k.npz, weight: 0.82, domain: general}
+      - {path: data/tokenization/pretrain_code_8k.npz, weight: 0.15, domain: code}
+      - {path: data/tokenization/pretrain_tool_8k.npz, weight: 0.03, domain: tool}

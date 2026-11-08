@@ -114,17 +114,36 @@ AGENTS.md §1.1/§7 的偏离，需写 `doc/decisions.md`。
 | math | 1.8% | 解题对话 |
 | **tool** | **0.0%** | 完全没有 |
 
-### 3.2 配比
+### 3.2 配比（已落成三个文件）
 
-| 组 | token | 占比 | 来源 | 许可 |
+数据在**数据集这一层**就按域拆好，训练侧只做 batch 级混料：
+
+| 文件 | 内容 | 可用 token（实测） | 用过 | 占比 |
 |---|---|---|---|---|
-| 中文通用 | 1.2B | 40% | 现有 MiniMind `pretrain_t2t.jsonl` | CC-BY-NC-4.0 |
-| 英文教育 | 450M | 15% | `HuggingFaceFW/fineweb-edu` `sample-10BT`（`int_score ≥ 4`） | ODC-By |
-| 中文教育 | 450M | 15% | `opencsg/chinese-fineweb-edu` | Apache-2.0 |
-| **code** | **450M** | **15%** | `codeparrot/codeparrot-clean`（license 白名单）/ `smollm-corpus:python-edu` | permissive / ODC-By |
-| 合成教材 | 300M | 10% | `smollm-corpus:cosmopedia-v2` | ODC-By |
-| **tool** | **90M** | **3%** | API 文档 + schema 扁平文本（见 §5.3） | 混合 |
-| math | 60M | 2% | `finemath-4plus` 少量 | ODC-By |
+| `data/pretrain_general.jsonl` + `data/pretrain_t2t.jsonl` | fineweb-edu(`int_score≥4`) + chinese-fineweb-edu + cosmopedia-v2 + finemath(1/7 抽样) + MiniMind 中文 | 2.06B + 2.2B = **4.26B** | 2.46B | 82% |
+| `data/pretrain_code.jsonl` | codeparrot-clean（license 白名单 / 非自动生成 / ≤200 行 / ≤8KB / alpha≥0.3） | **923M** | 450M | 15% |
+| `data/pretrain_tool.jsonl` | ToolACE + glaive 的 schema→call 文本 | **89M** | 87M | 3% |
+
+> math（finemath）不再单独成域，按 1/7 抽样折进 general，避免"general 里 13% 是数学网页"。
+
+**总量 3B**，2K/4K/8K 三段的 token 区间**互不重叠**（`--skip-tokens` 递进），
+所以课程跑完每个 token 只被看一次：
+
+| 阶段 | token | general / code / tool |
+|---|---|---|
+| 2K | 0.450B | 369M / 67.5M / 13.5M |
+| 4K | 1.650B | 1353M / 247.5M / 49.5M |
+| 8K | 0.900B | 738M / 135M / 26M |
+
+打包产物（每域每长度一套 `.npy` sidecar）：
+
+```text
+data/tokenization/
+├── pretrain_{general,code,tool}_{2k,4k,8k}.npz   # 训练
+├── val_{general,code,tool}_{2k,4k,8k}.npz        # 各 1M token，训练跳过
+```
+
+生成命令：`bash scripts/build_pretrain_packs.sh`；ETL：`python scripts/build_external_data.py`。
 
 ### 3.3 过滤
 

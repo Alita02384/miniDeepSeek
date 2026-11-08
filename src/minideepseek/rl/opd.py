@@ -30,7 +30,7 @@ from ..config import (
     set_seed,
 )
 from ..data.grpo import GRPORecord
-from ..data.opd import OPDPrompt, sample_prompts
+from ..data.opd import OPDPrompt
 from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
 from ..model.config import load_model_settings
 from ..model.wrapper import MiniDeepSeekModel, build_model
@@ -144,19 +144,17 @@ class OPDTrainer:
         set_seed(config.model.seed)
 
     def _sample_prompts(self) -> list[OPDPrompt]:
+        import random
+
+        rng = random.Random(self.config.model.seed + self.step_index)
         # Global prompt budget split across DP ranks; unchanged at world=1.
         world = max(int(self.dist.world_size), 1)
         count = min(
             max(int(self.config.rl.prompts_per_step) // world, 1), len(self.prompts)
         )
-        return sample_prompts(
-            self.prompts,
-            count=count,
-            seed=self.config.model.seed,
-            step=self.step_index,
-            lockstep=bool(self.config.rl.teacher_lockstep),
-            teacher_weights=self.teacher_weights,
-        )
+        indices = list(range(len(self.prompts)))
+        rng.shuffle(indices)
+        return [self.prompts[index] for index in indices[:count]]
 
     def _rollout(self) -> list[RolloutSample]:
         prompts = self._sample_prompts()

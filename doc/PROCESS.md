@@ -795,3 +795,36 @@
   - codeparrot 需 license 白名单过滤，当前 token 估算是“permissive + ≤200 行”口径；
   - python_code_instructions / open-r1 无 license 声明，正式训练前要确认；
   - `opencsg/chinese-fineweb-edu` v1 已 deprecated，暂按计划使用 MAP-CC slice。
+
+## 2026-11-08 外部数据落盘 + 3B/262k 课程 + 流式打包
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - 回滚 OPD teacher 锁定（`rl.teacher_lockstep`、`sample_prompts` 及其测试），
+    保留 `_group_by_teacher` 的 KL 分组与 per-teacher 统计；
+  - 新增 `scripts/build_external_data.py`：把 `download/` 的 17 个数据集转成
+    `data/pretrain_{general,code,tool}.jsonl`、`data/sft_code.jsonl`、
+    `data/grpo_code_train.jsonl`、`data/eval_code.jsonl`；
+  - 新增 `scripts/pack_domain.py` + `scripts/build_pretrain_packs.sh`：按域、按长度
+    流式打包 2K/4K/8K（内存 O(seq_len)）；
+  - `curriculum.py`：`CurriculumStage` 支持 `sources`（每阶段可换域配比）；
+  - `pretrain_145m.yaml` 改为 3B / 262k-per-step / 三源 lockstep；
+    `curriculum_145m_4x4090.yaml` 改为 1717/8011/11444 步、三段数据不重叠；
+  - 新增 `data/manifests/{pretrain_3b,sft_code,grpo_code}.yaml`。
+- **实现了什么**（实测数字）:
+  - `pretrain_general.jsonl` 1,470,192 文档 / 6.14B chars（≈2.06B token）；
+    `pretrain_code.jsonl` 667,497 / 2.14B chars（≈923M token）；
+    `pretrain_tool.jsonl` 124,260 / 266M chars（≈89M token）；
+  - `sft_code.jsonl` 148,723 条 / 60.8M token；`grpo_code_train.jsonl` 3,135 条 /
+    1.2M prompt token；`eval_code.jsonl` 328 条（HumanEval + HumanEval+）；
+  - 分域 val：`val_{general,code,tool}_{2k,4k,8k}.npz` 各 1M token。
+- **验证**:
+  - `.venv/bin/ruff check src tests scripts` → All checks passed；
+  - `pytest tests/test_curriculum.py tests/test_mix.py tests/test_trainer.py` → 全部通过
+    （新增 2 条 curriculum sources 测试）；
+  - 配置解析：三段 tokens = 0.450B / 1.650B / 0.900B，`lockstep=True`，`data.sources` 生效。
+- **未完成 / 风险**:
+  - `pretrain_{general,code,tool}_{2k,4k,8k}.npz` **正在后台打包**（`data/tokenization/pack.log`），
+    本次提交时尚未全部完成；
+  - 训练侧 per-domain val 还未接线（`train.val_path` 只支持单文件）；
+  - `scripts/build_external_data.py` 未做跨源去重（依赖上游去重）。

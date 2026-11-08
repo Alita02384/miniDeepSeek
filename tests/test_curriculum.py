@@ -73,3 +73,37 @@ def test_curriculum_stage_overrides_index_topk(tmp_path):
     # A new stage has its own dataset; do not skip its batches using the
     # previous stage's data counter.
     assert config.train.resume_data is False
+
+
+def test_curriculum_stage_sources_replace_tokenized_path(tmp_path):
+    base = _config()
+    stage = CurriculumStage(
+        seq_len=4096,
+        until_step=20,
+        sources=[
+            {"path": "g.npz", "weight": 0.82, "domain": "general"},
+            {"path": "c.npz", "weight": 0.15, "domain": "code"},
+            {"path": "t.npz", "weight": 0.03, "domain": "tool"},
+        ],
+    )
+    validate_stages([stage])
+    config = _stage_config(
+        base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20
+    )
+    assert config.data.tokenized_path is None
+    assert [(source.domain, source.weight) for source in config.data.sources] == [
+        ("general", 0.82),
+        ("code", 0.15),
+        ("tool", 0.03),
+    ]
+    assert config.data.lockstep is True
+
+
+def test_curriculum_stage_sources_weights_must_sum_to_one():
+    stage = CurriculumStage(
+        seq_len=4096,
+        until_step=10,
+        sources=[{"path": "g.npz", "weight": 0.5, "domain": "general"}],
+    )
+    with pytest.raises(ValueError, match="weights must sum to 1.0"):
+        validate_stages([stage])

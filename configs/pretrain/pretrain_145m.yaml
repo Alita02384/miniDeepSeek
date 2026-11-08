@@ -1,8 +1,12 @@
-# 145M MoE pretraining, sized for 4x RTX 4090/3090 (24 GB) and the local
-# MiniMind corpus in data/pretrain_t2t.jsonl.
+# 145M MoE pretraining — 3B tokens, 262k tokens/step, domain-homogeneous batches.
 #
-# Used as the `base_config` of configs/pretrain/curriculum_145m_4x4090.yaml;
-# every stage overrides seq_len / tokenized_path / steps.
+# Data: per-domain packed datasets built by scripts/build_pretrain_packs.sh
+#   general 2.46B (82%) | code 0.45B (15%) | tool 0.087B (3%)
+# Batch: batch_tokens is the global micro-batch (4 GPUs x 4096); grad_accum 16
+#   gives 262,144 tokens per optimizer step, so 3B tokens = 11,444 steps.
+#   Memory is set by the micro-batch, not by the effective batch.
+# Domains: lockstep=true keeps every step on a single domain so the per-step
+#   router metrics in metrics.jsonl ("domain_id") are already per-domain.
 model_file: configs/model/mini_145m_a60m.yaml
 model:
   flavor: mini_145m_a60m
@@ -25,21 +29,25 @@ schedule:
   min_lr_ratio: 0.1
   decay_start_ratio: 0.8
 data:
-  tokenized_path: data/tokenization/pretrain_4k.npz
-  # Global (all-rank) micro-batch budget: 4 GPUs x 4096 tokens = one 4K pack each.
+  # Global (all-rank) micro-batch: 4 GPUs x 4096 tokens = one 4K pack each.
   batch_tokens: 16384
   batch_tokens_final: 16384
   batch_warmup_ratio: 0.0
   shuffle: true
   seed: 1234
+  lockstep: true
+  sources:
+    - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
+    - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
+    - {path: data/tokenization/pretrain_tool_4k.npz, weight: 0.03, domain: tool}
 train:
-  # Cumulative target of the 4K stage; the curriculum overrides this per stage.
-  steps: 6400
-  grad_accum: 8
+  # 3B tokens / 262,144 tokens per step.
+  steps: 11444
+  grad_accum: 16
   log_every: 10
   ckpt_every: 200
   keep_last_ckpt: 3
-  out_dir: checkpoints/pretrain_145m
+  out_dir: checkpoints/pretrain_3b
   mtp_weight: 0.3
   mtp_weight_final: 0.1
   mtp_decay_ratio: 0.8

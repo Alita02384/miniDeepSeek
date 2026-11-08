@@ -129,34 +129,19 @@ python -m minideepseek.data.prepare pretrain \
 
 ---
 
-## 6. OPD：可选开关，默认关闭
+## 6. OPD：不改，保持混合池
 
-### 6.1 实现
+**结论：不采用"每步只用一个 teacher"。**
 
-`rl.teacher_lockstep: true` 时，`_sample_prompts` 每步只从一个 teacher 的 prompt 池抽；
-`false`（默认）保持"混合池抽样 + 内部按 teacher 分组算 KL"。
+- KL 按 teacher 分组是**正确性要求**（每个 teacher 有自己的 logits/mask），
+  现有实现 `_group_by_teacher` 已经满足；
+- "每步只用一个 teacher"没有公开证据支持它更好，而且和 OPD 的目标相悖：
+  OPD 要的是把多个老师的信号融进同一个学生，混 batch 反而更接近"平均多个老师"；
+  teacher-pure 的每步只朝一个方向走，老师之间可能来回拉扯。
+- 曾实现过 `rl.teacher_lockstep` 开关，2026-11-08 已回滚，避免留下未验证的行为。
 
-```yaml
-rl:
-  teacher_lockstep: false   # 默认
-  teacher_weights: {general: 0.4, code: 0.4, tool: 0.2}
-```
-
-### 6.2 为什么默认关——诚实说明
-
-- **KL 必须按 teacher 分组**：这是正确性要求，不是可选项。现有实现已经做了（`_group_by_teacher`）。
-- **"每步只用一个 teacher"不是公认最优**：多 teacher 混 batch 是主流写法，好处是每步的
-  梯度同时看到多个 teacher 的信号；teacher-pure 的收益（路由更纯、指标更好读）**没有公开证据**，
-  在 145M 上更没测过。
-- **它确实有代价**：每步只对齐一个 teacher，学生更新会朝一个方向走，teacher 之间可能来回拉扯；
-  混 batch 反而更像"平均多个老师"。
-- **它确实有好处**：每步的 KL 曲线、router 统计都只对应一个 teacher，诊断更干净；
-  如果 teacher 很大、需要换入换出，单 teacher 还能省显存。
-
-所以做成开关：先按默认跑，想做 A/B 时再打开，用 `reports/` 里的 per-teacher KL 和三个领域的
-val loss 判断，而不是拍脑袋。
-
----
+**保留的只有统计口径**：per-teacher 的 KL 统计（`kl_by_teacher`）继续记录，
+用于诊断是哪个老师在退化；这不需要改采样方式。
 
 ## 7. 必须配套的两件事
 
@@ -171,9 +156,21 @@ val loss 判断，而不是拍脑袋。
 
 | 项 | 状态 |
 |---|---|
-| 262k 配置 | ❌ 未落地（配置仍是 131k） |
-| `lockstep` 预训练混料 | ✅ 代码完成 + 单测（`test_lockstep_mixer_keeps_each_step_on_one_source`） |
-| `domain_id` 日志 | ✅ 代码完成 + 单测（`test_trainer_logs_domain_id_from_mixer`） |
-| 按域打包的 npz | ❌ 未生成（需要 code/tool 数据先就绪） |
-| OPD `teacher_lockstep` | ✅ 代码完成（默认关） |
-| 分域验证集 | ❌ 未建 |
+| 262k 配置 | ✅ `configs/pretrain/pretrain_145m.yaml`（`batch_tokens 16384` × `grad_accum 16`，11,444 步） |
+| 课程 until_step | ✅ 1717 / 8011 / 11444（0.45B / 1.65B / 0.9B，三段数据不重叠） |
+| `lockstep` 预训练混料 | ✅ 代码 + 单测（`test_lockstep_mixer_keeps_each_step_on_one_source`） |
+| `domain_id` 日志 | ✅ 代码 + 单测（`test_trainer_logs_domain_id_from_mixer`） |
+| 按域打包的 npz | ✅ `data/tokenization/pretrain_{general,code,tool}_{2k,4k,8k}.npz`（`scripts/build_pretrain_packs.sh`） |
+| 分域验证集 | ✅ `data/tokenization/val_{general,code,tool}_{2k,4k,8k}.npz`（各 1M token，训练跳过） |
+| OPD teacher 锁定 | ❌ 已回滚（不采用，见 §6） |
+| 训练侧 val 接线 | ⚠️ 配置里还没有 `val_batches`（`train/run.py` 只接 train） |
+
+### 8.1 流式打包
+
+`build_pretrain_dataset` 会把整份语料读进内存（2B token ≈ 18 GB），这台机器只有
+16 GB，所以新增 `scripts/pack_domain.py`：
+
+- 逐文档 tokenize，按 `pack_documents` 的语义累积（≤`seq_len`、每文档 position 从 0 开始）；
+- 直接追加写 `.npy`，最后回填 header，内存占用 O(seq_len)；
+- 输出与 `load_flat_dataset` 完全兼容；
+- 多输入时**按文档轮转**（general = MiniMind + 外部语料），避免预算被第一个文件吃满。

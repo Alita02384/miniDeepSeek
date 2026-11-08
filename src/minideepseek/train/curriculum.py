@@ -37,8 +37,11 @@ class CurriculumStage(BaseConfig):
     """
 
     seq_len: int
-    tokenized_path: str
-    until_step: int
+    tokenized_path: str = ""
+    until_step: int = 0
+    #: Optional per-domain sources for this stage (domain-homogeneous batches).
+    #: Takes precedence over ``tokenized_path`` when set.
+    sources: list[dict] | None = None
     batch_tokens: int | None = None
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
@@ -74,8 +77,16 @@ def validate_stages(stages: list[CurriculumStage], *, max_context: int = 8192) -
             raise ValueError(
                 f"stage {index}: sequence length must not shrink in a curriculum"
             )
-        if not stage.tokenized_path:
-            raise ValueError(f"stage {index}: tokenized_path is required")
+        if not stage.tokenized_path and not stage.sources:
+            raise ValueError(
+                f"stage {index}: tokenized_path or sources is required"
+            )
+        if stage.sources:
+            total = sum(float(item.get("weight", 1.0)) for item in stage.sources)
+            if abs(total - 1.0) > 1e-6:
+                raise ValueError(
+                    f"stage {index}: sources weights must sum to 1.0, got {total}"
+                )
         if stage.batch_tokens is not None and stage.batch_tokens <= 0:
             raise ValueError(f"stage {index}: batch_tokens must be positive")
         if stage.batch_warmup_ratio is not None and not 0 <= stage.batch_warmup_ratio <= 1:
@@ -99,7 +110,16 @@ def _stage_config(
     config.model.seq_len = int(stage.seq_len)
     if stage.index_topk is not None:
         config.model.index_topk = int(stage.index_topk)
-    config.data.tokenized_path = stage.tokenized_path
+    if stage.sources:
+        from ..config import DataSourceSettings
+
+        config.data.sources = [
+            DataSourceSettings(**dict(item)) for item in stage.sources
+        ]
+        config.data.tokenized_path = None
+    else:
+        config.data.tokenized_path = stage.tokenized_path
+        config.data.sources = []
     if stage.batch_tokens is not None:
         config.data.batch_tokens = int(stage.batch_tokens)
     if stage.batch_tokens_final is not None:
