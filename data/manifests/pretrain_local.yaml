@@ -1,0 +1,13 @@
+# Local/debug-only pretraining mix: the deduped 3B release in one file.
+# Kept for smoke runs that pack a small slice before the server job.
+name: pretrain_local
+seq_len: 8192
+total_tokens: 2460000000
+sources:
+  - name: general
+    path: data/pretrain_general.jsonl
+    domain: general
+    license: mixed
+    weight: 1.0
+    available_tokens: 2460000000
+    max_epochs: 1

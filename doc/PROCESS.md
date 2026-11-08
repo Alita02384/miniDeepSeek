@@ -839,3 +839,18 @@
 - **验证**: `pytest -q` → 221 passed（新增 2 条：trainer 分域 val、curriculum val_sources）；
   `ruff check` 通过；配置解析打印每阶段 val 文件名正确。
 - **未完成**: 打包仍在跑（`data/tokenization/pack.log`）。
+
+## 2026-11-09 停止本机 tokenize，源数据精确去重并裁到 3B
+
+- **做了什么**: 停掉本机打包（删除未完成的 npz）；新增 `scripts/dedup_and_split.py`；
+  把 `pretrain_t2t.jsonl` 合并进 `pretrain_general.jsonl`；code/tool 按预算裁剪；
+  更新 `pretrain_3b`/`pretrain_local` manifest（新增 `tool`/`mixed` 域）。
+- **实现了什么**（实测）:
+  - general：9,939,019 文档 → 精确去重删 10,645（0.1%）→ 4.56B token →
+    哈希裁剪保留 54% → **5,362,052 文档 / 2.46B token**；
+  - code：→ 310,244 文档 / **0.45B token**（去重 6,364，裁剪 350,889）；
+  - tool：→ 114,737 文档 / **0.09B token**（去重 9,237）；
+  - 三个文件合计 3.0B token，`data/pretrain_t2t.jsonl` 已合并删除。
+- **验证**: `prepare manifest --manifest data/manifests/pretrain_3b.yaml` → errors 为空
+  （仅有 packed 路径待服务器生成的 warning）；`wc -l` 与统计一致。
+- **未完成**: 打包仍在服务器上做；本机 `data/tokenization/` 只剩 debug 数据。

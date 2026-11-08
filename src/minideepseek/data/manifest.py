@@ -17,7 +17,7 @@ from typing import Any
 from ..config import BaseConfig, load_config
 from .io import jsonl_fingerprint
 
-DOMAINS = {"general", "world", "code", "math", "medical", "agent"}
+DOMAINS = {"general", "world", "code", "math", "medical", "agent", "tool", "mixed"}
 MAX_EPOCHS = 4
 
 

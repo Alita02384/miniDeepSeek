@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Build per-domain packed datasets for the 3B / 2K-4K-8K curriculum.
 # Token budget: general 2.46B + code 0.45B + tool 0.087B = ~3.0B (disjoint per stage).
+# The three source files are already deduped and capped by scripts/dedup_and_split.py.
+# Run this on the training host (packing tokenizes ~3B tokens; not needed locally).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=.venv/bin/python
 OUT=data/tokenization
 mkdir -p "$OUT"
-GEN="data/pretrain_t2t.jsonl data/pretrain_general.jsonl"
+GEN="data/pretrain_general.jsonl"
 
 pack () { # domain inputs seq_len skip cap out
   local domain=$1 inputs=$2 seq=$3 skip=$4 cap=$5 out=$6

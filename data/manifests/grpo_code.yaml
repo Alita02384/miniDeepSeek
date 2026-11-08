@@ -1,0 +1,13 @@
+# code specialist GRPO prompts (doc/data_plan_145m.md §4.2).
+# 3,135 prompts with rubric.tests: MBPP full/sanitized train + LeetCode train.
+name: grpo_code
+seq_len: 4096
+total_tokens: 1200000
+sources:
+  - name: grpo_code
+    path: data/grpo_code_train.jsonl
+    domain: code
+    license: mixed (CC-BY-4.0 mbpp, Apache-2.0 leetcode)
+    weight: 1.0
+    available_tokens: 1200000
+    max_epochs: 2

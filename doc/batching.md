@@ -182,15 +182,16 @@ val_loss_tool     val_main_loss_tool     val_tokens_tool
 | 课程 until_step | ✅ 1717 / 8011 / 11444（0.45B / 1.65B / 0.9B，三段数据不重叠） |
 | `lockstep` 预训练混料 | ✅ 代码 + 单测（`test_lockstep_mixer_keeps_each_step_on_one_source`） |
 | `domain_id` 日志 | ✅ 代码 + 单测（`test_trainer_logs_domain_id_from_mixer`） |
-| 按域打包的 npz | ✅ `data/tokenization/pretrain_{general,code,tool}_{2k,4k,8k}.npz`（`scripts/build_pretrain_packs.sh`） |
-| 分域验证集 | ✅ `data/tokenization/val_{general,code,tool}_{2k,4k,8k}.npz`（各 1M token，训练跳过） |
+| 按域打包的 npz | ⏳ 在训练服务器上跑 `scripts/build_pretrain_packs.sh`（本机不 tokenize） |
+| 分域验证集 | ⏳ 同一条打包脚本顺带产出 `val_{general,code,tool}_{2k,4k,8k}.npz`（各 1M token，训练跳过） |
 | OPD teacher 锁定 | ❌ 已回滚（不采用，见 §6） |
 | 训练侧 val 接线 | ✅ `train.val_sources` + `CurriculumStage.val_sources`，每域单独评估 |
+| 源数据 | ✅ `data/pretrain_{general,code,tool}.jsonl`，精确去重 + 裁到 3B（`scripts/dedup_and_split.py`） |
 
-### 8.1 流式打包
+### 8.1 流式打包（在服务器上跑）
 
-`build_pretrain_dataset` 会把整份语料读进内存（2B token ≈ 18 GB），这台机器只有
-16 GB，所以新增 `scripts/pack_domain.py`：
+`build_pretrain_dataset` 会把整份语料读进内存（2B token ≈ 18 GB），所以新增
+`scripts/pack_domain.py`（在训练机上跑，本机不建 packed 数据）：
 
 - 逐文档 tokenize，按 `pack_documents` 的语义累积（≤`seq_len`、每文档 position 从 0 开始）；
 - 直接追加写 `.npy`，最后回填 header，内存占用 O(seq_len)；

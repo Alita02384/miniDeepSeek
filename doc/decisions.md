@@ -793,3 +793,17 @@
   内存 O(seq_len)，输出与 `load_flat_dataset` 完全兼容；多输入按文档轮转。
 - **依据**：实测 1.2M tok/s，3B 语料约 40 分钟；同语义（`pack_documents` 的 position/mask 规则）。
 - **影响**：`prepare pretrain` 仍保留（小语料/调试用）；正式 3B 打包走新脚本。
+
+### D68. 本机不做 tokenize；源数据精确去重并裁到 3B
+
+- **原方案**：本机用 `pack_domain.py` 把 2K/4K/8K 的 npz 全部打出来（约 27 GB、
+  40 分钟），`data/pretrain_general.jsonl` 与 `data/pretrain_t2t.jsonl` 并存。
+- **新方案**：
+  - 本机只保留**源数据**，打包移到训练服务器（`scripts/build_pretrain_packs.sh`）；
+  - `pretrain_t2t.jsonl` 合并进 `pretrain_general.jsonl`；
+  - 合并前做**跨源精确去重**（规范化文本 blake2b-128），去重后 4.56B token，
+    按目标 2.46B 做哈希均匀裁剪（保留 54%）；
+  - code 923M → 450M、tool 89M → 90M，三个文件合计 3.0B。
+- **依据**：用户明确不在本机训练；本机 16 GB 内存 + 生成 27 GB 中间产物没有意义。
+- **影响**：`data/tokenization/` 只剩 debug 数据；配置里的 packed 路径改由服务器生成；
+  `build_pretrain_packs.sh` 的 general 输入改为单一 `data/pretrain_general.jsonl`。

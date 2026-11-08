@@ -1,0 +1,13 @@
+# code specialist SFT pool (doc/data_plan_145m.md §4.1).
+# 148,723 records / 60.8M tokens available; the trainer samples 25-35k.
+name: sft_code
+seq_len: 4096
+total_tokens: 12000000
+sources:
+  - name: code_sft
+    path: data/sft_code.jsonl
+    domain: code
+    license: mixed (MIT/Apache-2.0/ODC-By/CC-BY-4.0)
+    weight: 1.0
+    available_tokens: 60800000
+    max_epochs: 1

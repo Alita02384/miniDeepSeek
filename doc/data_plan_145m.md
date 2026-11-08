@@ -116,15 +116,20 @@ AGENTS.md §1.1/§7 的偏离，需写 `doc/decisions.md`。
 
 ### 3.2 配比（已落成三个文件）
 
-数据在**数据集这一层**就按域拆好，训练侧只做 batch 级混料：
+数据在**数据集这一层**就按域拆好，训练侧只做 batch 级混料。三个文件都经过
+**精确去重 + 按预算裁剪**（`scripts/dedup_and_split.py`）：
 
-| 文件 | 内容 | 可用 token（实测） | 用过 | 占比 |
+| 文件 | 内容 | 文档数 | 估计 token | 去重删掉 |
 |---|---|---|---|---|
-| `data/pretrain_general.jsonl` + `data/pretrain_t2t.jsonl` | fineweb-edu(`int_score≥4`) + chinese-fineweb-edu + cosmopedia-v2 + finemath(1/7 抽样) + MiniMind 中文 | 2.06B + 2.2B = **4.26B** | 2.46B | 82% |
-| `data/pretrain_code.jsonl` | codeparrot-clean（license 白名单 / 非自动生成 / ≤200 行 / ≤8KB / alpha≥0.3） | **923M** | 450M | 15% |
-| `data/pretrain_tool.jsonl` | ToolACE + glaive 的 schema→call 文本 | **89M** | 87M | 3% |
+| `data/pretrain_general.jsonl` | MiniMind `pretrain_t2t` + fineweb-edu(`int_score≥4`) + chinese-fineweb-edu + cosmopedia-v2 + finemath(1/7) | 5,362,052 | **2.46B** | 10,645（0.1%） |
+| `data/pretrain_code.jsonl` | codeparrot-clean（license 白名单 / 非自动生成 / ≤200 行 / ≤8KB / alpha≥0.3） | 310,244 | **0.45B** | 6,364 |
+| `data/pretrain_tool.jsonl` | ToolACE + glaive 的 schema→call 文本 | 114,737 | **0.09B** | 9,237 |
 
-> math（finemath）不再单独成域，按 1/7 抽样折进 general，避免"general 里 13% 是数学网页"。
+> 去重是**跨源精确去重**：对规范化文本取 blake2b-128，两个来源共用一个哈希集合。
+> general 的重复率只有 0.1%，说明两批语料基本不重叠；去重后 4.56B token，
+> 按目标 2.46B 做**哈希均匀裁剪**（保留 54%），所以域内比例不变。
+> 估计口径：MiniMind `tok/char=0.743`、外部 general `0.335`、code `0.432`、tool `0.336`
+> （实测样本），**没有在本机跑 tokenizer**——打包在训练服务器上做。
 
 **总量 3B**，2K/4K/8K 三段的 token 区间**互不重叠**（`--skip-tokens` 递进），
 所以课程跑完每个 token 只被看一次：
