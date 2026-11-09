@@ -167,13 +167,17 @@ NPROC_PER_NODE=4 bash scripts/train_curriculum.sh configs/pretrain/curriculum_14
 - **`final` 只表示“这一阶段跑完了”**。被信号打断的阶段只写 `step_NNNNNN`，
   不会写 `final`，否则 pipeline 会把没跑完的 8K 阶段当成完成、直接进 SFT。
 - **硬杀（OOM kill、机器掉电）最多回退 `ckpt_every` 步**。当前 200 步 ×
-  262,144 token ≈ 5,200 万 token ≈ 4×4090 上 6–7 分钟。想更细就调小
-  `ckpt_every`（每个 checkpoint 约 2.3 GB，`keep_last_ckpt: 3`）。
+  262,144 token ≈ 5,200 万 token ≈ 4×4090 上 6–9 分钟。想更细就调小
+  `ckpt_every`（每个 checkpoint 实测约 1.1 GB：模型 557 MB + Muon momentum，
+  `keep_last_ckpt: 3` 约占 3.5 GB）。
 - **单 stage 直接跑**（`train_pretrain.sh configs/pretrain/pretrain_145m.yaml`）
   打开 `train.auto_resume: true` 后同样会自动续，不用手写 `train.resume`。
 - **多卡要所有 rank 都收到信号**（torchrun 前台 Ctrl-C、Slurm
   `--signal=B:TERM`、k8s preStop 都满足）。如果只是单卡 Xid/OOM 掉线，
   其他 rank 会卡在集合通信里：先杀进程，再重跑。
+- **后台跑时别只 kill pipeline 的 PID**：`run_pipeline.sh` 用 `subprocess.run`
+  起训练，SIGTERM 只发给父进程会留下孤儿训练进程。要么前台 Ctrl-C（信号发给
+  整个进程组），要么 `pkill -TERM -f train_curriculum.py` / `kill -- -<PGID>`。
 - **恢复后 step / LR / index_top-k / MTP 权重全部接着走**（都按全局 step 计算）；
   数据顺序会从该阶段 shard 的起点重排（`resume_data: false`），不重复 token
   也不跳 token，但同一 step 看到的数据与未中断时不同。
