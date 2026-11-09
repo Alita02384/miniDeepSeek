@@ -66,21 +66,45 @@ class IndexTopKSchedule:
     """Warm the CSA index from dense-over-compressed to sparse top-k.
 
     Roadmap section 3.5: keep every compressed entry during 4K main training,
-    then shrink to ``final`` over the last ``warmup_ratio`` of steps before the
-    8K sparse phase.
+    then shrink to ``final`` around the 4K -> 8K transition and stay sparse.
+
+    Two modes:
+
+    - **explicit window** (``start_step``/``end_step``): shrink linearly inside
+      that absolute step range, then stay at ``final``.  Curriculum stages use
+      this so the shrink happens at the start of the 8K stage instead of at the
+      end of the whole run.
+    - **legacy ratio**: shrink over the last ``warmup_ratio`` of ``total_steps``.
     """
 
     start: int
     final: int
     warmup_ratio: float = 0.0
+    start_step: int | None = None
+    end_step: int | None = None
 
     def __post_init__(self) -> None:
         if self.start < 1 or self.final < 1:
             raise ValueError("index top-k values must be positive")
         if not 0.0 <= self.warmup_ratio <= 1.0:
             raise ValueError("warmup_ratio must be in [0, 1]")
+        if (self.start_step is None) != (self.end_step is None):
+            raise ValueError("start_step and end_step must be set together")
+        if self.start_step is not None and self.end_step <= self.start_step:
+            raise ValueError(
+                f"end_step must be greater than start_step, got {self.start_step}..{self.end_step}"
+            )
 
     def topk_at(self, step: int, total_steps: int) -> int:
+        if self.start_step is not None and self.end_step is not None:
+            start, end = self.start_step, self.end_step
+            if step <= start:
+                return self.start
+            if step >= end:
+                return self.final
+            progress = (step - start) / (end - start)
+            value = self.start + (self.final - self.start) * progress
+            return max(1, int(round(value)))
         if self.warmup_ratio <= 0 or total_steps <= 0:
             return self.start
         start_step = int(total_steps * (1.0 - self.warmup_ratio))

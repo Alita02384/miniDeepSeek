@@ -27,9 +27,13 @@ def test_curriculum_stage_validation():
     ]
     validate_stages(stages)
     with pytest.raises(ValueError, match="until_step must increase"):
-        validate_stages([stages[0], CurriculumStage(seq_len=4096, tokenized_path="b", until_step=5)])
+        validate_stages(
+            [stages[0], CurriculumStage(seq_len=4096, tokenized_path="b", until_step=5)]
+        )
     with pytest.raises(ValueError, match="must not shrink"):
-        validate_stages([stages[1], CurriculumStage(seq_len=2048, tokenized_path="c", until_step=30)])
+        validate_stages(
+            [stages[1], CurriculumStage(seq_len=2048, tokenized_path="c", until_step=30)]
+        )
     with pytest.raises(ValueError, match="seq_len"):
         validate_stages([CurriculumStage(seq_len=99999, tokenized_path="a", until_step=1)])
 
@@ -75,6 +79,44 @@ def test_curriculum_stage_overrides_index_topk(tmp_path):
     assert config.train.resume_data is False
 
 
+def test_curriculum_stage_index_topk_window(tmp_path):
+    base = _config()
+    stage = CurriculumStage(
+        seq_len=8192,
+        tokenized_path="stage8k.npz",
+        until_step=1000,
+        index_topk=2048,
+        index_topk_final=64,
+        index_topk_warmup_ratio=0.10,
+    )
+    validate_stages([stage])
+    config = _stage_config(
+        base,
+        stage,
+        out_dir=tmp_path,
+        index=2,
+        resume=None,
+        schedule_steps=1000,
+        previous_step=800,
+    )
+    assert config.train.index_topk_final == 64
+    # The stage owns the shrink: the legacy end-of-run ratio is disabled.
+    assert config.train.index_topk_warmup_ratio == 0.0
+    assert config.train.index_topk_start_step == 800
+    assert config.train.index_topk_end_step == 820
+
+
+def test_curriculum_stage_index_topk_window_needs_final():
+    stage = CurriculumStage(
+        seq_len=8192,
+        tokenized_path="stage8k.npz",
+        until_step=10,
+        index_topk_warmup_ratio=0.1,
+    )
+    with pytest.raises(ValueError, match="needs index_topk_final"):
+        validate_stages([stage])
+
+
 def test_curriculum_stage_sources_replace_tokenized_path(tmp_path):
     base = _config()
     stage = CurriculumStage(
@@ -87,9 +129,7 @@ def test_curriculum_stage_sources_replace_tokenized_path(tmp_path):
         ],
     )
     validate_stages([stage])
-    config = _stage_config(
-        base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20
-    )
+    config = _stage_config(base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20)
     assert config.data.tokenized_path is None
     assert [(source.domain, source.weight) for source in config.data.sources] == [
         ("general", 0.82),
@@ -121,9 +161,7 @@ def test_curriculum_stage_val_sources(tmp_path):
         ],
     )
     validate_stages([stage])
-    config = _stage_config(
-        base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20
-    )
+    config = _stage_config(base, stage, out_dir=tmp_path, index=0, resume=None, schedule_steps=20)
     assert [source.domain for source in config.train.val_sources] == [
         "general",
         "code",

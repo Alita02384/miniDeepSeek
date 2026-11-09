@@ -807,3 +807,25 @@
 - **依据**：用户明确不在本机训练；本机 16 GB 内存 + 生成 27 GB 中间产物没有意义。
 - **影响**：`data/tokenization/` 只剩 debug 数据；配置里的 packed 路径改由服务器生成；
   `build_pretrain_packs.sh` 的 general 输入改为单一 `data/pretrain_general.jsonl`。
+
+### D67. 8K 阶段的 top-k 收缩从“全程最后 5%”改到“阶段开头 10%”
+
+- **原方案**：`pretrain_145m.yaml` 的 `index_topk_warmup_ratio: 0.05` 按
+  `schedule_steps`（全程 11,444 步）计算，实际只在 step 10,872–11,444 收缩；
+  而 8K stage 的 `index_topk: 2048` 在 8K 正好是全部 CSA 压缩项（8192/4），
+  等于 **dense-over-compressed**。结果：8K 阶段 95% 的步数仍是 dense，
+  top-k=64 的稀疏路径只跑了约 5%（~150M token），与 roadmap §3.5 的
+  “4K→8K 预热 2–5% tokens，8K 用 sparse top-k=64 跑 15–20%”不符。
+- **新方案**：
+  - `IndexTopKSchedule` 支持显式窗口 `start_step`/`end_step`（优先于旧的
+    end-of-run `warmup_ratio`）；
+  - `TrainSettings` 增加 `index_topk_start_step`/`index_topk_end_step`；
+  - `CurriculumStage` 增加 `index_topk_final` + `index_topk_warmup_ratio`：窗口
+    从**本阶段首步**起算，按阶段步数比例收缩；
+  - `curriculum_145m_4x4090.yaml` 的 8K 阶段：前 10%（343 步 / ~90M token）
+    从 2048 线性收到 64，其余 3,090 步（~810M token）保持 top-k=64。
+- **依据**：roadmap §3.5 的稀疏预热与验证目标；4K 阶段仍保持 dense（1024），
+  不做收缩。
+- **影响**：8K 阶段约 27% 的全程 token 在 sparse 路径上（原为 5%）；4K 阶段
+  行为不变；`IndexTopKSchedule` 的旧 ratio 语义保留，standalone 的
+  `pretrain_145m.yaml` 仍按 end-of-run 收缩。

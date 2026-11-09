@@ -879,3 +879,27 @@
 - **验证**: 旧标记 `jingyaogong|gongjy|minimind` 全库 0 命中；
   抽样编码正常（66/50、54/37、48/36 token/target）。
 - **未完成**: 69 条仍是"小模型够用"的量级，若身份不稳可在 SFT 混料里加权。
+
+## 2026-11-09 8K 阶段真正跑 sparse top-k
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - `IndexTopKSchedule` 增加显式窗口 `start_step`/`end_step`，优先于旧的
+    end-of-run `warmup_ratio`；
+  - `TrainSettings` 增加 `index_topk_start_step`/`index_topk_end_step`；
+  - `CurriculumStage` 增加 `index_topk_final` / `index_topk_warmup_ratio`，
+    `_stage_config` 按“本阶段首步 + 阶段比例”生成绝对窗口；
+  - `curriculum_145m_4x4090.yaml` 8K 阶段：2048 → 64 在前 10%（343 步）
+    线性收缩，其后保持 sparse。
+- **为什么**: 原 schedule 以全程 11,444 步为分母，只在 10,872–11,444 收缩，
+  8K 阶段 95% 仍是 dense（2048 = 8K 全部 CSA 项），稀疏路径只跑了 5%。
+- **验证**:
+  - `pytest -q` → **225 passed**（新增 4 条：显式窗口数学、窗口校验、
+    curriculum 窗口接线、trainer 应用窗口）；
+  - 配置解析：`stage2 seq=8192 model_topk=2048 final=64 window=8011..8354`；
+  - `ruff check src tests scripts` → All checks passed。
+- **未完成 / 风险**:
+  - 稀疏段占比随 8K 阶段比例变化（当前 ~27% 全程 token），若把 8K 降到 25%
+    会降到 ~22%；
+  - 4K 推理默认 top-k=1024（dense），与 8K 的 64 不同；如需完全一致，4K 评测
+    可显式设 64 做对照。

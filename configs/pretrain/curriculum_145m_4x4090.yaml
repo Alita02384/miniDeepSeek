@@ -5,6 +5,8 @@
 #   2K stage:  1717 steps x 262144 = 0.450B   (general 369M / code 67.5M / tool 13.5M)
 #   4K stage:  6294 steps x 262144 = 1.650B   (general 1353M / code 247.5M / tool 49.5M)
 #   8K stage:  3433 steps x 262144 = 0.900B   (general 738M / code 135M / tool 26M)
+# The 8K stage warms the CSA index from dense-over-compressed (2048) to sparse
+# top-k 64 over its first 10% (~343 steps), then stays sparse for the rest.
 # Stage ranges are disjoint in the source files (skip_tokens), so the model
 # never sees the same tokens twice.
 # Every step count is cumulative; the trainer stops at `until_step`, so
@@ -45,7 +47,14 @@ stages:
     batch_tokens: 16384
     batch_tokens_final: 16384
     batch_warmup_ratio: 0.0
+    # Dense-over-compressed at the start (2048 = every CSA entry at 8K), then
+    # shrink linearly to the sparse top-k 64 over the first 10% of the stage
+    # (~343 steps, ~90M tokens = 3% of the run) and stay sparse for the rest.
+    # This is the 4K -> 8K indexer warmup from roadmap section 3.5; the base
+    # config's end-of-run shrink is disabled for this stage.
     index_topk: 2048
+    index_topk_final: 64
+    index_topk_warmup_ratio: 0.10
     activation_checkpointing: true
     sources:
       - {path: data/tokenization/pretrain_general_8k.npz, weight: 0.82, domain: general}

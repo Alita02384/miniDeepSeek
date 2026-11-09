@@ -395,6 +395,11 @@ class TrainSettings(BaseConfig):
     # Sparse-index warmup (roadmap section 3.5); None disables scheduling.
     index_topk_final: int | None = None
     index_topk_warmup_ratio: float = 0.0
+    # Explicit shrink window in global (cumulative) steps.  When set it takes
+    # precedence over ``index_topk_warmup_ratio``; curriculum stages use it so
+    # the 8K stage shrinks at its start instead of at the end of the run.
+    index_topk_start_step: int | None = None
+    index_topk_end_step: int | None = None
     # Curriculum stages keep one global schedule across resumes.
     schedule_steps: int | None = None
 

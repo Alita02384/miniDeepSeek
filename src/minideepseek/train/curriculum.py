@@ -48,6 +48,14 @@ class CurriculumStage(BaseConfig):
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
     index_topk: int | None = None
+    #: Sparse target for this stage.  When set, the stage shrinks from
+    #: ``index_topk`` (or the model default) to this value and then stays
+    #: sparse; the legacy end-of-run shrink is disabled for the stage.
+    index_topk_final: int | None = None
+    #: Fraction of *this stage* spent shrinking to ``index_topk_final``.  The
+    #: window starts at the stage's first global step, so a 4K -> 8K transition
+    #: warms at the beginning of the 8K stage instead of at the end of the run.
+    index_topk_warmup_ratio: float | None = None
     #: Per-stage activation checkpointing (the 8K stage needs it on 24 GB cards).
     activation_checkpointing: bool | None = None
 
@@ -72,29 +80,30 @@ def validate_stages(stages: list[CurriculumStage], *, max_context: int = 8192) -
             )
         if stage.until_step <= previous_step:
             raise ValueError(
-                f"stage {index}: until_step must increase; "
-                f"{stage.until_step} <= {previous_step}"
+                f"stage {index}: until_step must increase; {stage.until_step} <= {previous_step}"
             )
         if stage.seq_len < previous_len:
-            raise ValueError(
-                f"stage {index}: sequence length must not shrink in a curriculum"
-            )
+            raise ValueError(f"stage {index}: sequence length must not shrink in a curriculum")
         if not stage.tokenized_path and not stage.sources:
-            raise ValueError(
-                f"stage {index}: tokenized_path or sources is required"
-            )
+            raise ValueError(f"stage {index}: tokenized_path or sources is required")
         if stage.sources:
             total = sum(float(item.get("weight", 1.0)) for item in stage.sources)
             if abs(total - 1.0) > 1e-6:
-                raise ValueError(
-                    f"stage {index}: sources weights must sum to 1.0, got {total}"
-                )
+                raise ValueError(f"stage {index}: sources weights must sum to 1.0, got {total}")
         if stage.batch_tokens is not None and stage.batch_tokens <= 0:
             raise ValueError(f"stage {index}: batch_tokens must be positive")
         if stage.batch_warmup_ratio is not None and not 0 <= stage.batch_warmup_ratio <= 1:
             raise ValueError(f"stage {index}: batch_warmup_ratio must be in [0, 1]")
         if stage.index_topk is not None and stage.index_topk <= 0:
             raise ValueError(f"stage {index}: index_topk must be positive")
+        if stage.index_topk_final is not None and stage.index_topk_final <= 0:
+            raise ValueError(f"stage {index}: index_topk_final must be positive")
+        if stage.index_topk_warmup_ratio is not None and not (
+            0 <= stage.index_topk_warmup_ratio <= 1
+        ):
+            raise ValueError(f"stage {index}: index_topk_warmup_ratio must be in [0, 1]")
+        if stage.index_topk_warmup_ratio and stage.index_topk_final is None:
+            raise ValueError(f"stage {index}: index_topk_warmup_ratio needs index_topk_final")
         previous_step = stage.until_step
         previous_len = stage.seq_len
 
@@ -107,17 +116,28 @@ def _stage_config(
     index: int,
     resume: str | None,
     schedule_steps: int,
+    previous_step: int = 0,
 ) -> TrainConfig:
     config = TrainConfig.from_dict(base.to_dict())
     config.model.seq_len = int(stage.seq_len)
     if stage.index_topk is not None:
         config.model.index_topk = int(stage.index_topk)
+    if stage.index_topk_final is not None:
+        config.train.index_topk_final = int(stage.index_topk_final)
+        # The stage owns the shrink; do not also inherit the base run's
+        # end-of-run window.
+        config.train.index_topk_warmup_ratio = 0.0
+        config.train.index_topk_start_step = None
+        config.train.index_topk_end_step = None
+        if stage.index_topk_warmup_ratio:
+            span = max(int(stage.until_step) - int(previous_step), 1)
+            steps = max(1, int(round(span * float(stage.index_topk_warmup_ratio))))
+            config.train.index_topk_start_step = int(previous_step)
+            config.train.index_topk_end_step = int(previous_step) + steps
     if stage.sources:
         from ..config import DataSourceSettings
 
-        config.data.sources = [
-            DataSourceSettings(**dict(item)) for item in stage.sources
-        ]
+        config.data.sources = [DataSourceSettings(**dict(item)) for item in stage.sources]
         config.data.tokenized_path = None
     else:
         config.data.tokenized_path = stage.tokenized_path
@@ -136,9 +156,7 @@ def _stage_config(
     if stage.val_sources:
         from ..config import DataSourceSettings
 
-        config.train.val_sources = [
-            DataSourceSettings(**dict(item)) for item in stage.val_sources
-        ]
+        config.train.val_sources = [DataSourceSettings(**dict(item)) for item in stage.val_sources]
     if stage.activation_checkpointing is not None:
         config.train.activation_checkpointing = bool(stage.activation_checkpointing)
     config.train.steps = int(stage.until_step)
@@ -180,6 +198,7 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
     out_dir = Path(settings.out_dir)
     reports: list[dict[str, Any]] = []
     resume: str | None = None
+    previous_step = 0
     final_step = int(settings.stages[-1].until_step)
     for index, stage in enumerate(settings.stages):
         stage_dir = out_dir / f"stage_{index:02d}_seq{stage.seq_len}"
@@ -191,6 +210,7 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
             index=index,
             resume=str(own) if own is not None else resume,
             schedule_steps=final_step,
+            previous_step=previous_step,
         )
         from .run import run as run_stage
 
@@ -205,4 +225,5 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
             }
         )
         resume = report.get("checkpoint")
+        previous_step = int(stage.until_step)
     return reports

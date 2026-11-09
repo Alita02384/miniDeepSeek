@@ -198,6 +198,8 @@ class Trainer:
                 start=int(current_topk),
                 final=int(config.train.index_topk_final),
                 warmup_ratio=config.train.index_topk_warmup_ratio,
+                start_step=config.train.index_topk_start_step,
+                end_step=config.train.index_topk_end_step,
             )
         self.step = 0
         self._batch_factory = (
