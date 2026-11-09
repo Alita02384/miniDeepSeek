@@ -1006,3 +1006,24 @@
     估算，PROCESS 2026-11-07 估 12–15 GiB）；runbook 已加 `measure_activation_budget`
     预检与 `index_topk=1024` 回退；
   - 换卡数续跑时 `data_batches` 的跳过量只是近似。
+
+## 2026-11-10
+
+- commit: 931be68 perf: micro-batch 8192 + attention 边界 bf16 + MoE 排序 dispatch
+- 做了什么: 按「micro-batch → attention dtype → MoE dispatch」改了三处，并改了
+  `autoconfig_145m.py` 的默认 per-rank token 数。
+- 实现了什么:
+  - `benchmark.py` 4K×1：6,220 → **7,357 tok/s（+18%）**；4K×2：9,304 → **11,910
+    tok/s（+28%）**，峰值 11.9 GiB；对照原始 4K×1 的 6,220 是 **1.92x**；
+  - 16384 token（4K×4 / 2K×8）在 20.4 GiB 处 OOM，确认 8192 是 24 GB 卡上限；
+  - 三阶段 `batch_tokens=8192`、`grad_accum=32`，每步 token 仍 262,144；
+  - 新增 fp32 输入下 fused-vs-reference 测试、MoE 排序 dispatch 的 fp32/bf16
+    等价测试（含空专家分支）。
+- 验证: 本地 `pytest -q` **242 passed, 2 skipped**；4090 上
+  `tests/test_moe_dispatch.py tests/test_gather_attention.py` **6 passed**；
+  benchmark 数字见上。
+- 未完成 / 风险:
+  - trainer 每个 micro-batch 仍有 8 次 `float()` 同步（下一步，改完需重新 A/B）；
+  - mHC 的 20 次 Sinkhorn 仍是纯 eager，未融合；
+  - 2K 阶段的 bf16 shape 首次仍要十几分钟 Triton 编译（缓存后不再付）；
+  - 8K 阶段（8192/rank + activation checkpointing）未在 24 GB 上实测。
