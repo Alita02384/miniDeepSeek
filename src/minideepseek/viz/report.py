@@ -141,14 +141,22 @@ def _add_series_any(
     keys: Sequence[str],
     label: str,
     *,
+    fallback_label: str | None = None,
     color: str | None = None,
     kind: str = "line",
     dash: str | None = None,
 ) -> bool:
-    """Plot the first of ``keys`` that has data (new name, then legacy name)."""
+    """Plot the first of ``keys`` that has data (new name, then legacy name).
+
+    ``fallback_label`` relabels the series when an older key is used: the legacy
+    flat metrics mixed hash and learned routers, so calling them "learned" would
+    be a lie.
+    """
     key = _first_present(records, keys)
     if key is None:
         return False
+    if fallback_label is not None and key != keys[0]:
+        label = fallback_label
     return _add_series(chart, records, key, label, color=color, kind=kind, dash=dash)
 
 
@@ -288,6 +296,7 @@ def _router_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
         records,
         ("router_learned_expert_load_max_over_mean", "expert_load_max_over_mean"),
         "learned: max/mean",
+        fallback_label="all: max/mean (legacy)",
         color=PALETTE[0],
     )
     added |= _add_series_any(
@@ -298,6 +307,7 @@ def _router_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
             "expert_load_max_over_mean_worst",
         ),
         "learned: worst layer",
+        fallback_label="all: worst (legacy)",
         color=PALETTE[1],
     )
     added |= _add_series_any(
@@ -325,6 +335,7 @@ def _routing_health_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
         records,
         ("router_learned_routing_entropy_normalized", "routing_entropy_normalized"),
         "learned (1 = uniform)",
+        fallback_label="all layers (legacy)",
         color=PALETTE[2],
     )
     _add_series_any(

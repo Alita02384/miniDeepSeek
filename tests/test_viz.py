@@ -280,3 +280,12 @@ def test_report_still_renders_legacy_flat_router_keys(tmp_path):
     assert "MoE expert load" in document
     assert "Routing entropy" in document
     assert "Expert load, Layer × Expert" not in document  # no snapshots in old files
+
+
+def test_report_labels_legacy_router_series_as_mixed(tmp_path):
+    """A flat ``metrics.jsonl`` must not be labelled "learned" -- it mixed both."""
+    out = tmp_path / "report.html"
+    build_report(_records(), out)
+    document = out.read_text(encoding="utf-8")
+    assert "all: max/mean (legacy)" in document
+    assert "learned: max/mean" not in document
