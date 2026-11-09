@@ -1075,3 +1075,33 @@
 - 未完成 / 风险: 训练端真实收益待 step 10 后的 tok/s 确认；2K 阶段 bf16 的
   Triton 首次编译仍需 10–20 分钟；`torch._grouped_mm`（torchtitan 的 MoE 做法）
   实测 1.46x 但整步仅 ~0.7%，暂不接。
+
+## 2026-11-10
+
+- commit: b2b84af feat: 路由可观测性——hash/learned 拆分、逐层×逐专家快照、bias 轨迹
+- 做了什么: 把「采了但没留下」的路由数据落盘，并修了一个路由指标的正确性问题。
+- 实现了什么:
+  - `routing_metrics` 按 `is_hash` 拆成 `router_learned_*` / `router_hash_*` 两组
+    （原来 2 个哈希层和 6 个学习层被平均进同一个 max/mean）。实测 145M 配置：
+    学习层 1.53、哈希层 1.11、混合 1.43，**学习层真实不均衡被稀释 0.10**；
+  - 新增 `min_relative_load`：6 专家 top-2 下 `experts_used_fraction` 恒为 1.0，
+    没有信息量；最小份额才是有信息的那一端；
+  - 新增 `train.router_every`（预训练配置设 50）：把 `{router: {hash, counts[E],
+    bias[E]}}` 跨 micro-batch 求和后写进 `metrics.jsonl`。`record_routing` 本来
+    每步都在跑，但 `routing_metrics` 压成 5 个标量就丢了；
+  - 顺带记录 `expert_bias_E`——aux-loss-free 均衡器的全部状态，此前一个数都没有；
+  - 顺带记录 `domain_name`（mixer 的 `current_source`），使快照天然可按领域聚合；
+  - report.html 新增 Layer × Expert 热力图、Domain × Expert 富集、Router bias 轨迹；
+    卡片 "experts used" → "min load share"；旧 metrics.jsonl 仍可渲染（key 回落）。
+- 验证:
+  - 本地 `pytest tests/ -q` → **260 passed, 2 skipped**；
+    `ruff check src/ tests/ scripts/` 全绿（顺便修了 HEAD 上就存在的 B905 与 F401）；
+  - 服务器 `pytest tests/test_routing.py tests/test_viz.py` → **27 passed**；
+  - 服务器用旧 metrics.jsonl（无 `router_layers`）仍生成 14 面板；
+  - 用 145M 真实模型（CPU）跑 12 个 step 生成真实 routing 报告：8 个 router
+    （L0/L1 为 hash）、L6/E0=1.40 vs E4=0.68 的初始化不均衡、bias spread
+    0.002→0.018 单调上升。
+- 未完成 / 风险:
+  - **没在 4090 上跑过带 `router_every` 的真实训练**，CUDA 数值路径未验证；
+  - 未做 update-to-weight ratio / expert 梯度范数 / expert 输出贡献 E[g·||h||]；
+  - 哈希层的"专业化"是 `tid2eid` 表的性质，不能当成学出来的分工来解读。
