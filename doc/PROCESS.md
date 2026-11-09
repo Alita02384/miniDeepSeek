@@ -869,3 +869,13 @@
   - `grep -c -i -E 'jingyaogong|gongjy|minimind' data/*.jsonl` → 全部 0；
   - `encode_sft_record` 对身份样本可编码（66 token，50 个 target，think 空块正常）。
 - **风险**: 身份数据只有 17 条，145M 模型可能记得不牢；需要时可在 OPD/SFT 里加权。
+
+## 2026-11-09（续）身份数据扩到 69 条
+
+- **做了什么**: `IDENTITY_PAIRS` 从 17 条扩到 69 条（6 组问法、中英各半），
+  重跑 `scripts/scrub_identity.py`（幂等：先删旧的 `source=identity` 再追加）。
+- **实现了什么**: `data/identity_sft.jsonl` 69 条；`sft_general.jsonl` 末尾恰好 69 条
+  identity 记录（旧的 17 条已替换）。
+- **验证**: 旧标记 `jingyaogong|gongjy|minimind` 全库 0 命中；
+  抽样编码正常（66/50、54/37、48/36 token/target）。
+- **未完成**: 69 条仍是"小模型够用"的量级，若身份不稳可在 SFT 混料里加权。

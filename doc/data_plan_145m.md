@@ -268,15 +268,16 @@ MiniMind 的语料里教模型说"我是由 **jingyaogong** 开发的高效小�
 
 预训练三个文件 **一条都没有**（`grep -i` 全 0），所以不用动。
 
-**新身份**（17 条，`data/identity_sft.jsonl`，同时追加到 `sft_general.jsonl`）：
+**新身份**（69 条，`data/identity_sft.jsonl`，同时追加到 `sft_general.jsonl`）：
 
 ```text
 我是 mini-deepseek，一个基于 DeepSeek-V4 架构的小型 MoE 语言模型，由 chengjionghao 训练。
 ```
 
-覆盖的问法：你是谁 / 叫什么 / 什么模型 / 谁训练的 / 开发者是谁 / 哪个团队 /
-是不是 DeepSeek 官方 / 和 DeepSeek 什么关系 / 参数多大 / 训练数据 / 能做什么，
-外加 6 条英文问法。刻意**不包含**"你是 MiniMind 吗"这类把旧名字重新引回语料的问法。
+覆盖 6 组问法，中英各半：身份/名字、训练者/开发者、架构/规模/上下文、
+与 DeepSeek 的关系、能力边界、日常寒暄。每题答案长度不同（短问短答），
+刻意**不包含**"你是 MiniMind 吗"这类把旧名字重新引回语料的问法，
+也不写无法确认的细节（如具体算力时长）。
 
 ## 7. GRPO 的数据量口径
 
