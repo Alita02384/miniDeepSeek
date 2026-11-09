@@ -110,10 +110,42 @@ def _load_attn_gym():
         try:
             from attn_gym.sparse.gather_attn import AuxRequest, gather_attn
 
+            if os.environ.get("MINIDEEPSEEK_ATTN_AUTOTUNE", "1") == "0":
+                _limit_attn_gym_autotune()
             _ATTN_GYM_IMPL = (gather_attn, AuxRequest)
         except Exception:  # pragma: no cover - optional dependency
             _ATTN_GYM_IMPL = False
     return _ATTN_GYM_IMPL or None
+
+
+def _limit_attn_gym_autotune() -> None:
+    """Keep only the first autotune candidate per attn_gym Triton kernel.
+
+    Triton compiles every autotune candidate on first launch, which costs tens
+    of minutes for the gather-attention kernels on consumer GPUs.  The launch
+    shapes are fixed for a stage, so a single candidate is enough; enabling
+    ``MINIDEEPSEEK_ATTN_AUTOTUNE=0`` trades a few percent of kernel time for a
+    much shorter first step.  Invalid candidates raise at launch and the
+    dispatcher falls back to the torch reference.
+    """
+    try:
+        from attn_gym._backends.triton.tune import TritonTuner
+        from attn_gym.sparse.gather_attn.impl.triton import backward, forward
+
+        for module in (forward, backward):
+            for name in dir(module):
+                tuner = getattr(module, name)
+                if not isinstance(tuner, TritonTuner):
+                    continue
+                configs = list(getattr(tuner, "_configs", []))
+                if len(configs) <= 1:
+                    continue
+                tuner._configs = configs[:1]
+                tuner._candidates = {
+                    id(configs[0]): tuple(sorted(configs[0].all_kwargs().items()))
+                }
+    except Exception:  # pragma: no cover - keep upstream autotuning on failure
+        pass
 
 
 def _fused_gather_attention(
