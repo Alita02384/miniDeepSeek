@@ -1027,3 +1027,35 @@
   - mHC 的 20 次 Sinkhorn 仍是纯 eager，未融合；
   - 2K 阶段的 bf16 shape 首次仍要十几分钟 Triton 编译（缓存后不再付）；
   - 8K 阶段（8192/rank + activation checkpointing）未在 24 GB 上实测。
+
+## 2026-11-10
+
+- commit: c30ae40 feat: 训练报告补分领域验证/调度/稳定性面板，并打开 report_every
+- 做了什么: 训练可视化补全。`viz/report.py` 从 10 个面板加到最多 17 个，卡片从 10 个
+  加到 12 个；`trainer._write_report` 改为从磁盘 metrics.jsonl 取数；base 配置打开
+  `report_every: 200`。
+- 实现了什么:
+  - 新面板：分领域验证损失（`val_loss_<domain>` 各一条，聚合 `val_loss` 作参考）、
+    Schedules（`mtp_weight` + `lr_factor`）、CSA index top-k（`index_topk`）、
+    Timing（`step_time_s` + `eta_seconds`，对数轴）、SwiGLU activation magnitude
+    （`swiglu_*_abs_max`）、Stability events（`loss_spike`/`ar_active`/`rollback`，
+    只在事件发生时出现，同一 step 的多个 flag 只算一步）；
+  - 新卡片：ETA（`45s`/`3.4h`/`2.1d`）、CSA top-k；
+  - 续跑不再截断报告：原实现用 `logger.history` 渲染，`auto_resume` 后内存为空，
+    report.html 会丢掉中断前的所有步；
+  - `build_report` 的返回值新增 `val_domains`，`plot_training.py` 会把它打出来。
+- 验证:
+  - 本地 `pytest tests/ -q` → **248 passed, 2 skipped**；`ruff check` 通过
+    （`ruff format --diff` 对该文件本来就有既有差异，没有顺手重排）；
+  - 服务器上用真实 metrics.jsonl（step 0–30，4 条记录）生成 **14 面板**；
+  - 1203 条合成数据（3 领域 + 2 次尖峰）生成 **17 面板**，
+    `val_domains=[code, general, tool]`，`Stability events (2 steps)`；
+  - 服务器上 `pytest tests/test_viz.py tests/test_trainer.py` → **34 passed**；
+  - 跨阶段合并（`cat stage_0*/metrics.jsonl` → `plot_training.py`）实测可用。
+- 未完成 / 风险:
+  - `report_every` 的真实训练路径只在 CPU debug 模型上验证过，**没在 4090 上跑**；
+  - `val_main_loss_<domain>` 已经记录了但没画（比 `val_loss_<domain>` 更接近 ppl 口径）；
+  - 三个 stage 各一份 report.html，跨阶段视图只能手工 cat；
+  - 服务器上 `configs/pretrain/generated/*.yaml` 已按 `autoconfig_145m.py --gpus 1`
+    重新生成（micro 8192 / grad_accum 32，与 931be68 的默认值一致），
+    上一次运行用的是旧的 4096/64，续跑时 `data_batches` 跳过量只是近似。
