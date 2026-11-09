@@ -25,9 +25,19 @@ _CARD_KEYS = (
     ("grad_norm", "grad norm", "latest"),
     ("tokens_per_sec", "throughput", "latest"),
     ("mem_peak_mb", "peak memory", "latest"),
+    ("eta_seconds", "ETA", "latest"),
+    ("index_topk", "CSA top-k", "latest"),
     ("experts_used_fraction", "experts used", "latest"),
     ("routing_entropy_normalized", "router entropy", "latest"),
     ("swiglu_gate_clamp_rate", "SwiGLU clamp", "latest"),
+)
+
+#: Rare 0/1 stability flags.  Plotted only when they fire, so a clean run shows
+#: no panel at all instead of a flat line of zeros.
+_STABILITY_KEYS = (
+    ("loss_spike", "loss spike"),
+    ("ar_active", "anticipatory AR"),
+    ("rollback", "rollback"),
 )
 
 _TABLE_KEYS = (
@@ -152,9 +162,54 @@ def _validation_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     return chart
 
 
+def _val_domains(records: Sequence[dict[str, Any]]) -> list[str]:
+    """Domain suffixes of the per-domain validation keys (``val_loss_<name>``)."""
+    prefix = "val_loss_"
+    names = {
+        key[len(prefix) :]
+        for record in records
+        for key in record
+        if key.startswith(prefix) and key[len(prefix) :]
+    }
+    return sorted(names)
+
+
+def _domain_val_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Per-domain validation loss.
+
+    The aggregate ``val_loss`` hides a regression that only hits one domain, so
+    every ``val_loss_<domain>`` recorded by the trainer gets its own series here.
+    """
+    chart = _panel("Validation loss by domain", "cross-entropy")
+    added = _add_series(chart, records, "val_loss", "all domains", color="#111827", dash="5 3")
+    for index, name in enumerate(_val_domains(records)):
+        added |= _add_series(
+            chart, records, f"val_loss_{name}", name, color=PALETTE[index % len(PALETTE)]
+        )
+    return chart if added else None
+
+
 def _lr_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     chart = _panel("Learning rate", "lr", logy=True)
     return chart if _add_series(chart, records, "lr", "lr", color=PALETTE[0]) else None
+
+
+def _schedule_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Schedules logged as fractions, so they share one 0–1 axis."""
+    chart = _panel("Schedules", "fraction / weight")
+    added = _add_series(chart, records, "mtp_weight", "MTP weight", color=PALETTE[3])
+    added |= _add_series(chart, records, "lr_factor", "lr factor", color=PALETTE[0], dash="4 3")
+    return chart if added else None
+
+
+def _index_topk_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """CSA sparse-attention budget: dense-over-compressed shrinking to top-k."""
+    chart = _panel("CSA index top-k", "tokens attended")
+    return (
+        chart
+        if _add_series(chart, records, "index_topk", "index top-k", color=PALETTE[4])
+        else None
+    )
 
 
 def _grad_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
@@ -169,6 +224,18 @@ def _throughput_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
         if _add_series(chart, records, "tokens_per_sec", "tokens/s", color=PALETTE[2])
         else None
     )
+
+
+def _timing_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Step wall time and remaining ETA.
+
+    Log scale because the two live ~4 decades apart (seconds per step vs days
+    remaining); on a linear axis the ETA would flatten the step time to nothing.
+    """
+    chart = _panel("Timing", "seconds", logy=True)
+    added = _add_series(chart, records, "step_time_s", "step time", color=PALETTE[2])
+    added |= _add_series(chart, records, "eta_seconds", "ETA", color=PALETTE[8], dash="4 3")
+    return chart if added else None
 
 
 def _memory_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
@@ -209,6 +276,45 @@ def _swiglu_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     return chart if added else None
 
 
+def _swiglu_magnitude_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Largest raw SwiGLU activation against the configured ``swiglu_limit``.
+
+    The clamp *rate* only says how often the limit binds; this shows how close
+    activations run to it, which is what predicts a clamp-rate explosion.
+    """
+    chart = _panel("SwiGLU activation magnitude", "|activation| max")
+    added = _add_series(chart, records, "swiglu_gate_abs_max", "gate", color=PALETTE[3])
+    added |= _add_series(chart, records, "swiglu_up_abs_max", "up", color=PALETTE[5])
+    return chart if added else None
+
+
+def _stability_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Markers for the steps where a loss spike / AR / rollback actually fired."""
+    chart = _panel("Stability events", "flag")
+    fired_steps: set[float] = set()
+    for index, (key, label) in enumerate(_STABILITY_KEYS):
+        xs: list[float] = []
+        ys: list[float] = []
+        for record in records:
+            x = _number(record.get("step"))
+            value = _number(record.get(key))
+            if x is None or value is None or value < 0.5:
+                continue
+            xs.append(x)
+            ys.append(value)
+        if not xs:
+            continue
+        fired_steps.update(xs)
+        chart.add_series(label, xs, ys, color=PALETTE[1 + index], kind="points")
+    if not fired_steps:
+        # Nothing fired: a flat line at zero would only imply "we log this".
+        return None
+    # Count steps, not markers: one spike usually fires both spike and AR.
+    count = len(fired_steps)
+    chart.title = f"Stability events ({count} step{'s' if count > 1 else ''})"
+    return chart
+
+
 def _aux_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     chart = _panel("Auxiliary losses", "loss", logy=True)
     added = _add_series(chart, records, "indexer_loss", "indexer KL", color=PALETTE[4])
@@ -233,9 +339,31 @@ def _learning_curve_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     return chart if added else None
 
 
+def _format_duration(seconds: float) -> str:
+    """Compact duration, e.g. ``45s`` / ``12m`` / ``3.4h`` / ``2.1d``.
+
+    Kept local instead of importing ``train.metrics``: that module pulls in
+    torch, and ``viz`` is meant to render metrics without a plotting or GPU
+    dependency.
+    """
+    if not math.isfinite(seconds) or seconds < 0:
+        return "—"
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds / 60:.0f}m"
+    if seconds < 86400:
+        return f"{seconds / 3600:.1f}h"
+    return f"{seconds / 86400:.1f}d"
+
+
 def _format_value(key: str, value: float | None) -> str:
     if value is None:
         return "—"
+    if key == "eta_seconds":
+        return _format_duration(value)
+    if key == "index_topk":
+        return f"{value:.0f}"
     if key in {"tokens_per_sec"}:
         if value >= 1e9:
             return f"{value / 1e9:.2f}G"
@@ -363,15 +491,21 @@ def build_report(
     panels = [
         _loss_panel(records),
         _learning_curve_panel(records),
+        _domain_val_panel(records),
         _validation_panel(records),
         _lr_panel(records),
+        _schedule_panel(records),
         _grad_panel(records),
         _throughput_panel(records),
+        _timing_panel(records),
         _memory_panel(records),
         _router_panel(records),
         _routing_health_panel(records),
+        _index_topk_panel(records),
         _swiglu_panel(records),
+        _swiglu_magnitude_panel(records),
         _aux_panel(records),
+        _stability_panel(records),
     ]
     rendered = [panel.render() for panel in panels if panel is not None]
 
@@ -410,6 +544,7 @@ latest step {int(latest(records, "step") or 0)}</div>
         "path": str(out_path),
         "records": len(records),
         "panels": len(rendered),
+        "val_domains": _val_domains(records),
         "last_step": int(latest(records, "step") or 0),
         "last_loss": latest(records, "loss"),
         "last_val_loss": latest(records, "val_loss"),

@@ -425,6 +425,26 @@ def test_training_report_is_written_during_run(tmp_path):
     assert "miniDeepSeek" in document
 
 
+def test_training_report_keeps_records_logged_before_resume(tmp_path):
+    """A resumed run must not truncate report.html to the steps it just ran.
+
+    ``auto_resume`` starts with an empty in-memory metric history, so a report
+    rendered from memory would drop every step logged before the interruption.
+    """
+    out_dir = tmp_path / "run"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    previous = {"step": 999, "loss": 7.5, "lr": 1e-4, "tokens_seen": 1_000_000}
+    (out_dir / "metrics.jsonl").write_text(json.dumps(previous) + "\n", encoding="utf-8")
+
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    config = _config(tmp_path, steps=2, report_every=1)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+
+    document = (out_dir / "report.html").read_text(encoding="utf-8")
+    assert "<td>999</td>" in document
+
+
 def test_trainer_logs_domain_id_from_mixer(tmp_path):
     from minideepseek.data.mix import BatchSource, WeightedBatchMixer
 

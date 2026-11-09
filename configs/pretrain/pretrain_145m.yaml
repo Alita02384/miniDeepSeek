@@ -47,6 +47,10 @@ train:
   log_every: 10
   ckpt_every: 200
   keep_last_ckpt: 3
+  # Rewrite report.html (self-contained inline-SVG dashboard) every N steps.
+  # It re-reads metrics.jsonl, so the report stays whole across auto_resume and
+  # costs <1 s even at 11k logged steps.
+  report_every: 200
   out_dir: checkpoints/pretrain_3b
   mtp_weight: 0.3
   mtp_weight_final: 0.1

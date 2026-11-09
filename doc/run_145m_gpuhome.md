@@ -345,6 +345,24 @@ watch -n 5 nvidia-smi
 tail -f checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl
 ```
 
+- **可视化**：`train.report_every: 200` 已打开，训练会每 200 步把当前 metrics.jsonl
+  渲染成 `<stage_dir>/report.html`（内联 SVG，无外部依赖）。它读的是磁盘上的
+  metrics.jsonl，所以续跑不会丢中断前的曲线。旧/已结束的 run 可手动补：
+
+  ```bash
+  .venv/bin/python scripts/plot_training.py \
+    checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl \
+    --out checkpoints/curriculum_145m_3b/stage_00_seq2048/report.html
+  ```
+
+  每个 stage 各自一个 out_dir，所以是三份 report.html。要一张跨阶段的图，把三个
+  jsonl 直接按阶段顺序拼起来再渲染一次即可（step / tokens_seen 本来就是跨阶段累加的）：
+
+  ```bash
+  cat checkpoints/curriculum_145m_3b/stage_0*/metrics.jsonl > /tmp/all_stages.jsonl
+  .venv/bin/python scripts/plot_training.py /tmp/all_stages.jsonl --out /tmp/all_stages.html
+  ```
+
 - **续跑**：重跑 §8.4 同一条命令；已完成的 stage 会跳过，当前 stage 从最新 checkpoint 恢复，
   并按 checkpoint 里的 `data_batches` **精确跳过已消费的 micro-batch**（同一卡数下数据顺序
   与中断前完全一致，不会从 stage 开头重放）；启动时会有约 1 分钟在回放数据，属正常；

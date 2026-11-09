@@ -848,15 +848,29 @@ class Trainer:
         }
 
     def _write_report(self) -> None:
-        """Refresh ``report.html`` from the in-memory metric history."""
-        if self.logger is None or not self.logger.history:
+        """Refresh ``report.html`` from the on-disk ``metrics.jsonl``.
+
+        Reading the file instead of ``logger.history`` keeps the report whole
+        across ``auto_resume``: a resumed run starts with an empty in-memory
+        history, and rendering that alone would silently truncate every step
+        logged before the interruption.  The logger flushes each record before
+        this runs, so the file is always at least as complete as memory.
+        """
+        if self.logger is None:
+            return
+        out_dir = Path(self.config.train.out_dir)
+        metrics_path = out_dir / self.logger.filename
+        if not metrics_path.exists():
             return
         try:
-            from ..viz.report import build_report
+            from ..viz.report import build_report, load_metrics
 
+            records = load_metrics(metrics_path)
+            if not records:
+                return
             build_report(
-                self.logger.history,
-                Path(self.config.train.out_dir) / "report.html",
+                records,
+                out_dir / "report.html",
                 title=f"miniDeepSeek · {self.run_name}",
                 meta={
                     "model": self.config.model.flavor,

@@ -90,3 +90,98 @@ def test_build_report_writes_self_contained_html(tmp_path):
 def test_build_report_rejects_empty_records(tmp_path):
     with pytest.raises(ValueError, match="no metrics"):
         build_report([], tmp_path / "report.html")
+
+
+def _scheduled_records(domains: tuple[str, ...] = ("code", "general", "tool")) -> list[dict]:
+    """Records carrying the schedules, CSA top-k and validation the trainer logs."""
+    records = []
+    for step in range(20):
+        records.append(
+            {
+                "step": step,
+                "loss": 5.0 - step * 0.1,
+                "lr_factor": 1.0 - step / 20,
+                "mtp_weight": 0.3 - step * 0.005,
+                "index_topk": 2048 - step * 100,
+                "step_time_s": 25.0 + step * 0.1,
+                "eta_seconds": 3600.0 * (20 - step),
+                "swiglu_gate_abs_max": 3.0 + step * 0.01,
+                "swiglu_up_abs_max": 2.5 + step * 0.01,
+                "loss_spike": 0.0,
+                "ar_active": 0.0,
+            }
+        )
+        if step % 5 == 0:
+            val = {
+                "step": step,
+                "val_loss": 3.0 - step * 0.02,
+                # Must not be mistaken for a domain: the prefix differs.
+                "val_main_loss_general": 2.9 - step * 0.02,
+            }
+            for index, name in enumerate(domains):
+                val[f"val_loss_{name}"] = 2.5 + index * 0.2 - step * 0.02
+            records.append(val)
+    return records
+
+
+def test_report_plots_each_validation_domain(tmp_path):
+    out = tmp_path / "report.html"
+    summary = build_report(_scheduled_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert summary["val_domains"] == ["code", "general", "tool"]
+    assert "Validation loss by domain" in document
+    assert ">general<" in document
+    assert ">code<" in document
+    assert ">tool<" in document
+    # ``val_main_loss_<domain>`` shares the val_/loss_ fragments but is not a domain.
+    assert ">main_loss_general<" not in document
+
+
+def test_report_plots_schedules_and_csa_topk(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_scheduled_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert "Schedules" in document
+    assert "MTP weight" in document
+    assert "CSA index top-k" in document
+    assert "SwiGLU activation magnitude" in document
+    assert "Timing" in document
+
+
+def test_report_omits_stability_panel_when_nothing_fires(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_scheduled_records(), out)
+    assert "Stability events" not in out.read_text(encoding="utf-8")
+
+
+def test_report_marks_stability_events_that_fired(tmp_path):
+    records = _scheduled_records()
+    for record in records:
+        if record["step"] == 7:
+            record["loss_spike"] = 1.0
+            record["ar_active"] = 1.0
+    out = tmp_path / "report.html"
+    build_report(records, out)
+    document = out.read_text(encoding="utf-8")
+
+    # One step, two flags: counted as a step, not as two markers.
+    assert "Stability events (1 step)" in document
+    assert "loss spike" in document
+    assert "anticipatory AR" in document
+
+
+def test_report_formats_eta_and_topk_cards(tmp_path):
+    from minideepseek.viz.report import _format_value
+
+    assert _format_value("eta_seconds", 45.0) == "45s"
+    assert _format_value("eta_seconds", 3600.0) == "1.0h"
+    assert _format_value("eta_seconds", 300000.0) == "3.5d"
+    assert _format_value("index_topk", 2048.0) == "2048"
+
+    out = tmp_path / "report.html"
+    build_report(_scheduled_records(), out)
+    document = out.read_text(encoding="utf-8")
+    assert '<div class="card-key">eta_seconds</div>' in document
+    assert '<div class="card-key">index_topk</div>' in document
