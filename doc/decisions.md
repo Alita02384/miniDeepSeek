@@ -890,3 +890,14 @@
 - **影响**：attn_gym 的 Triton 前向在 4090/D=64 上效率很低（~0.14 TFLOPS），
   是新的前向瓶颈；SDPA + 带状 mask 实测 0.61 ms/层（4K），说明还有约一个数量级
   的空间，但需要重写 attention 才能同时保留 sink 与 LSE 语义。
+
+### D69. tied embedding 的初始化修正（首步 loss 757 → 9.2）
+
+- **现象**：145M 训练首步 `main loss ≈ 752`、`mtp ≈ 104`、`|g| ≈ 29.7`。
+- **定位**：torchtitan 的 V4 是 **untied**：embedding `normal_(std=1.0)`、lm_head 用
+  `trunc_normal_(std=dim^-0.5)`。本项目 145M 配置开了 `tie_word_embeddings: true`，
+  共享矩阵继承了 embedding 的 std=1.0，导致输出 logits 量级 ~750、CE ≈ 757。
+- **修复**：`DeepSeekV4Model.init_weights` 在 tied 时用输出投影的初始化
+  （`trunc_normal_(std=dim^-0.5)`）；untied 仍按上游（embedding std=1.0 + head std^-0.5）。
+- **影响**：首步 `main loss` 757 → **9.25**、mtp 104 → 9.23，梯度量级回到正常；
+  参数量不变（仍 tied）；与上游的唯一差异是 tied 时共享矩阵的初始分布，已在源码注释说明。

@@ -187,8 +187,17 @@ class DeepSeekV4Model(nn.Module):
         return total
 
     def init_weights(self) -> None:
-        nn.init.normal_(self.tok_embeddings.weight, std=1.0)
-        if not self.config.tie_word_embeddings:
+        if self.config.tie_word_embeddings:
+            # The reference V4 keeps an untied std=0.02 lm_head next to a
+            # std=1.0 embedding.  Tying shares one matrix, so the output role
+            # fixes the logit scale; use the output-projection init to keep
+            # the initial cross-entropy near log(vocab) instead of ~750.
+            std = self.dim**-0.5
+            nn.init.trunc_normal_(
+                self.tok_embeddings.weight, std=std, a=-3 * std, b=3 * std
+            )
+        else:
+            nn.init.normal_(self.tok_embeddings.weight, std=1.0)
             init_output_linear(self.lm_head, self.dim)
         nn.init.ones_(self.norm.weight)
         self.hc_head.init_weights()
