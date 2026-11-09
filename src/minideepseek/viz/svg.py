@@ -357,3 +357,152 @@ class Chart:
             f'stroke-linejoin="round" stroke-linecap="round"{dash} '
             f'points="{" ".join(points)}"/>'
         )
+
+
+def _mix(low: tuple[int, int, int], high: tuple[int, int, int], t: float) -> str:
+    """Linear blend between two RGB colours, ``t`` in [0, 1]."""
+    t = min(max(t, 0.0), 1.0)
+    red, green, blue = (round(low[index] + (high[index] - low[index]) * t) for index in range(3))
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+_WHITE = (255, 255, 255)
+_BLUE = (37, 99, 235)
+_RED = (220, 38, 38)
+
+
+@dataclass
+class Heatmap:
+    """A row x column grid of coloured cells (expert load, enrichment, ...).
+
+    ``center`` turns the colour scale diverging around that value, which is what
+    makes a load ratio of 1.0 (perfect balance) or an enrichment of 1.0 (no
+    preference) readable at a glance.
+    """
+
+    title: str
+    row_labels: Sequence[str]
+    col_labels: Sequence[str]
+    values: Sequence[Sequence[float]]
+    xlabel: str = ""
+    ylabel: str = ""
+    width: int = 640
+    height: int = 280
+    center: float | None = None
+    #: Smallest half-width of a diverging scale.  Without it a metric that only
+    #: wobbles (enrichment 0.97-1.03) saturates the colour map and reads as a
+    #: dramatic effect; with it, colour distance means a fixed effect size.
+    min_span: float | None = None
+    fmt: str = "{:.2f}"
+
+    def _bounds(self) -> tuple[float, float]:
+        flat = [v for row in self.values for v in row if _finite(v)]
+        if not flat:
+            return 0.0, 1.0
+        low, high = min(flat), max(flat)
+        if self.center is not None:
+            span = max(abs(high - self.center), abs(self.center - low)) or 1e-9
+            if self.min_span is not None:
+                span = max(span, self.min_span)
+            return self.center - span, self.center + span
+        return low, high if high > low else low + 1.0
+
+    def _colour(self, value: float, low: float, high: float) -> str:
+        if not _finite(value):
+            return "#f1f5f9"
+        if self.center is None:
+            return _mix(_WHITE, _BLUE, (value - low) / (high - low))
+        span = (high - low) / 2 or 1.0
+        offset = (value - self.center) / span
+        if offset < 0:
+            return _mix(_WHITE, _BLUE, -offset)
+        return _mix(_WHITE, _RED, offset)
+
+    def render(self) -> str:
+        width, height = self.width, self.height
+        rows, cols = len(self.row_labels), len(self.col_labels)
+        if rows == 0 or cols == 0 or not self.values:
+            return (
+                f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+                f'role="img" aria-label="{html.escape(self.title)}">'
+                f'<rect width="{width}" height="{height}" fill="#ffffff"/>'
+                f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" '
+                f'fill="#94a3b8" font-size="13">{html.escape(self.title)} — no data</text></svg>'
+            )
+        label_px = max((len(label) for label in self.row_labels), default=4)
+        left = min(max(16 + 6.4 * label_px, 64), 190)
+        top, right, bottom = 30, 16, 44
+        plot_width = width - left - right
+        plot_height = height - top - bottom
+        cell_w = plot_width / cols
+        cell_h = plot_height / rows
+        low, high = self._bounds()
+
+        parts: list[str] = [
+            f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+            f'width="100%" role="img" aria-label="{html.escape(self.title)}" '
+            f'font-family="ui-sans-serif, -apple-system, Segoe UI, sans-serif">',
+            f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
+            f'<text x="{left}" y="18" font-size="14" font-weight="600" fill="#0f172a">'
+            f"{html.escape(self.title)}</text>",
+        ]
+        # Cells.
+        for row_index, row in enumerate(self.values):
+            for col_index in range(cols):
+                value = row[col_index] if col_index < len(row) else float("nan")
+                x = left + col_index * cell_w
+                y = top + row_index * cell_h
+                parts.append(
+                    f'<rect x="{x:.2f}" y="{y:.2f}" width="{cell_w + 0.5:.2f}" '
+                    f'height="{cell_h + 0.5:.2f}" fill="{self._colour(value, low, high)}" '
+                    f'stroke="#ffffff" stroke-width="1"/>'
+                )
+                if _finite(value) and cell_w >= 30 and cell_h >= 13:
+                    text_fill = "#0f172a"
+                    magnitude = abs(value - (self.center or 0.0)) / max(
+                        abs(high - low) / 2, 1e-9
+                    )
+                    if magnitude > 0.55:
+                        text_fill = "#ffffff"
+                    parts.append(
+                        f'<text x="{x + cell_w / 2:.2f}" y="{y + cell_h / 2 + 3.5:.2f}" '
+                        f'text-anchor="middle" font-size="9.5" fill="{text_fill}">'
+                        f"{html.escape(self.fmt.format(value))}</text>"
+                    )
+        # Row labels.
+        for row_index, label in enumerate(self.row_labels):
+            parts.append(
+                f'<text x="{left - 6}" y="{top + row_index * cell_h + cell_h / 2 + 3.5:.2f}" '
+                f'text-anchor="end" font-size="10" fill="#475569">'
+                f"{html.escape(label)}</text>"
+            )
+        # Column labels, skipped when they would overlap.
+        step = max(1, math.ceil(22 / max(cell_w, 1)))
+        for col_index, label in enumerate(self.col_labels):
+            if col_index % step:
+                continue
+            parts.append(
+                f'<text x="{left + col_index * cell_w + cell_w / 2:.2f}" '
+                f'y="{top + plot_height + 13}" text-anchor="middle" font-size="10" '
+                f'fill="#475569">{html.escape(label)}</text>'
+            )
+        # Axis titles + colour scale legend.
+        if self.xlabel:
+            parts.append(
+                f'<text x="{left + plot_width / 2}" y="{height - 8}" text-anchor="middle" '
+                f'font-size="11" fill="#475569">{html.escape(self.xlabel)}</text>'
+            )
+        if self.ylabel:
+            parts.append(
+                f'<text x="14" y="{top + plot_height / 2}" text-anchor="middle" '
+                f'font-size="11" fill="#475569" transform="rotate(-90 14 '
+                f'{top + plot_height / 2:.1f})">{html.escape(self.ylabel)}</text>'
+            )
+        # Colour scale range, bottom-right so it never collides with xlabel.
+        parts.append(
+            f'<text x="{left + plot_width}" y="{height - 8}" text-anchor="end" '
+            f'font-size="9.5" fill="#94a3b8">{html.escape(self.fmt.format(low))} … '
+            f"{html.escape(self.fmt.format(high))}</text>"
+        )
+        parts.append("</svg>")
+        return "".join(parts)

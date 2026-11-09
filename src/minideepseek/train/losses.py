@@ -149,3 +149,22 @@ def update_expert_biases(model) -> int:
 def reset_expert_usage(model) -> None:
     for _name, moe in iter_moe_layers(model):
         moe.router.tokens_per_expert_E.zero_()
+
+
+@torch.no_grad()
+def router_biases(model) -> dict[str, list[float]]:
+    """Current ``expert_bias_E`` for every learned router, keyed by router name.
+
+    The bias is the whole state of the auxiliary-loss-free balancer: it is
+    updated every optimizer step and is otherwise invisible in the logs, which
+    makes it impossible to tell whether balancing came from the bias update or
+    from the auxiliary balance loss.  Hash layers have no bias (they never read
+    one), so they are absent rather than reported as zeros.
+    """
+    output: dict[str, list[float]] = {}
+    for name, moe in iter_moe_layers(model):
+        bias = getattr(moe, "expert_bias_E", None)
+        if bias is None:
+            continue
+        output[f"{name}.router"] = bias.detach().float().cpu().tolist()
+    return output

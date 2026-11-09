@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from .report import build_report, load_metrics
-from .svg import PALETTE, Annotation, Chart, Series, format_tick, log_ticks, nice_ticks
+from .svg import PALETTE, Annotation, Chart, Heatmap, Series, format_tick, log_ticks, nice_ticks
 
 __all__ = [
     "Annotation",
     "Chart",
+    "Heatmap",
     "PALETTE",
     "Series",
     "build_report",

@@ -14,22 +14,27 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from .svg import PALETTE, Annotation, Chart
+from .svg import PALETTE, Annotation, Chart, Heatmap
 
-#: Keys shown in the summary cards, in display order.
-_CARD_KEYS = (
-    ("loss", "loss", "latest"),
-    ("val_loss", "val loss", "latest"),
-    ("val_ppl", "val ppl", "latest"),
-    ("lr", "learning rate", "latest"),
-    ("grad_norm", "grad norm", "latest"),
-    ("tokens_per_sec", "throughput", "latest"),
-    ("mem_peak_mb", "peak memory", "latest"),
-    ("eta_seconds", "ETA", "latest"),
-    ("index_topk", "CSA top-k", "latest"),
-    ("experts_used_fraction", "experts used", "latest"),
-    ("routing_entropy_normalized", "router entropy", "latest"),
-    ("swiglu_gate_clamp_rate", "SwiGLU clamp", "latest"),
+#: Summary cards, in display order.  Each entry lists fallback keys so a report
+#: built from an older ``metrics.jsonl`` (flat, hash-mixed router keys) still
+#: renders alongside one built after the hash/learned split.
+_CARD_KEYS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("loss",), "loss"),
+    (("val_loss",), "val loss"),
+    (("val_ppl",), "val ppl"),
+    (("lr",), "learning rate"),
+    (("grad_norm",), "grad norm"),
+    (("tokens_per_sec",), "throughput"),
+    (("mem_peak_mb",), "peak memory"),
+    (("eta_seconds",), "ETA"),
+    (("index_topk",), "CSA top-k"),
+    (("router_learned_min_relative_load",), "min load share"),
+    (
+        ("router_learned_routing_entropy_normalized", "routing_entropy_normalized"),
+        "router entropy",
+    ),
+    (("swiglu_gate_clamp_rate",), "SwiGLU clamp"),
 )
 
 #: Rare 0/1 stability flags.  Plotted only when they fire, so a clean run shows
@@ -47,7 +52,7 @@ _TABLE_KEYS = (
     "grad_norm",
     "tokens_per_sec",
     "mem_peak_mb",
-    "experts_used_fraction",
+    "router_learned_min_relative_load",
 )
 
 
@@ -120,6 +125,31 @@ def _add_series(
 
 def _has_key(records: Iterable[dict[str, Any]], key: str) -> bool:
     return any(_number(record.get(key)) is not None for record in records)
+
+
+def _first_present(records: Sequence[dict[str, Any]], keys: Sequence[str]) -> str | None:
+    """First key in ``keys`` that carries a number somewhere in ``records``."""
+    for key in keys:
+        if _has_key(records, key):
+            return key
+    return None
+
+
+def _add_series_any(
+    chart: Chart,
+    records: Sequence[dict[str, Any]],
+    keys: Sequence[str],
+    label: str,
+    *,
+    color: str | None = None,
+    kind: str = "line",
+    dash: str | None = None,
+) -> bool:
+    """Plot the first of ``keys`` that has data (new name, then legacy name)."""
+    key = _first_present(records, keys)
+    if key is None:
+        return False
+    return _add_series(chart, records, key, label, color=color, kind=kind, dash=dash)
 
 
 def _panel(title: str, ylabel: str, *, logy: bool = False, x_key: str = "step") -> Chart:
@@ -247,24 +277,219 @@ def _memory_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
 
 
 def _router_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
-    chart = _panel("MoE expert load", "max load / mean")
-    added = _add_series(
-        chart, records, "expert_load_max_over_mean", "mean over layers", color=PALETTE[0]
+    """Load balance for learned routers, with the hash layers kept separate.
+
+    Hash layers route from a fixed ``tid2eid`` table, so their load can never be
+    balanced and must not be averaged into the learned numbers.
+    """
+    chart = _panel("MoE expert load", "load / mean load")
+    added = _add_series_any(
+        chart,
+        records,
+        ("router_learned_expert_load_max_over_mean", "expert_load_max_over_mean"),
+        "learned: max/mean",
+        color=PALETTE[0],
     )
-    _add_series(
-        chart, records, "expert_load_max_over_mean_worst", "worst layer", color=PALETTE[1]
+    added |= _add_series_any(
+        chart,
+        records,
+        (
+            "router_learned_expert_load_max_over_mean_worst",
+            "expert_load_max_over_mean_worst",
+        ),
+        "learned: worst layer",
+        color=PALETTE[1],
     )
-    _add_series(chart, records, "expert_usage_mean_std", "usage std", color=PALETTE[3])
+    added |= _add_series_any(
+        chart,
+        records,
+        ("router_learned_min_relative_load",),
+        "learned: min share",
+        color=PALETTE[2],
+    )
+    _add_series_any(
+        chart,
+        records,
+        ("router_hash_expert_load_max_over_mean",),
+        "hash (fixed table)",
+        color=PALETTE[7],
+        dash="4 3",
+    )
     return chart if added else None
 
 
 def _routing_health_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
-    chart = _panel("Routing health", "fraction / normalized entropy")
-    added = _add_series(
-        chart, records, "routing_entropy_normalized", "entropy (1 = uniform)", color=PALETTE[2]
+    chart = _panel("Routing entropy", "normalized (1 = uniform)")
+    added = _add_series_any(
+        chart,
+        records,
+        ("router_learned_routing_entropy_normalized", "routing_entropy_normalized"),
+        "learned (1 = uniform)",
+        color=PALETTE[2],
     )
-    _add_series(chart, records, "experts_used_fraction", "experts used", color=PALETTE[4])
+    _add_series_any(
+        chart,
+        records,
+        ("router_hash_routing_entropy_normalized",),
+        "hash (fixed table)",
+        color=PALETTE[7],
+        dash="4 3",
+    )
     return chart if added else None
+
+
+def _router_snapshots(records: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Records that carry the raw per-router expert counts."""
+    return [
+        record
+        for record in records
+        if isinstance(record.get("router_layers"), dict) and record["router_layers"]
+    ]
+
+
+def _short_router_name(name: str) -> str:
+    parts = name.split(".")
+    if len(parts) > 1 and parts[0] == "layers":
+        return f"L{parts[1]}"
+    if len(parts) > 1 and parts[0] == "mtp_layers":
+        return f"MTP{parts[1]}"
+    return name
+
+
+def _router_layer_heatmap(records: Sequence[dict[str, Any]]) -> Heatmap | None:
+    """Layer x Expert relative load, averaged over every snapshot."""
+    snapshots = _router_snapshots(records)
+    if not snapshots:
+        return None
+    order: list[str] = []
+    totals: dict[str, list[float]] = {}
+    hash_flags: dict[str, bool] = {}
+    for record in snapshots:
+        for name, layer in record["router_layers"].items():
+            counts = layer.get("counts") or []
+            if not counts:
+                continue
+            if name not in totals:
+                order.append(name)
+                totals[name] = [0.0] * len(counts)
+                hash_flags[name] = bool(layer.get("hash", False))
+            for index, value in enumerate(counts):
+                totals[name][index] += float(value)
+    names = [name for name in order if sum(totals[name]) > 0]
+    if not names:
+        return None
+    values = []
+    for name in names:
+        counts = totals[name]
+        total = sum(counts)
+        mean = total / len(counts)
+        values.append([count / mean for count in counts])
+    return Heatmap(
+        title=f"Expert load, Layer × Expert (mean of {len(snapshots)} snapshots)",
+        row_labels=[
+            f"{_short_router_name(name)} (hash)" if hash_flags.get(name) else _short_router_name(name)
+            for name in names
+        ],
+        col_labels=[f"E{index}" for index in range(len(values[0]))],
+        values=values,
+        xlabel="expert · relative load (1.00 = balanced, colour saturates at ±0.5)",
+        ylabel="router",
+        center=1.0,
+        min_span=0.5,
+    )
+
+
+def _domain_expert_heatmap(records: Sequence[dict[str, Any]]) -> Heatmap | None:
+    """Domain x Expert enrichment over the learned routers.
+
+    ``P(e|d) / P(e)``: 1.0 means the domain shows no preference for that expert,
+    2.0 means it picks it twice as often as the global average.  Only learned
+    routers take part -- hash routing is a function of the token id, so it would
+    encode token statistics rather than a routing decision.
+    """
+    snapshots = _router_snapshots(records)
+    if not snapshots:
+        return None
+    order: list[str] = []
+    per_domain: dict[str, list[float]] = {}
+    for record in snapshots:
+        label = record.get("domain_name")
+        if not isinstance(label, str) or not label:
+            domain_id = _number(record.get("domain_id"))
+            if domain_id is None or domain_id < 0:
+                continue
+            label = f"domain {int(domain_id)}"
+        learned = [
+            layer
+            for layer in record["router_layers"].values()
+            if not layer.get("hash") and (layer.get("counts") or [])
+        ]
+        if not learned:
+            continue
+        width = len(learned[0]["counts"])
+        if label not in per_domain:
+            order.append(label)
+            per_domain[label] = [0.0] * width
+        for layer in learned:
+            for index, value in enumerate(layer["counts"]):
+                per_domain[label][index] += float(value)
+    if len(order) < 2:
+        # A single domain has nothing to compare against; skip the panel.
+        return None
+    width = len(per_domain[order[0]])
+    global_counts = [sum(per_domain[label][index] for label in order) for index in range(width)]
+    global_total = sum(global_counts) or 1.0
+    base = [count / global_total for count in global_counts]
+    values = []
+    for label in order:
+        counts = per_domain[label]
+        total = sum(counts) or 1.0
+        values.append(
+            [(counts[index] / total) / base[index] if base[index] else 0.0 for index in range(width)]
+        )
+    return Heatmap(
+        title="Domain × Expert enrichment (learned routers)",
+        row_labels=order,
+        col_labels=[f"E{index}" for index in range(width)],
+        values=values,
+        xlabel="expert · P(e|d) / P(e)  (1.00 = no preference, colour saturates at ±0.5)",
+        ylabel="domain",
+        center=1.0,
+        min_span=0.5,
+        fmt="{:.2f}",
+    )
+
+
+def _router_bias_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """How hard the auxiliary-loss-free balancer is pushing each expert.
+
+    The bias itself is never plotted per expert (too many series); its spread and
+    magnitude over time answer "is the balancer moving at all, and is it still
+    able to move" -- a bias that saturates stops correcting.
+    """
+    snapshots = _router_snapshots(records)
+    xs: list[float] = []
+    spread: list[float] = []
+    magnitude: list[float] = []
+    for record in snapshots:
+        biases = [
+            layer["bias"]
+            for layer in record["router_layers"].values()
+            if isinstance(layer.get("bias"), list) and layer["bias"]
+        ]
+        step = _number(record.get("step"))
+        if not biases or step is None:
+            continue
+        xs.append(step)
+        spread.append(max(max(bias) - min(bias) for bias in biases))
+        magnitude.append(max(max(abs(value) for value in bias) for bias in biases))
+    if not xs:
+        return None
+    chart = _panel("Router balance bias", "bias units")
+    chart.title = f"Router balance bias ({len(xs)} snapshots)"
+    chart.add_series("max spread (max-min)", xs, spread, color=PALETTE[3])
+    chart.add_series("max |bias|", xs, magnitude, color=PALETTE[4], dash="4 3")
+    return chart
 
 
 def _swiglu_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
@@ -339,6 +564,16 @@ def _learning_curve_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     return chart if added else None
 
 
+#: Keys rendered as a 0-1 fraction; matched by suffix so both the flat legacy
+#: names and the ``router_learned_*`` / ``router_hash_*`` split names work.
+_PERCENT_SUFFIXES = (
+    "experts_used_fraction",
+    "routing_entropy_normalized",
+    "min_relative_load",
+    "clamp_rate",
+)
+
+
 def _format_duration(seconds: float) -> str:
     """Compact duration, e.g. ``45s`` / ``12m`` / ``3.4h`` / ``2.1d``.
 
@@ -374,7 +609,7 @@ def _format_value(key: str, value: float | None) -> str:
         return f"{value:.0f}"
     if key in {"mem_peak_mb", "mem_allocated_mb", "mem_reserved_mb"}:
         return f"{value / 1024:.2f} GiB"
-    if key in {"experts_used_fraction", "routing_entropy_normalized", "swiglu_gate_clamp_rate"}:
+    if key.endswith(_PERCENT_SUFFIXES):
         return f"{value * 100:.1f}%"
     if key == "lr":
         return f"{value:.2e}"
@@ -387,7 +622,10 @@ def _format_value(key: str, value: float | None) -> str:
 
 def _cards(records: Sequence[dict[str, Any]]) -> str:
     cards = []
-    for key, label, _ in _CARD_KEYS:
+    for candidates, label in _CARD_KEYS:
+        key = _first_present(records, candidates)
+        if key is None:
+            continue
         value = latest(records, key)
         if value is None:
             continue
@@ -501,6 +739,9 @@ def build_report(
         _memory_panel(records),
         _router_panel(records),
         _routing_health_panel(records),
+        _router_layer_heatmap(records),
+        _domain_expert_heatmap(records),
+        _router_bias_panel(records),
         _index_topk_panel(records),
         _swiglu_panel(records),
         _swiglu_magnitude_panel(records),

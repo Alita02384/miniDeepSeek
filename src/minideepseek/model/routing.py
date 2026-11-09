@@ -209,8 +209,60 @@ def domain_routing_metrics(
     return output
 
 
+#: Suffixes produced for each router group; see :func:`routing_metrics`.
+_ROUTING_SUFFIXES = (
+    "expert_load_max_over_mean",
+    "expert_load_max_over_mean_worst",
+    "min_relative_load",
+    "routing_entropy_normalized",
+    "experts_used_fraction",
+    "expert_usage_mean_std",
+)
+
+
+def _group_metrics(layers: list[LayerRouting]) -> list[Tensor]:
+    """Per-group summaries, kept on the device for one ``tolist()`` at the end."""
+    max_ratios = []
+    min_ratios = []
+    entropies = []
+    active_fracs = []
+    usage_all = []
+    for layer in layers:
+        counts = layer.routing_map.sum(dim=0).float()
+        usage = counts / counts.sum().clamp_min(1.0)
+        mean_count = usage.mean().clamp_min(1e-12)
+        max_ratios.append((usage.max() / mean_count).reshape(()))
+        # The load-share floor is the only signal a 6-expert top-2 router can
+        # give: with thousands of tokens per micro-batch every expert is hit at
+        # least once, so ``experts_used_fraction`` sits at 1.0 forever.
+        min_ratios.append((usage.min() / mean_count).reshape(()))
+        entropy = -(usage * usage.clamp_min(1e-12).log()).sum()
+        entropies.append((entropy / math.log(usage.numel())).reshape(()))
+        active_fracs.append((counts > 0).float().mean().reshape(()))
+        usage_all.append(usage)
+    ratios = torch.stack(max_ratios)
+    entropy_values = torch.stack(entropies)
+    fractions = torch.stack(active_fracs)
+    usage_mean = torch.stack(usage_all).mean(dim=0)
+    return [
+        ratios.mean(),
+        ratios.max(),
+        torch.stack(min_ratios).mean(),
+        entropy_values.mean(),
+        fractions.mean(),
+        usage_mean.std(unbiased=False),
+    ]
+
+
 def routing_metrics(record: RoutingRecord) -> dict[str, float]:
-    """Expert-load and routing-entropy summaries over all layers.
+    """Expert-load and routing-entropy summaries, split hash vs learned.
+
+    The two router kinds must not share a metric.  Hash layers pick experts
+    from a fixed ``tid2eid`` table, so their load is set by the token-id
+    distribution and no router can ever balance it; averaging them into the
+    learned layers both dilutes real imbalance and bakes in a floor that moves
+    whenever the hash seed does.  Groups with no layers are omitted, so a
+    hash-free model only logs ``router_learned_*`` and vice versa.
 
     Every per-layer scalar is kept on the device until one final ``tolist()``:
     this runs once per micro-batch, so materialising each value individually
@@ -218,45 +270,36 @@ def routing_metrics(record: RoutingRecord) -> dict[str, float]:
     """
     if not record:
         return {}
-    max_ratios = []
-    entropies = []
-    active_fracs = []
-    usage_all = []
-    for layer in record.layers.values():
-        counts = layer.routing_map.float().sum(dim=0)
-        usage = counts / counts.sum().clamp_min(1.0)
-        mean_count = usage.mean().clamp_min(1e-12)
-        max_ratios.append((usage.max() / mean_count).reshape(()))
-        entropy = -(usage * usage.clamp_min(1e-12).log()).sum()
-        entropies.append((entropy / math.log(usage.numel())).reshape(()))
-        active_fracs.append((counts > 0).float().mean().reshape(()))
-        usage_all.append(usage)
-    usage_mean = torch.stack(usage_all).mean(dim=0)
-    ratios = torch.stack(max_ratios)
-    entropy_values = torch.stack(entropies)
-    fractions = torch.stack(active_fracs)
-    values = torch.stack(
-        [
-            ratios.mean(),
-            ratios.max(),
-            entropy_values.mean(),
-            fractions.mean(),
-            usage_mean.std(unbiased=False),
-        ]
-    ).tolist()
-    return dict(
-        zip(
-            (
-                "expert_load_max_over_mean",
-                "expert_load_max_over_mean_worst",
-                "routing_entropy_normalized",
-                "experts_used_fraction",
-                "expert_usage_mean_std",
-            ),
-            values,
-            strict=True,
-        )
-    )
+    learned = [layer for layer in record.layers.values() if not layer.is_hash]
+    hashed = [layer for layer in record.layers.values() if layer.is_hash]
+    output: dict[str, float] = {}
+    for label, layers in (("learned", learned), ("hash", hashed)):
+        if not layers:
+            continue
+        for suffix, value in zip(
+            _ROUTING_SUFFIXES, _group_metrics(layers), strict=True
+        ):
+            output[f"router_{label}_{suffix}"] = float(value)
+    return output
+
+
+def layer_expert_counts(record: RoutingRecord) -> dict[str, dict[str, object]]:
+    """Raw per-router expert counts for one micro-batch.
+
+    ``routing_metrics`` collapses the record into group-level scalars at every
+    logging step; the per-layer table behind them is what a Layer x Expert
+    heatmap, a domain x expert enrichment view, or any post-hoc re-analysis
+    needs -- and once the run is over it cannot be recovered from a scalar.
+    """
+    if not record:
+        return {}
+    return {
+        name: {
+            "hash": bool(layer.is_hash),
+            "counts": layer.routing_map.sum(dim=0).tolist(),
+        }
+        for name, layer in record.layers.items()
+    }
 
 
 def router_gate_snapshot(model) -> dict[str, dict[str, Tensor]]:

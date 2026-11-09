@@ -143,12 +143,25 @@ class MetricsLogger:
         keys = sorted({key for item in self.history for key in item} - {"step"})
         summary = {"steps": len({item["step"] for item in self.history})}
         for key in keys:
-            values = [item[key] for item in self.history if key in item]
+            # Some records carry structured payloads (``router_layers`` is a
+            # nested dict, ``domain_name`` a string); they have no min/mean.
+            values = [
+                item[key]
+                for item in self.history
+                if _is_scalar(item.get(key))
+            ]
+            if not values:
+                continue
             summary[f"{key}_first"] = values[0]
             summary[f"{key}_last"] = values[-1]
             summary[f"{key}_min"] = min(values)
             summary[f"{key}_mean"] = sum(values) / len(values)
         return summary
+
+
+def _is_scalar(value: Any) -> bool:
+    """True for numbers that ``min``/``mean`` can compare (bools excluded)."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _to_float(value: Any) -> Any:

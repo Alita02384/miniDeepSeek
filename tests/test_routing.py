@@ -5,6 +5,7 @@ import torch
 from minideepseek.model.routing import (
     compare_routing,
     iter_routers,
+    layer_expert_counts,
     record_routing,
     replay_routing,
     router_gate_snapshot,
@@ -42,13 +43,41 @@ def test_replay_uses_recorded_indices(debug_model, small_batch):
     assert not torch.equal(replayed.layers[name].expert_ids, original)
 
 
-def test_routing_metrics(debug_model, small_batch):
+def test_routing_metrics_split_hash_and_learned(debug_model, small_batch):
+    """Hash and learned routers get separate groups; neither is averaged in."""
     with record_routing(debug_model.model) as recorded:
         debug_model.forward(small_batch, use_mtp=False)
     metrics = routing_metrics(recorded)
-    assert metrics["experts_used_fraction"] > 0
-    assert 0.0 <= metrics["routing_entropy_normalized"] <= 1.0
-    assert metrics["expert_load_max_over_mean"] >= 1.0
+    groups = {layer.is_hash for layer in recorded.layers.values()}
+    for label in ("learned", "hash"):
+        present = label == "hash" and True in groups or label == "learned" and False in groups
+        if not present:
+            assert not any(key.startswith(f"router_{label}_") for key in metrics)
+            continue
+        assert metrics[f"router_{label}_experts_used_fraction"] > 0
+        assert 0.0 <= metrics[f"router_{label}_routing_entropy_normalized"] <= 1.0
+        assert metrics[f"router_{label}_expert_load_max_over_mean"] >= 1.0
+        # Relative load and its reciprocal bracket the balanced value 1.0.
+        assert (
+            0.0
+            < metrics[f"router_{label}_min_relative_load"]
+            <= 1.0
+            <= metrics[f"router_{label}_expert_load_max_over_mean"]
+        )
+    # The old flat names must be gone: they mixed the two router kinds.
+    assert not any(key.startswith("expert_load_max_over_mean") for key in metrics)
+
+
+def test_layer_expert_counts_keeps_the_raw_table(debug_model, small_batch):
+    with record_routing(debug_model.model) as recorded:
+        debug_model.forward(small_batch, use_mtp=False)
+    counts = layer_expert_counts(recorded)
+    assert set(counts) == set(recorded.layers)
+    for name, layer in counts.items():
+        num_experts = recorded.layers[name].routing_map.shape[1]
+        assert len(layer["counts"]) == num_experts
+        assert sum(layer["counts"]) == recorded.layers[name].routing_map.sum()
+        assert layer["hash"] is recorded.layers[name].is_hash
 
 
 def test_gate_snapshot_swap(debug_model, small_batch):

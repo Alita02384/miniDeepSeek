@@ -185,3 +185,98 @@ def test_report_formats_eta_and_topk_cards(tmp_path):
     document = out.read_text(encoding="utf-8")
     assert '<div class="card-key">eta_seconds</div>' in document
     assert '<div class="card-key">index_topk</div>' in document
+
+
+def _routing_records(domains: tuple[str, ...] = ("general", "code")) -> list[dict]:
+    """Records carrying the raw per-router counts, biases and domain labels."""
+    records = []
+    for step in (0, 50, 100):
+        domain = domains[(step // 50) % len(domains)]
+        layers = {
+            "layers.0.feed_forward.router": {
+                "hash": True,
+                "counts": [40, 40, 40, 40],
+            },
+            "layers.1.feed_forward.router": {
+                "hash": False,
+                "counts": [12 + step // 50, 9, 8, 11],
+                "bias": [0.02 * step // 50, -0.05, 0.0, 0.02],
+            },
+            "mtp_layers.0.feed_forward.router": {
+                "hash": False,
+                "counts": [10, 10, 12, 10],
+                "bias": [0.0, 0.0, 0.01, -0.02],
+            },
+        }
+        records.append(
+            {
+                "step": step,
+                "loss": 3.0 - step * 0.01,
+                "domain_id": float(domains.index(domain)),
+                "domain_name": domain,
+                "router_layers": layers,
+                "router_learned_expert_load_max_over_mean": 1.3,
+                "router_learned_min_relative_load": 0.7,
+                "router_learned_routing_entropy_normalized": 0.98,
+            }
+        )
+    return records
+
+
+def test_report_plots_layer_by_expert_heatmap(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_routing_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert "Expert load, Layer × Expert" in document
+    # Short router labels, with hash routers marked as fixed.
+    assert ">L0 (hash)<" in document
+    assert ">L1<" in document
+    assert ">MTP0<" in document
+
+
+def test_report_plots_domain_by_expert_enrichment(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_routing_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert "Domain × Expert enrichment" in document
+    assert ">general<" in document
+    assert ">code<" in document
+
+
+def test_report_skips_domain_heatmap_for_a_single_domain(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_routing_records(domains=("general",)), out)
+    assert "Domain × Expert enrichment" not in out.read_text(encoding="utf-8")
+
+
+def test_report_plots_router_bias_trajectory(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_routing_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert "Router balance bias (3 snapshots)" in document
+    assert "max spread (max-min)" in document
+    assert "max |bias|" in document
+
+
+def test_report_uses_split_router_cards(tmp_path):
+    out = tmp_path / "report.html"
+    build_report(_routing_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert '<div class="card-key">router_learned_min_relative_load</div>' in document
+    assert ">70.0%<" in document
+    assert '<div class="card-key">router_learned_routing_entropy_normalized</div>' in document
+
+
+def test_report_still_renders_legacy_flat_router_keys(tmp_path):
+    """A metrics.jsonl from before the hash/learned split must still plot."""
+    out = tmp_path / "report.html"
+    build_report(_records(), out)
+    document = out.read_text(encoding="utf-8")
+
+    assert "MoE expert load" in document
+    assert "Routing entropy" in document
+    assert "Expert load, Layer × Expert" not in document  # no snapshots in old files

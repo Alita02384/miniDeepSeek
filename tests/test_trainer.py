@@ -425,6 +425,55 @@ def test_training_report_is_written_during_run(tmp_path):
     assert "miniDeepSeek" in document
 
 
+def test_router_snapshot_logs_raw_counts_and_bias(tmp_path):
+    """``router_every`` must persist the per-layer table + the learned biases."""
+    from minideepseek.train.losses import iter_moe_layers
+
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    config = _config(tmp_path, steps=2, router_every=1)
+    trainer, model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    snapped = [record for record in records if "router_layers" in record]
+    assert snapped, "no router snapshot was logged"
+    layers = snapped[0]["router_layers"]
+    learned = {
+        f"{name}.router"
+        for name, moe in iter_moe_layers(model.model)
+        if getattr(moe, "expert_bias_E", None) is not None
+    }
+    assert learned, "the debug model should have at least one learned router"
+    for name, entry in layers.items():
+        assert entry["counts"], f"{name} logged no expert counts"
+        assert all(value >= 0 for value in entry["counts"])
+        # Only learned routers carry a bias, and it has one value per expert.
+        assert ("bias" in entry) is (name in learned)
+        if "bias" in entry:
+            assert len(entry["bias"]) == len(entry["counts"])
+
+    summary = trainer.logger.summary()
+    assert "router_layers_min" not in summary  # structured payloads are skipped
+    assert "domain_name_min" not in summary
+
+
+def test_router_snapshot_is_off_by_default(tmp_path):
+    batches = [from_sequences([[1, 2, 3, 4]])]
+    config = _config(tmp_path, steps=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert not any("router_layers" in record for record in records)
+
+
 def test_training_report_keeps_records_logged_before_resume(tmp_path):
     """A resumed run must not truncate report.html to the steps it just ran.
 

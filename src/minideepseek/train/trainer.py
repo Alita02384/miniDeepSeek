@@ -38,6 +38,7 @@ from ..model.anticipatory import (
 from ..model.batch import PackedBatch
 from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
 from ..model.routing import (
+    layer_expert_counts,
     record_routing,
     replay_routing,
     router_gate_snapshot,
@@ -61,6 +62,7 @@ from .losses import (
     capture_gate_scores,
     iter_moe_layers,
     reset_expert_usage,
+    router_biases,
     sequence_balance_loss,
     update_expert_biases,
 )
@@ -103,6 +105,13 @@ class StepMetrics:
     #: Under ``data.lockstep`` every micro-batch of a step shares it, so the
     #: per-step routing metrics are already per-domain.
     domain_id: int = -1
+    #: Name of the active domain; empty when the loader exposes no mixer.
+    domain_name: str = ""
+    #: Raw per-router expert counts plus the learned routers' balance bias,
+    #: ``{router: {"hash": bool, "counts": [E], "bias": [E]}}``.  Only filled on
+    #: snapshot steps (``train.router_every``), since it is the one signal that
+    #: cannot be reconstructed from the group-level scalars afterwards.
+    router_layers: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -129,6 +138,10 @@ class StepMetrics:
         # misleading zero.
         if self.domain_id >= 0:
             payload["domain_id"] = float(self.domain_id)
+        if self.domain_name:
+            payload["domain_name"] = self.domain_name
+        if self.router_layers:
+            payload["router_layers"] = self.router_layers
         for key in ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb"):
             value = getattr(self, key)
             if value is not None:
@@ -523,7 +536,9 @@ class Trainer:
             metrics.loss = flat[1]
             metrics.balance_loss = flat[2]
             mtp_values = flat[3 : 3 + len(mtp_depths)]
-            metrics.mtp_losses = {int(depth): value for depth, value in zip(mtp_depths, mtp_values)}
+            metrics.mtp_losses = {
+                int(depth): value for depth, value in zip(mtp_depths, mtp_values, strict=False)
+            }
             metrics.mtp_loss = sum(mtp_values) / len(mtp_values) if mtp_values else 0.0
             metrics.indexer_loss = (
                 flat[3 + len(mtp_depths)] if loss_output.indexer is not None else 0.0
@@ -532,6 +547,8 @@ class Trainer:
             # are auxiliary prediction slots, not corpus tokens.
             metrics.tokens = loss_output.main_token_count
             metrics.router = routing_metrics(routing)
+            if self._router_snapshot_due():
+                metrics.router_layers = layer_expert_counts(routing)
             metrics.swiglu = swiglu.as_dict()
             return total, metrics
 
@@ -574,6 +591,31 @@ class Trainer:
         return metrics
 
     # -- one training step ----------------------------------------------------
+    def _router_snapshot_due(self) -> bool:
+        every = int(self.config.train.router_every)
+        return every > 0 and self.step % every == 0
+
+    def _router_layer_snapshot(
+        self, micro_metrics: list[StepMetrics]
+    ) -> dict[str, dict[str, Any]]:
+        """Sum the micro-batch expert counts and attach the current biases."""
+        merged: dict[str, dict[str, Any]] = {}
+        for metric in micro_metrics:
+            for name, layer in metric.router_layers.items():
+                entry = merged.setdefault(
+                    name, {"hash": bool(layer.get("hash", False)), "counts": None}
+                )
+                counts = layer.get("counts") or []
+                if entry["counts"] is None:
+                    entry["counts"] = [int(value) for value in counts]
+                    continue
+                for index, value in enumerate(counts):
+                    entry["counts"][index] += int(value)
+        for name, bias in router_biases(self.model.model).items():
+            entry = merged.setdefault(name, {"hash": False, "counts": []})
+            entry["bias"] = bias
+        return merged
+
     def train_step(self) -> dict[str, Any]:
         step_started = time.perf_counter()
         self.model.train()
@@ -585,11 +627,15 @@ class Trainer:
         micro_metrics: list[StepMetrics] = []
         mtp_weight = self._mtp_weight()
         step_domain = -1
+        step_domain_name = ""
         for micro in range(accum):
             batch, routing_record = self._next_training_batch()
             current = getattr(self._batch_iter, "current_index", None)
             if current is not None:
                 step_domain = int(current)
+            source = getattr(self._batch_iter, "current_source", None)
+            if source is not None:
+                step_domain_name = str(source)
             with self._gradient_sync(micro == accum - 1):
                 micro_metrics.append(
                     self._forward_backward(
@@ -641,7 +687,12 @@ class Trainer:
             router=_merge_dicts([m.router for m in micro_metrics]),
             swiglu=_merge_dicts([m.swiglu for m in micro_metrics]),
             domain_id=step_domain,
+            domain_name=step_domain_name,
         )
+        if self._router_snapshot_due():
+            # Read after ``update_expert_biases`` above so the logged bias is
+            # the one the next step will actually route with.
+            averaged.router_layers = self._router_layer_snapshot(micro_metrics)
         if self._first_loss is None:
             self._first_loss = averaged.loss
 

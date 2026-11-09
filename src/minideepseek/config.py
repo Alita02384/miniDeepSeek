@@ -359,6 +359,10 @@ class TrainSettings(BaseConfig):
     save_best: bool = True
     #: Rewrite ``report.html`` every N steps (0 disables the live report).
     report_every: int = 0
+    #: Dump the raw per-router expert counts (and the learned routers' balance
+    #: bias) into ``metrics.jsonl`` every N steps (0 disables).  This is the only
+    #: routing signal that cannot be rebuilt from the group-level scalars later.
+    router_every: int = 0
     out_dir: str = "checkpoints/debug"
     mtp_weight: float = 0.3
     mtp_weight_final: float | None = None
