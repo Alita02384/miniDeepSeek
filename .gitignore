@@ -2,8 +2,7 @@
 data/*
 !data/manifests/
 !data/manifests/*.yaml
-download/*
-!download/README.md
+download/
 checkpoints/
 logs/
 reports/*

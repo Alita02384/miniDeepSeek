@@ -5,7 +5,7 @@ The 145M run needs ~3B pretraining tokens and a code SFT/GRPO set.  Pulling the
 upstream corpora in full would cost hundreds of GB, so each source is cut down
 to a few shards: roughly 2-3x the planned token budget per group, leaving room
 for the quality filters (``doc/data_plan_145m.md`` §3.3, §4.1).  Shard counts and
-the reasoning are recorded in ``download/README.md``.
+the reasoning are recorded in ``doc/external_data.md``.
 
 Everything lands under ``download/<group>/<dataset>/`` in the same layout the HF
 repo uses, together with ``download/manifest.json`` (bytes + sha256 + revision).

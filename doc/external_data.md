@@ -1,10 +1,11 @@
-# download/ — 外部语料（145M 预训练 + code）
+# 外部语料（download/）— 145M 预训练 + code
 
 > 对应计划：`doc/data_plan_145m.md` §3.2（预训练混料）、§4（code SFT/GRPO）、§8（评测边界）。
 > 这里只放**原始语料**，不做 tokenize、不做格式转换；处理产物仍走 `data/processed/`。
 >
-> `download/*` 已被 `.gitignore` 忽略（只保留本 README）。每个文件的
-> bytes + sha256 + 上游 revision 记录在 `manifest.json`。
+> **整个 `download/` 目录都不进 git**（`.gitignore` 已忽略），数据只在本地/服务器；
+> 本文件是它的说明。每个文件的 bytes + sha256 + 上游 revision 记录在
+> `download/manifest.json`。
 
 ## 1. 总量
 

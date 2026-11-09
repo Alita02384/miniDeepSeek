@@ -903,3 +903,15 @@
     会降到 ~22%；
   - 4K 推理默认 top-k=1024（dense），与 8K 的 64 不同；如需完全一致，4K 评测
     可显式设 64 做对照。
+
+## 2026-11-09 download/ 不进 git
+
+- **commit**: 见本条 commit
+- **做了什么**: `.gitignore` 从“忽略 `download/*`、保留 README”改为忽略整个 `download/`；
+  说明文档 `download/README.md` 移到 `doc/external_data.md`，脚本 docstring 同步。
+- **为什么**: `download/` 是 21.66 GB 原始语料，只应存在于本地/服务器，不应出现在仓库
+  任何位置。
+- **验证**: `git ls-files download/` 为空；`git check-ignore download/manifest.json`
+  命中；`ruff check` 通过。
+- **未完成 / 风险**: 21.66 GB 数据从未被 git 跟踪，但 `download/README.md` 曾出现在
+  本地历史 commit `c6e1279`（纯文档、无数据）；当前分支尚未 push。
