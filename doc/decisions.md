@@ -941,3 +941,22 @@
   trainer 的 metrics 路径，收益要在真实训练 step 上确认。
 - **风险**：`torch.compile` 首次调用多 ~10 s、每个新 T 可能再编译一次；失败会自动
   回退到 eager，不改变数值（误差 1.8e-7）。
+
+### D72. 训练路径的实测取舍：fused vs reference、冷编译、routing 同步
+
+- **reference 不能作为 fallback**：把 `MINIDEEPSEEK_ATTN_BACKEND=torch` 跑在训练
+  的真实 batch（2K 阶段 4096 token/rank、64 累加）上，step 0 = **203–235 s**
+  （~870 tok/s）；同一配置用 fused 是 **27.8 s**（~7.3k tok/s），差 **8.4x**。
+  之前误判为“reference 只慢 35%”是 benchmark 的 batch 形状（1 doc）造成的。
+- **fused 的冷编译约 28 分钟**：16:06 启动、16:34 出 step 0，中间是 attn_gym
+  Triton 逐个变体编译；热缓存之后瞬时。evaluating一个新 stage 前要预留这段时间，
+  中途 kill 会丢掉整段编译。
+- **`MINIDEEPSEEK_ROUTING_GPU=1`**：`RoutingRecord.add` 原来在每个 router 的
+  forward hook 里把 3 个张量 `.to("cpu")`（每 micro-batch 21 次中途同步），
+  改为在 GPU 上保留、指标仍设备侧计算；不改变数值，只影响 pretraining 的诊断路径
+  （replay/compare 仍走 CPU 副本）。
+- **`MINIDEEPSEEK_ATTN_BF16` 默认关闭**：bf16 的 Triton lowering 在本机冷编译明显
+  更慢（多次 >30 分钟未完成），留作缓存预热后再打开；fp32 fused 已是当前可用的
+  最快路径。
+- **mHC `torch.compile` 默认关闭**：单模块 2.17x，但整步只有 +0.6%，还要付首次
+  编译和 recompile 风险，训练时用 `MINIDEEPSEEK_COMPILE_MHC=0`。
