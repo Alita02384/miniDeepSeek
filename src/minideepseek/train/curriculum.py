@@ -47,6 +47,10 @@ class CurriculumStage(BaseConfig):
     batch_tokens: int | None = None
     batch_tokens_final: int | None = None
     batch_warmup_ratio: float | None = None
+    #: Per-stage gradient accumulation.  A longer ``seq_len`` can force a bigger
+    #: per-rank pack (the loader emits at least one pack per rank), so the stage
+    #: needs fewer accumulation steps to keep tokens/optimizer-step constant.
+    grad_accum: int | None = None
     index_topk: int | None = None
     #: Sparse target for this stage.  When set, the stage shrinks from
     #: ``index_topk`` (or the model default) to this value and then stays
@@ -94,6 +98,8 @@ def validate_stages(stages: list[CurriculumStage], *, max_context: int = 8192) -
             raise ValueError(f"stage {index}: batch_tokens must be positive")
         if stage.batch_warmup_ratio is not None and not 0 <= stage.batch_warmup_ratio <= 1:
             raise ValueError(f"stage {index}: batch_warmup_ratio must be in [0, 1]")
+        if stage.grad_accum is not None and stage.grad_accum <= 0:
+            raise ValueError(f"stage {index}: grad_accum must be positive")
         if stage.index_topk is not None and stage.index_topk <= 0:
             raise ValueError(f"stage {index}: index_topk must be positive")
         if stage.index_topk_final is not None and stage.index_topk_final <= 0:
@@ -153,6 +159,8 @@ def _stage_config(
         )
     if stage.batch_warmup_ratio is not None:
         config.data.batch_warmup_ratio = float(stage.batch_warmup_ratio)
+    if stage.grad_accum is not None:
+        config.train.grad_accum = int(stage.grad_accum)
     if stage.val_sources:
         from ..config import DataSourceSettings
 

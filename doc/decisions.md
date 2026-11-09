@@ -851,3 +851,22 @@
 - **影响**：中断后重跑同一条命令即可；硬杀（OOM/掉电）最多回退 `ckpt_every`
   步（当前 200 步 ≈ 5200 万 token）；`step`/LR/index top-k/MTP 权重都按全局
   step 续，数据从该阶段 shard 起点重排（`resume_data: false`）。
+
+### D67. 8K 阶段每步 token 翻倍的问题与卡数自适应配置
+
+- **原方案**：`curriculum_145m_4x4090.yaml` 三个 stage 共用 base 的 `grad_accum: 16`，
+  按“262,144 token/step”估算阶段步数（2K 1717 + 4K 6294 + 8K 3433 = 11,444 步）。
+- **问题**：数据加载器每个 rank 至少取一个 pack（`size = max(1, per_rank_tokens // seq_len)`）。
+  8K stage 配 `batch_tokens: 16384`、4 卡时每 rank 只有 4096 token，小于一个 8K pack，
+  被 `max(1, ...)` 抬成 **8192 token/rank**，实际全局 micro-batch 是 32,768，
+  ×16 = **524,288 token/step**。8K 阶段会吃掉 1.8B 而不是 0.9B，总预算变成 ~3.9B。
+- **修复**：
+  - `CurriculumStage` 增加 `grad_accum` 字段（`train/curriculum.py`），按 stage 覆盖累积步数；
+  - 8K stage 用 `grad_accum: 8`（4 卡），保持 262,144 token/step、11,444 总步数；
+  - 新增 `scripts/autoconfig_145m.py`：按 `torch.cuda.device_count()` 计算每个 stage 的
+    `batch_tokens = gpus × packs_per_rank × seq_len` 与 `grad_accum = 262144 // micro`，
+    生成 `configs/pretrain/generated/*_g{N}.yaml`；卡数不是 1/2/4/8/16 时直接报错。
+- **依据**：用户要求“卡数变化时 262k 不能变”。梯度累积按 target token 数加权
+  （commit `fade758`），所以 grad_accum 从 16 变 8 不改变优化语义。
+- **影响**：8K 阶段显存不变（每 rank 仍是一个 8K pack）；2K/4K 阶段的 `grad_accum`
+  随卡数变成 64/N，总步数与 LR schedule 不变。若继续用旧配置，8K 阶段会多消耗 0.9B token。

@@ -167,3 +167,17 @@ def test_curriculum_stage_val_sources(tmp_path):
         "code",
     ]
     assert config.train.val_sources[0].path == "vg.npz"
+
+
+def test_curriculum_stage_grad_accum_override(tmp_path):
+    base = _config()
+    stage = CurriculumStage(seq_len=8192, tokenized_path="stage.npz", until_step=100, grad_accum=8)
+    config = _stage_config(base, stage, out_dir=tmp_path, index=2, resume=None, schedule_steps=100)
+    assert config.train.grad_accum == 8
+
+
+def test_curriculum_stage_grad_accum_validation():
+    with pytest.raises(ValueError, match="grad_accum must be positive"):
+        validate_stages(
+            [CurriculumStage(seq_len=2048, tokenized_path="a.npz", until_step=1, grad_accum=0)]
+        )

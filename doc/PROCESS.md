@@ -942,3 +942,27 @@
   - 多卡要求所有 rank 都收到信号（torchrun/Slurm/k8s 正常；单卡 Xid 掉线会
     卡在集合通信，需要先杀进程）；
   - GRPO/OPD 有各自 trainer，未接信号处理，中断从配置 `resume` 重跑该 stage。
+
+## 2026-11-09 8K 阶段 token/step 修正与卡数自适应配置
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - `train/curriculum.py::CurriculumStage` 增加 `grad_accum` 覆盖，`_stage_config` 应用，
+    `validate_stages` 校验为正；
+  - 新增 `scripts/autoconfig_145m.py`：按卡数生成 `configs/pretrain/generated/` 下的
+    base + curriculum 配置，保持 262,144 token/optimizer-step；
+  - 新增 `doc/run_145m_gpuhome.md`：Mac 打包 → rsync → 无卡准备 → 切 GPU 开训的完整手册；
+  - 测试补 2 条（grad_accum 覆盖 / 非法值）。
+- **实现了什么**:
+  - 定位并修复 8K 阶段每步 524,288 token 的问题（loader 每 rank 至少一个 8K pack）；
+  - 1/2/4/8 卡生成的 tokens/step 均为 262,144：
+    4 卡时 2K/4K=16384×16、8K=32768×8；
+  - 卡数非 1/2/4/8/16 时脚本报错而不是悄悄改变 token 预算。
+- **验证**:
+  - `.venv/bin/python scripts/autoconfig_145m.py --gpus {1,2,4,8} --dry-run` 输出符合手算表；
+  - `.venv/bin/python -m pytest -q` → **235 passed**；
+  - `ruff check` 通过。
+- **未完成 / 风险**:
+  - 生成的配置未在真实多卡上跑过，需在 GPU 实例上先 `benchmark.py` 冒烟；
+  - `--gpus 16` 未实测（8K micro 131,072，显存不受影响但需确认 FSDP2 分片）；
+  - 文档里的 gpuhome 流程未在服务器实测，只核对了脚本与路径。
