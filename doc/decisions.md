@@ -923,3 +923,21 @@
   `doc/PROCESS.md` 2026-11-10。
 - **未做**：trainer 每个 micro-batch 的 8 次 `float()` 同步、mHC Sinkhorn 融合、
   MoE grouped GEMM（6 个专家仍各一次 GEMM，只是不再有 mask 开销）。
+
+### D71. 训练循环去同步 + mHC Sinkhorn 编译（D70 的续）
+
+- **背景**：D70 之后 4K×2 benchmark 到 11.9k tok/s，但训练端仍受每 micro-batch
+  大量 host 同步拖累。profiler/代码检查发现同步点远不止 loss 标量：
+  `swiglu_monitor` 每次激活调用 4 次 `.item()`（每 micro-batch 上百次）、
+  `routing_metrics` 每层 3 次 `float()`、trainer 8 次 loss 标量转换。
+- **改动**：
+  - SwiGLU 统计改为设备侧累加，monitor 退出时一次 `tolist()`；
+  - `routing_metrics` 全部 stack 后一次 `tolist()`；
+  - trainer 的 loss/mtp/balance/indexer 合并成一次 `tolist()`；
+  - `HcSplitSinkhorn` 的 20 次归一化在 CUDA 上走 `torch.compile(dynamic=True)`，
+    带异常回退和 `MINIDEEPSEEK_COMPILE_MHC=0` 开关。
+- **实测**：mHC 单次 1.21 ms → 0.557 ms（2.17x），端到端 11,910 → 11,987 tok/s
+  （+0.6%，在噪声内）；同步次数 ~230 → ~4 / micro-batch，但 benchmark 不经过
+  trainer 的 metrics 路径，收益要在真实训练 step 上确认。
+- **风险**：`torch.compile` 首次调用多 ~10 s、每个新 T 可能再编译一次；失败会自动
+  回退到 eager，不改变数值（误差 1.8e-7）。

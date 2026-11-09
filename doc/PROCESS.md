@@ -1059,3 +1059,19 @@
   - 服务器上 `configs/pretrain/generated/*.yaml` 已按 `autoconfig_145m.py --gpus 1`
     重新生成（micro 8192 / grad_accum 32，与 931be68 的默认值一致），
     上一次运行用的是旧的 4096/64，续跑时 `data_batches` 跳过量只是近似。
+
+## 2026-11-10（下午，续）
+
+- commit: f770267 perf: 训练循环去同步 + mHC Sinkhorn 走 torch.compile
+- 做了什么: 把每 micro-batch 的 host 同步从 ~230 次降到 ~4 次（SwiGLU 监控、
+  routing_metrics、trainer 标量），mHC 的 20 次 Sinkhorn 在 CUDA 上走
+  torch.compile（带回退）。
+- 实现了什么:
+  - mHC 单次调用 1.21 ms → **0.557 ms（2.17x）**，数值误差 1.8e-7；
+  - 4K×2 benchmark 11,910 → **11,987 tok/s**（+0.6%，同步收益 benchmark 不覆盖）；
+  - 新增 `tests/test_mhc.py`（eager/compiled 一致、双随机矩阵结构）。
+- 验证: 本地 `pytest -q` **251 passed, 2 skipped**；4090 上 mhc/moe/attention
+  **9 passed**；benchmark 见上。
+- 未完成 / 风险: 训练端真实收益待 step 10 后的 tok/s 确认；2K 阶段 bf16 的
+  Triton 首次编译仍需 10–20 分钟；`torch._grouped_mm`（torchtitan 的 MoE 做法）
+  实测 1.46x 但整步仅 ~0.7%，暂不接。
