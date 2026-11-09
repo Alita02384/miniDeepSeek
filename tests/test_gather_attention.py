@@ -84,3 +84,22 @@ def test_backend_torch_uses_reference():
     else:
         # CUDA auto path may use the fused kernel; only the shapes are compared.
         assert out_auto.shape == out_ref.shape
+
+
+@requires_fused
+def test_fused_matches_reference_with_fp32_inputs():
+    """The training path hands the kernel fp32 projections (RoPE upcasts).
+
+    The dispatcher casts only at the kernel boundary; the fused output must
+    still match the torch reference within bf16 tolerance.
+    """
+    device = "cuda"
+    inputs = _inputs(device, dtype=torch.float32)
+    scale = 0.125
+    ref = _run("torch", inputs, scale=scale)
+    fused = _run("attn_gym", inputs, scale=scale)
+    torch.testing.assert_close(fused[0].float(), ref[0].float(), atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(fused[1].float(), ref[1].float(), atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(fused[2].float(), ref[2].float(), atol=3e-2, rtol=3e-2)
+    torch.testing.assert_close(fused[3].float(), ref[3].float(), atol=3e-2, rtol=3e-2)
+    torch.testing.assert_close(fused[4].float(), ref[4].float(), atol=0.2, rtol=0.1)

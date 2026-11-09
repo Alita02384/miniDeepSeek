@@ -171,22 +171,33 @@ class RoutedExperts(nn.Module):
         flat_ids = topk_ids.reshape(-1).long()
         flat_scores = topk_scores.reshape(-1)
         owner = torch.arange(tokens, device=x.device).repeat_interleave(k)
-        out = torch.zeros_like(x)
+
+        # Group every token->expert pair by expert once per layer.  The sort
+        # turns the six masked gathers/scatters into six contiguous slices, and
+        # ``cumsum().tolist()`` replaces the per-expert ``mask.any()`` sync with
+        # a single host sync.  Same math as the masked loop, fewer kernels.
+        order = torch.argsort(flat_ids, stable=True)
+        sorted_owner = owner[order]
+        counts = torch.bincount(flat_ids, minlength=self.num_experts)
+        bounds = counts.cumsum(0).tolist()
+
+        gathered = x[sorted_owner]
+        expert_out = torch.empty_like(gathered)
+        start = 0
         for expert in range(self.num_experts):
-            mask = flat_ids == expert
-            if not mask.any():
+            stop = bounds[expert]
+            if stop <= start:
+                start = stop
                 continue
-            token_idx = owner[mask]
-            weights = flat_scores[mask]
-            x_e = x[token_idx]
+            x_e = gathered[start:stop]
             gate_up = torch.einsum("nd,efd->nef", x_e, self.w13.weight[expert])
             hidden = self.activation_fn(gate_up[:, 0], gate_up[:, 1])
-            y_e = torch.einsum("nf,df->nd", hidden, self.w2.weight[expert])
-            update = y_e * weights.unsqueeze(-1).to(y_e.dtype)
-            # Under autocast the expert matmuls return bf16 while the residual
-            # stream (and therefore ``out``) stays fp32; index_add_ requires
-            # both operands to share a dtype.
-            out.index_add_(0, token_idx, update.to(out.dtype))
+            expert_out[start:stop] = torch.einsum("nf,df->nd", hidden, self.w2.weight[expert])
+            start = stop
+
+        weighted = expert_out * flat_scores[order].unsqueeze(-1)
+        out = torch.zeros_like(x)
+        out.index_add_(0, sorted_owner, weighted.to(out.dtype))
         return out
 
 

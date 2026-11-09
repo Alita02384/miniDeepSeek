@@ -163,6 +163,18 @@ def _fused_gather_attention(
     impl = _load_attn_gym()
     if impl is None:
         return None
+    # RoPE/RMSNorm upcast the projections to fp32, and attn_gym's fp32 path
+    # does not use tensor cores: the same kernel is ~50x slower than bf16 on a
+    # 4090.  Cast at the kernel boundary and restore the caller's dtype; the
+    # softmax/LSE stay fp32 inside the kernel, and the residual stream keeps
+    # its original precision.
+    kernel_dtype = torch.bfloat16 if query.dtype == torch.float32 else query.dtype
+    output_dtype = query.dtype
+    query, local_kv, sparse_kv = (
+        query.to(kernel_dtype),
+        local_kv.to(kernel_dtype),
+        sparse_kv.to(kernel_dtype),
+    )
     gather_attn, aux_request = impl
     output, aux = gather_attn(
         query,
@@ -176,7 +188,7 @@ def _fused_gather_attention(
         scale=float(scale),
         return_aux=aux_request(lse=True),
     )
-    return output, aux.lse
+    return output.to(output_dtype), aux.lse
 
 
 def gather_attention(

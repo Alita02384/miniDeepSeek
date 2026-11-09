@@ -69,7 +69,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gpus", type=int, default=None, help="default: torch.cuda.device_count()")
     ap.add_argument("--tokens-per-step", type=int, default=262_144)
-    ap.add_argument("--per-rank-tokens", type=int, default=4096)
+    # 8192 tokens/rank keeps the 4K-stage peak at ~11.6 GiB on a 24 GB card
+    # (measured on a 4090, fused attention, optimizer state included) and
+    # amortises launch/sync overhead over twice as many tokens.  262,144 is
+    # divisible by 8192, so every stage keeps grad_accum 32 on one GPU.
+    ap.add_argument("--per-rank-tokens", type=int, default=8192)
     ap.add_argument("--base", default=DEFAULT_BASE)
     ap.add_argument("--curriculum", default=DEFAULT_CURRICULUM)
     ap.add_argument("--out-dir", default="configs/pretrain/generated")

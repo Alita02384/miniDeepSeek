@@ -901,3 +901,25 @@
   （`trunc_normal_(std=dim^-0.5)`）；untied 仍按上游（embedding std=1.0 + head std^-0.5）。
 - **影响**：首步 `main loss` 757 → **9.25**、mtp 104 → 9.23，梯度量级回到正常；
   参数量不变（仍 tied）；与上游的唯一差异是 tied 时共享矩阵的初始分布，已在源码注释说明。
+
+### D70. 训练吞吐三处优化：micro-batch 8192 / attention 边界 bf16 / MoE 排序 dispatch
+
+- **背景**：4090 实测 4K fwd+bwd 10.5k tok/s（MFU ~4%），低于 `hardware_budget.md`
+  的 15–20% 预算；单步 kernel 数上万，launch/同步占比高。
+- **micro-batch 4096→8192**：24GB 卡实测 4K×2 = **11.6 GiB**，4K×4 = 16384 token
+  在 20.4 GiB 处 OOM，故 8192 是安全上限（8K 阶段本来就是 8192/rank）。
+  `benchmark.py`（含 optimizer）4K×1 6,220 → 4K×2 **9,304 tok/s（+50%）**；
+  纯 fwd+bwd 口径 +22%（trainer 里 optimizer 已被 32 步梯度累积摊薄）。
+  `scripts/autoconfig_145m.py` 的 `--per-rank-tokens` 默认改为 8192，三阶段
+  grad_accum 均为 32，每步 token 数仍恒为 262,144。
+- **attention 边界 cast bf16**：RoPE/RMSNorm 会把 q/kv 升到 fp32，attn_gym 的
+  fp32 路径不用 tensor core（同一 kernel 20 ms vs bf16 0.27 ms）。只在 kernel
+  边界 cast，softmax/LSE 仍在 kernel 内 fp32，残差流与优化器状态保持原精度。
+  模型内 A/B：364 → 327 ms（+10%）。新增 fp32 输入下的 fused-vs-reference 测试。
+- **MoE 排序 dispatch**：一次 `argsort` + `bincount` + 单次 `index_add`，替代
+  6 次 mask/index_select/index_add 以及每个专家一次 `.any()` 的 GPU→CPU 同步。
+  数学等价，路由与权重不变；新增按 token 显式循环的等价性测试（fp32/bf16）。
+- **验证**：本地 `pytest -q` 242 passed；4090 上的 CUDA 等价测试与 A/B 见
+  `doc/PROCESS.md` 2026-11-10。
+- **未做**：trainer 每个 micro-batch 的 8 次 `float()` 同步、mHC Sinkhorn 融合、
+  MoE grouped GEMM（6 个专家仍各一次 GEMM，只是不再有 mask 开销）。
