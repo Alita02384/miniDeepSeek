@@ -17,6 +17,8 @@ import json
 import math
 import re
 import shutil
+import signal
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
@@ -34,7 +36,7 @@ from ..model.anticipatory import (
     probe_routing,
 )
 from ..model.batch import PackedBatch
-from ..model.checkpoint import load_checkpoint, save_checkpoint
+from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
 from ..model.routing import (
     record_routing,
     replay_routing,
@@ -153,6 +155,56 @@ class NonFiniteLossError(RuntimeError):
         self.metrics = metrics
 
 
+_CHECKPOINT_STEP_RE = re.compile(r"step_\d+")
+
+
+def latest_checkpoint(out_dir: str | Path) -> Path | None:
+    """Newest resumable checkpoint in ``out_dir`` (``final`` or ``step_*``).
+
+    Compares the recorded step of ``final`` with the numeric ``step_*``
+    directories so a stale ``final`` from an earlier run cannot shadow a newer
+    periodic checkpoint.
+    """
+    directory = Path(out_dir)
+    if not directory.is_dir():
+        return None
+    candidates: list[tuple[int, Path]] = []
+    final = directory / "final"
+    if final.is_dir():
+        try:
+            candidates.append((int(read_metadata(final).get("step", 0)), final))
+        except (OSError, ValueError, KeyError):
+            candidates.append((0, final))
+    for child in directory.iterdir():
+        if child.is_dir() and _CHECKPOINT_STEP_RE.fullmatch(child.name):
+            candidates.append((int(child.name.split("_")[1]), child))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+@contextlib.contextmanager
+def _stop_signals(trainer: Trainer):
+    """Turn SIGTERM/SIGINT into "finish this step, then checkpoint and exit".
+
+    A second signal re-raises ``KeyboardInterrupt`` so an operator can still
+    abort a hung step.  Handlers are only installed in the main thread (the
+    Python signal API requirement) and restored afterwards.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {}
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, trainer.request_stop)
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 class Trainer:
     """Train a :class:`MiniDeepSeekModel` on packed batches."""
 
@@ -202,6 +254,7 @@ class Trainer:
                 end_step=config.train.index_topk_end_step,
             )
         self.step = 0
+        self._stop_requested = False
         self._batch_factory = (
             train_batches if callable(train_batches) else (lambda: iter(train_batches))
         )
@@ -614,11 +667,46 @@ class Trainer:
         record.update(self._handle_spike(averaged.loss))
         return record
 
+    def request_stop(self, signum: int | None = None, frame: Any = None) -> None:
+        """Ask the loop to checkpoint and exit after the current step."""
+        del frame
+        if self._stop_requested:
+            raise KeyboardInterrupt
+        self._stop_requested = True
+        name = signal.Signals(signum).name if signum is not None else "stop"
+        print(
+            f"[trainer] {name} received: finishing step {self.step} and saving a "
+            "checkpoint; send the signal again to abort immediately",
+            flush=True,
+        )
+
     # -- public loop ----------------------------------------------------------
     def train(self, steps: int | None = None) -> dict[str, Any]:
         total_steps = int(steps if steps is not None else self.config.train.steps)
         started = time.time()
+        with _stop_signals(self):
+            self._train_until(total_steps, started)
+        summary = self.logger.summary() if self.logger is not None else {}
+        summary.update(
+            {
+                "steps_run": self.step,
+                "first_loss": self._first_loss,
+                "last_loss": self._last_loss,
+                "wall_seconds": round(time.time() - started, 3),
+                "tokens": self._tokens_seen,
+                "interrupted": bool(self._stop_requested),
+                "best_val_loss": (
+                    self.best_val_loss if math.isfinite(self.best_val_loss) else None
+                ),
+                "best_val_step": self._best_val_step,
+            }
+        )
+        return summary
+
+    def _train_until(self, total_steps: int, started: float) -> None:
         while self.step < total_steps:
+            if self._stop_requested:
+                break
             try:
                 record = self.train_step()
             except NonFiniteLossError as error:
@@ -677,24 +765,16 @@ class Trainer:
             ):
                 self._write_report()
             self.step += 1
-        self.save(name="final")
+            if self._stop_requested:
+                break
+        # ``final`` means "this stage finished"; an interrupted run writes a
+        # periodic-style checkpoint so the pipeline does not mistake a stopped
+        # stage for a completed one.
+        self.save(
+            name="final" if not self._stop_requested else f"step_{self.step:06d}"
+        )
         if self.config.train.report_every > 0:
             self._write_report()
-        summary = self.logger.summary() if self.logger is not None else {}
-        summary.update(
-            {
-                "steps_run": self.step,
-                "first_loss": self._first_loss,
-                "last_loss": self._last_loss,
-                "wall_seconds": round(time.time() - started, 3),
-                "tokens": self._tokens_seen,
-                "best_val_loss": (
-                    self.best_val_loss if math.isfinite(self.best_val_loss) else None
-                ),
-                "best_val_step": self._best_val_step,
-            }
-        )
-        return summary
 
     @torch.no_grad()
     def evaluate(self, batches: Iterable[PackedBatch], *, max_steps: int = 10) -> dict[str, Any]:
@@ -1008,8 +1088,14 @@ def build_trainer(
         tokenizer_hash=tokenizer_hash,
         distributed=context,
     )
-    if config.train.resume:
-        trainer.resume(config.train.resume)
+    resume_path = config.train.resume
+    if resume_path is None and config.train.auto_resume:
+        found = latest_checkpoint(config.train.out_dir)
+        if found is not None:
+            resume_path = str(found)
+            print(f"[trainer] auto-resume from {resume_path}", flush=True)
+    if resume_path:
+        trainer.resume(resume_path)
     return trainer, model
 
 

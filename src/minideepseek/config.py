@@ -367,6 +367,10 @@ class TrainSettings(BaseConfig):
     #: Per-block activation checkpointing: ~30% slower, much lower peak memory.
     #: Needed for 8K stages (and 220m@4K) on 24 GB cards.
     activation_checkpointing: bool = False
+    #: When ``resume`` is unset, continue from the newest ``final``/``step_*``
+    #: checkpoint in ``out_dir`` instead of starting from scratch.  This is what
+    #: makes "re-run the same command" recover an interrupted run.
+    auto_resume: bool = False
     resume: str | None = None
     # Skip already-consumed micro-batches when resuming the same dataset.  A
     # curriculum stage uses a different dataset, so it sets this to false.

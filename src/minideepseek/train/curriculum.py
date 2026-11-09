@@ -215,15 +215,21 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
         from .run import run as run_stage
 
         report = run_stage(config, settings.mode)
+        summary = report.get("summary", {}) or {}
         reports.append(
             {
                 "stage": index,
                 "seq_len": stage.seq_len,
                 "until_step": stage.until_step,
                 "checkpoint": report.get("checkpoint"),
-                "last_loss": report.get("summary", {}).get("last_loss"),
+                "last_loss": summary.get("last_loss"),
+                "interrupted": bool(summary.get("interrupted")),
             }
         )
         resume = report.get("checkpoint")
         previous_step = int(stage.until_step)
+        if summary.get("interrupted"):
+            # A signal asked us to stop: keep the remaining stages for the next
+            # invocation instead of advancing past an unfinished stage.
+            break
     return reports

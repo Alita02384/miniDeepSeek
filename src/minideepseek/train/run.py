@@ -263,7 +263,11 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
         distributed=context,
     )
     summary = trainer.train()
-    checkpoint = trainer.save("final")
+    if summary.get("interrupted"):
+        # The trainer already wrote step_<N>; leave ``final`` to a completed run.
+        checkpoint = Path(config.train.out_dir) / f"step_{trainer.step:06d}"
+    else:
+        checkpoint = trainer.save("final")
     report = {
         "mode": mode,
         "dataset": dataset.get("meta", {}) if isinstance(dataset, dict) else getattr(dataset, "meta", {}),

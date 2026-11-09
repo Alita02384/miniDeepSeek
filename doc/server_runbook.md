@@ -144,9 +144,41 @@ actor 训练状态另算。general GRPO 每 step 约 6×32=192 次打分，按 4
 如果要省显存/时间：把 RM 放独立卡并在 rank0 汇总打分，或把 `get_score`
 改成 `get_scores` 批量打分（当前逐条调用）。
 
-## 7. 断点 / 常见问题
+## 7. 断点续训 / 常见问题
 
-- **续跑**：再执行同一条 `run_pipeline.sh`；stage final 存在即跳过。
+**pretrain 课程（2K→4K→8K）支持断点续训**，三层的语义是：
+
+| 层 | 机制 |
+|---|---|
+| pipeline | 已有 `final/meta.json` 的 stage 直接跳过（`--force` 可强制重跑） |
+| curriculum | 每个 stage 优先续自己的 `final` 或最新 `step_*`；`until_step` 是累计值，跑满即停 |
+| trainer | 每 `train.ckpt_every` 步写 `step_NNNNNN/`（`keep_last_ckpt: 3`）；收到 SIGTERM/SIGINT 时**跑完当前 step** 再写 `step_NNNNNN` 退出 |
+
+所以中断后**重跑同一条命令**即可：
+
+```bash
+NPROC_PER_NODE=4 bash scripts/run_pipeline.sh configs/pipeline/minimind_145m.yaml
+# 只重跑 pretrain：
+NPROC_PER_NODE=4 bash scripts/train_curriculum.sh configs/pretrain/curriculum_145m_4x4090.yaml
+```
+
+几个必须知道的点：
+
+- **`final` 只表示“这一阶段跑完了”**。被信号打断的阶段只写 `step_NNNNNN`，
+  不会写 `final`，否则 pipeline 会把没跑完的 8K 阶段当成完成、直接进 SFT。
+- **硬杀（OOM kill、机器掉电）最多回退 `ckpt_every` 步**。当前 200 步 ×
+  262,144 token ≈ 5,200 万 token ≈ 4×4090 上 6–7 分钟。想更细就调小
+  `ckpt_every`（每个 checkpoint 约 2.3 GB，`keep_last_ckpt: 3`）。
+- **单 stage 直接跑**（`train_pretrain.sh configs/pretrain/pretrain_145m.yaml`）
+  打开 `train.auto_resume: true` 后同样会自动续，不用手写 `train.resume`。
+- **多卡要所有 rank 都收到信号**（torchrun 前台 Ctrl-C、Slurm
+  `--signal=B:TERM`、k8s preStop 都满足）。如果只是单卡 Xid/OOM 掉线，
+  其他 rank 会卡在集合通信里：先杀进程，再重跑。
+- **恢复后 step / LR / index_top-k / MTP 权重全部接着走**（都按全局 step 计算）；
+  数据顺序会从该阶段 shard 的起点重排（`resume_data: false`），不重复 token
+  也不跳 token，但同一 step 看到的数据与未中断时不同。
+- **SFT 也走同一个 trainer**，信号续训同样生效；GRPO/OPD 是各自的 trainer，
+  中断后从配置里的 `resume`（SFT/base checkpoint）重跑该 stage。
 - **OOM**：先看是 tokenize、pretrain 8K 还是 tool rollout。tool rollout 的
   prompt 平均约 1.2k token，`max_turns=3`，必要时降 `prompts_per_step`。
 - **NCCL 卡住**：4 卡消费级主板先 `export NCCL_P2P_DISABLE=1`。

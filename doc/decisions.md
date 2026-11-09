@@ -829,3 +829,25 @@
 - **影响**：8K 阶段约 27% 的全程 token 在 sparse 路径上（原为 5%）；4K 阶段
   行为不变；`IndexTopKSchedule` 的旧 ratio 语义保留，standalone 的
   `pretrain_145m.yaml` 仍按 end-of-run 收缩。
+
+### D69. 断点续训的语义：`final` 只代表“阶段完成”，信号触发优雅停
+
+- **问题**：`final/` 原来是训练循环结束就写，被 SIGTERM/Ctrl-C 打断时进程直接退出、
+  什么都不存（只能回退到最近一次 `step_*`）；而 pipeline 用
+  `stage_02_seq8192/final/meta.json` 是否存在判断“跑完了”，所以只要中断时写了
+  `final`，没跑完的 8K 阶段就会被当成完成、直接进 SFT。
+- **实际**：
+  - `Trainer.train()` 安装 SIGTERM/SIGINT 处理器（仅主线程），第一次信号只置
+    `_stop_requested`：跑完当前 step、写 checkpoint、返回；第二次信号才抛
+    `KeyboardInterrupt` 立即中止；
+  - 被打断时写 `step_NNNNNN/`，**不写 `final`**；`final` 仍只由“到达
+    `until_step`”的完整运行写出；
+  - 新增 `train.auto_resume`（默认 false，`pretrain_145m.yaml` 打开）：
+    `resume` 未设置时从 `out_dir` 里 step 最大的 `final`/`step_*` 续训；
+  - `latest_stage_checkpoint()` / `run_curriculum()` 已优先续阶段自己的
+    checkpoint，并在 `summary["interrupted"]` 时停止推进到下一阶段。
+- **依据**：pipeline 的“按 final 跳过”与“中断要能续”必须共存，只能让
+  `final` 承担“完成”语义。
+- **影响**：中断后重跑同一条命令即可；硬杀（OOM/掉电）最多回退 `ckpt_every`
+  步（当前 200 步 ≈ 5200 万 token）；`step`/LR/index top-k/MTP 权重都按全局
+  step 续，数据从该阶段 shard 起点重排（`resume_data: false`）。

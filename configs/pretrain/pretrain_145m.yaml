@@ -64,6 +64,9 @@ train:
     - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
   # 2K/4K fit 24 GB without recompute; the 8K stage turns this on.
   activation_checkpointing: false
+  # Re-running the same command continues from the newest final/step_* instead
+  # of restarting; SIGTERM/SIGINT checkpoint after the current step and exit.
+  auto_resume: true
 distributed:
   mode: fsdp2
   param_dtype: bfloat16
