@@ -9,6 +9,7 @@ Implements V4 report §2.3: sliding-window layers plus compressed attention
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 import torch
@@ -36,7 +37,7 @@ def _softmax_with_sink(logits: torch.Tensor, sink: torch.Tensor):
     return probs, lse
 
 
-def gather_attention(
+def _gather_attention_reference(
     query: torch.Tensor,
     local_kv: torch.Tensor,
     sparse_kv: torch.Tensor,
@@ -51,9 +52,9 @@ def gather_attention(
     """Packed gather attention: local sliding window + selected compressed KV.
 
     Shapes: query ``[1, H, T, D]``, local_kv ``[1, 1, T, D]``, sparse_kv
-    ``[1, 1, S, D]``, kv_indices ``[1, T, K]``.  This is a torch-only reference
-    implementation; a CUDA fused kernel can replace it later without changing
-    the model contract.
+    ``[1, 1, S, D]``, kv_indices ``[1, T, K]``.  Pure-torch reference used on
+    CPU, for tests, and as the fallback when the optional fused kernel is
+    unavailable.
     """
     batch, heads, tokens, dim = query.shape
     positions = torch.arange(tokens, device=query.device)
@@ -92,6 +93,118 @@ def gather_attention(
     output = torch.matmul(grouped_probs.to(acc), slots_acc)
     output = output.permute(0, 1, 3, 2, 4).reshape(batch, heads, tokens, dim)
     return output.to(query.dtype), lse
+
+
+_ATTN_GYM_IMPL: tuple | None | bool = None
+
+
+def _load_attn_gym():
+    """Lazily import attn_gym's fused gather attention.
+
+    Returns ``(gather_attn, AuxRequest)`` or ``None``.  The package is an
+    optional ``kernels`` extra; CPU-only installs and environments without it
+    keep using the torch reference path.
+    """
+    global _ATTN_GYM_IMPL
+    if _ATTN_GYM_IMPL is None:
+        try:
+            from attn_gym.sparse.gather_attn import AuxRequest, gather_attn
+
+            _ATTN_GYM_IMPL = (gather_attn, AuxRequest)
+        except Exception:  # pragma: no cover - optional dependency
+            _ATTN_GYM_IMPL = False
+    return _ATTN_GYM_IMPL or None
+
+
+def _fused_gather_attention(
+    query: torch.Tensor,
+    local_kv: torch.Tensor,
+    sparse_kv: torch.Tensor,
+    kv_indices: torch.Tensor,
+    attention_sink: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    sliding_window_size: int,
+    *,
+    scale: float,
+):
+    impl = _load_attn_gym()
+    if impl is None:
+        return None
+    gather_attn, aux_request = impl
+    output, aux = gather_attn(
+        query,
+        local_kv,
+        sparse_kv,
+        kv_indices.to(torch.int32).contiguous(),
+        attention_sink,
+        sliding_window_size=int(sliding_window_size),
+        cu_seqlens=cu_seqlens.to(torch.int32).contiguous(),
+        cu_seqlens_k=cu_seqlens_k.to(torch.int32).contiguous(),
+        scale=float(scale),
+        return_aux=aux_request(lse=True),
+    )
+    return output, aux.lse
+
+
+def gather_attention(
+    query: torch.Tensor,
+    local_kv: torch.Tensor,
+    sparse_kv: torch.Tensor,
+    kv_indices: torch.Tensor,
+    attention_sink: torch.Tensor,
+    cu_seqlens: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    sliding_window_size: int,
+    *,
+    scale: float,
+    impl: str | None = None,
+):
+    """Dispatch between the fused attn_gym kernel and the torch reference.
+
+    ``MINIDEEPSEEK_ATTN_BACKEND`` selects the default: ``auto`` (fused when a
+    CUDA device and attn_gym are available, otherwise reference), ``torch``
+    (always reference) or ``attn_gym`` (require the fused kernel).  ``impl``
+    overrides the environment for tests and A/B benchmarks.
+    """
+    backend = (impl or os.environ.get("MINIDEEPSEEK_ATTN_BACKEND", "auto")).lower()
+    if backend not in {"auto", "torch", "attn_gym"}:
+        raise ValueError(
+            f"unknown attention backend {backend!r}; expected auto, torch or attn_gym"
+        )
+    has_slots = kv_indices.shape[-1] > 0 and query.shape[2] > 0
+    if backend != "torch" and query.is_cuda and has_slots:
+        try:
+            fused = _fused_gather_attention(
+                query,
+                local_kv,
+                sparse_kv,
+                kv_indices,
+                attention_sink,
+                cu_seqlens,
+                cu_seqlens_k,
+                sliding_window_size,
+                scale=scale,
+            )
+        except Exception as error:  # pragma: no cover - depends on the kernel
+            if backend == "attn_gym":
+                raise RuntimeError(f"attn_gym gather attention failed: {error}") from error
+            fused = None
+        if fused is not None:
+            return fused
+    elif backend == "attn_gym" and not query.is_cuda:
+        raise RuntimeError("attn_gym gather attention requires CUDA tensors")
+    return _gather_attention_reference(
+        query,
+        local_kv,
+        sparse_kv,
+        kv_indices,
+        attention_sink,
+        cu_seqlens,
+        cu_seqlens_k,
+        sliding_window_size,
+        scale=scale,
+    )
 
 
 class GroupedOutProjection(nn.Module):

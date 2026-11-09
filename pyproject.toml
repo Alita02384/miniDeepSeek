@@ -26,6 +26,10 @@ hf = ["transformers>=4.46,<5", "sentencepiece>=0.2", "protobuf>=4"]
 vllm = ["vllm>=0.10"]
 verl = ["verl", "vllm>=0.10"]
 eval = ["lm-eval>=0.4"]
+# Fused CUDA kernels (optional).  Without them the torch reference path is used;
+# attn_gym is BSD-3-Clause and provides the Triton/CuTe gather-attention kernel
+# that torchtitan's DeepSeek-V4 reference calls.
+kernels = ["attn_gym>=0.0.17"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

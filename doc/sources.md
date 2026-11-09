@@ -114,3 +114,13 @@ shasum -a 256 tokenizer/tokenizer.json   # 71f32c68...
 数据来源：`minimind/dataset/{rlaif.jsonl, agent_rl.jsonl, agent_rl_math.jsonl,
 sft_t2t_mini.jsonl, sft_t2t.jsonl, pretrain_t2t.jsonl}`；许可见 MiniMind 数据集卡
 （pretrain/SFT 为 CC-BY-NC-4.0，agent/rlaif 为混合来源，接入前核对上游）。
+
+## 7. 可选 fused attention：attn_gym（2026-11-09）
+
+| 本项目 | 来源 | 说明 |
+|---|---|---|
+| `src/minideepseek/model/attention.py::gather_attention` | `attn_gym.sparse.gather_attn`（Attention Gym，BSD-3-Clause，PyPI `attn_gym>=0.0.17`） | **不复制源码**，通过 optional extra `kernels` 运行时导入；入参签名与 torchtitan `deepseek_v4/attention.py::_gather_attn` 一致 |
+| 集成方式参考 | torchtitan `torchtitan/models/deepseek_v4/attention.py`（BSD-3） | torchtitan 的 V4 参考实现直接调用 attn_gym；本项目保留 torch 参考实现作为 CPU/缺包回退 |
+
+- `MINIDEEPSEEK_ATTN_BACKEND=auto|torch|attn_gym` 控制后端；`auto` 在 CUDA 且有 attn_gym 时启用 fused。
+- 未复制任何 attn_gym 源码；`pyproject.toml` 的 `kernels` extra 只是可选依赖。

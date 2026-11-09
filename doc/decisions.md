@@ -870,3 +870,23 @@
   （commit `fade758`），所以 grad_accum 从 16 变 8 不改变优化语义。
 - **影响**：8K 阶段显存不变（每 rank 仍是一个 8K pack）；2K/4K 阶段的 `grad_accum`
   随卡数变成 64/N，总步数与 LR schedule 不变。若继续用旧配置，8K 阶段会多消耗 0.9B token。
+
+### D68. attention 快路径：可选的 attn_gym fused kernel
+
+- **原方案**：`gather_attention` 为纯 torch 参考实现（docstring 标注“可由 fused kernel 替换”）。
+- **实际**：
+  - 新增 optional extra `kernels = ["attn_gym>=0.0.17"]`（BSD-3-Clause，PyPI）；
+  - `gather_attention` 在 CUDA 上优先走 `attn_gym` 的 Triton fused（前向+反向），
+    失败或 CPU 时自动回退 torch 参考；
+  - `MINIDEEPSEEK_ATTN_BACKEND=torch|auto|attn_gym` 可强制切换，便于 A/B。
+- **依据**：torchtitan 的 V4 参考实现同样调用 `attn_gym.sparse.gather_attn`；
+  DeepSeek 官方的 TileKernels / FlashMLA / DeepGEMM 都要求 SM90/SM100，
+  4090（SM89）不可用（TileKernels README 明确 SM90/SM100 + CUDA 13.1）。
+- **实测**（4090，4K，`index_topk=64`，bf16，fwd+bwd 训练口径）：
+  - torch：fwd 144 ms / bwd 480 ms → **6,571 tok/s**
+  - attn_gym：fwd 196 ms / bwd 188 ms → **10,674 tok/s（1.62x）**，峰值显存 8.0→6.7 GiB
+  - `benchmark.py`（含 optimizer）：4,490 → 5,894 tok/s
+  - CUDA 等价测试：输出/LSE/Q/KV/sink 梯度一致，稀疏 KV 梯度在原子累加容差内
+- **影响**：attn_gym 的 Triton 前向在 4090/D=64 上效率很低（~0.14 TFLOPS），
+  是新的前向瓶颈；SDPA + 带状 mask 实测 0.61 ms/层（4K），说明还有约一个数量级
+  的空间，但需要重写 attention 才能同时保留 sink 与 LSE 语义。
