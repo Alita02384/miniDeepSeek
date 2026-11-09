@@ -915,3 +915,30 @@
   命中；`ruff check` 通过。
 - **未完成 / 风险**: 21.66 GB 数据从未被 git 跟踪，但 `download/README.md` 曾出现在
   本地历史 commit `c6e1279`（纯文档、无数据）；当前分支尚未 push。
+
+## 2026-11-09 断点续训
+
+- **commit**: `ccf1f64` feat: 断点续训——信号优雅停、auto_resume、final 只表示阶段完成
+- **做了什么**:
+  - `Trainer` 安装 SIGTERM/SIGINT 处理器：第一次信号跑完当前 step、写
+    `step_NNNNNN` 后退出；第二次立即 `KeyboardInterrupt`；
+  - `final/` 语义收紧为“阶段完成”，被打断只写 `step_*`；
+  - `train.auto_resume`（`pretrain_145m.yaml` 打开）：重跑同一条命令从
+    `out_dir` 里最新的 `final`/`step_*` 续训；
+  - `run_curriculum` 在 `summary.interrupted` 时停止推进下一阶段；
+  - `doc/server_runbook.md` §7 重写为断点续训说明；
+  - 新增 `tests/test_resume.py`（8 个用例）。
+- **实现了什么**:
+  - debug 课程实测：SIGTERM 打断在第 8 步 → 目录里只有 `step_000008`（无
+    `final`）→ 重跑从第 8 步继续到 30 步，再进 4K 阶段跑到 40 步完成；
+  - 恢复后 step / LR / index_topk / MTP 权重连续（都按全局 step 计算）。
+- **验证**:
+  - `.venv/bin/python -m pytest -q` → 233 passed；
+  - `.venv/bin/ruff check src tests scripts` → All checks passed；
+  - `scripts/train_curriculum.py --config <demo>` + `kill -TERM` +
+    重跑同命令 → 两个 stage 均 `interrupted: false` 且写出 `final`。
+- **未完成 / 风险**:
+  - 硬杀（OOM kill / 掉电）仍只回退到最近 `ckpt_every`（200 步）；
+  - 多卡要求所有 rank 都收到信号（torchrun/Slurm/k8s 正常；单卡 Xid 掉线会
+    卡在集合通信，需要先杀进程）；
+  - GRPO/OPD 有各自 trainer，未接信号处理，中断从配置 `resume` 重跑该 stage。
