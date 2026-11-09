@@ -966,3 +966,43 @@
   - 生成的配置未在真实多卡上跑过，需在 GPU 实例上先 `benchmark.py` 冒烟；
   - `--gpus 16` 未实测（8K micro 131,072，显存不受影响但需确认 FSDP2 分片）；
   - 文档里的 gpuhome 流程未在服务器实测，只核对了脚本与路径。
+
+## 2026-11-09 开训前审计：验证集缺失 / venv 无 torchrun / stage 内续跑回放
+
+- **commit**: 见本条 commit
+- **做了什么**:
+  - runbook 补 9 个验证 pack 的打包（§1）、单独压缩与上传（§2/§5）、解压校验（§6）；
+  - `scripts/train_{curriculum,pretrain,sft,grpo,opd}.sh` 改用
+    `.venv/bin/python -m torch.distributed.run`，不再依赖 `.venv/bin/torchrun`；
+  - `train/curriculum.py`：`_stage_config` 增加 `resume_data` 参数，
+    `run_curriculum` 只在“续本 stage 自己的 checkpoint”时置 True；
+  - runbook 更正 `code_8k` 说明（按 pack 数不会重放）、压缩体积 3.4 GB、
+    加 8K+重算峰值预检与 8K OOM 回退；`*.tar`/`*.zst` 加入 `.gitignore`。
+- **实现了什么**:
+  - 修掉第一个阻塞：`val_*` 从未打包/上传，`run()` 在 stage 0 启动时加载
+    `val_sources` 直接 `FileNotFoundError`（已复现）。本机产出 9 个
+    `val_{general,code,tool}_{2k,4k,8k}`（各 1.0M token），打成
+    `val_packs.tar.zst`（7.6 MB）；
+  - 修掉第二个阻塞：`--system-site-packages` 建的 venv 没有 `torchrun`
+    console script（脚本在系统 bin），§8.3/§8.4 多卡启动会 “No such file”；
+  - 修掉续跑回放：原先 stage 内中断后 `resume_data=False`，数据从 stage 开头
+    重放（4K 阶段中途续跑最多重放 ~1.1B token，且尾部数据永远看不到）；
+    现在同 stage 续跑按 `data_batches` 精确跳过。
+- **验证**:
+  - `.venv/bin/python -m pytest -q` → **237 passed**（新增 2 条 curriculum 用例）；
+    `ruff check` 通过；
+  - `autoconfig_145m.py --gpus 4 --dry-run` → 16384×16 / 16384×16 / 32768×8，
+    三阶段 tokens/step 均为 262,144；`--gpus 3` 按预期报错；
+  - 生成配置解析后 9 个训练源 + 9 个验证源全部加载，并通过 tokenizer hash /
+    seq_len 校验；
+  - debug 课程实跑两轮（stage1 `until_step` 4→8）：第二轮从 `step=4` 续跑到
+    `step=8`，`data_batches` 2→6（只新增 4 个 micro-batch，确实跳过 2 个）；
+  - `python -m torch.distributed.run --help` 正常。
+- **未完成 / 风险**:
+  - macOS 上 torchrun 起 2 进程 gloo 会崩在 gloo UV transport
+    （`pair.cc:253 op.nread == op.preamble.nbytes`）；旧 `.venv/bin/torchrun`
+    同样崩，属本机环境问题，**多卡 NCCL 路径未在本机验证**；
+  - 8K + 激活重算的真实显存仍无 CUDA 实测（硬件预算文里 27.9 GiB 是未开重算的
+    估算，PROCESS 2026-11-07 估 12–15 GiB）；runbook 已加 `measure_activation_budget`
+    预检与 `index_topk=1024` 回退；
+  - 换卡数续跑时 `data_batches` 的跳过量只是近似。

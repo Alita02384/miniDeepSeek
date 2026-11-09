@@ -79,6 +79,62 @@ def test_curriculum_stage_overrides_index_topk(tmp_path):
     assert config.train.resume_data is False
 
 
+def test_curriculum_same_stage_resume_skips_consumed_batches(tmp_path):
+    base = _config()
+    stage = CurriculumStage(seq_len=4096, tokenized_path="stage.npz", until_step=100)
+    own = tmp_path / "stage_01_seq4096" / "step_000400"
+    config = _stage_config(
+        base,
+        stage,
+        out_dir=tmp_path,
+        index=1,
+        resume=str(own),
+        schedule_steps=1000,
+        resume_data=True,
+    )
+    assert config.train.resume_data is True
+    assert config.train.resume == str(own)
+
+
+def test_curriculum_resume_data_flag_tracks_checkpoint_origin(tmp_path, monkeypatch):
+    """Same-stage resume replays the order; a stage hand-off must not skip."""
+    import json
+
+    import minideepseek.train.run as train_run
+    from minideepseek.config import dump_config
+    from minideepseek.train.curriculum import CurriculumSettings, run_curriculum
+
+    base = _config()
+    dump_config(base, tmp_path / "base.yaml")
+    stages = [
+        CurriculumStage(seq_len=2048, tokenized_path="a.npz", until_step=10),
+        CurriculumStage(seq_len=4096, tokenized_path="b.npz", until_step=20),
+    ]
+    out_dir = tmp_path / "out"
+    own = out_dir / "stage_00_seq2048" / "step_000010"
+    own.mkdir(parents=True)
+    (own / "meta.json").write_text(json.dumps({"step": 10}), encoding="utf-8")
+
+    seen = []
+
+    def fake_run(config, mode):
+        seen.append(config)
+        return {"checkpoint": str(own), "summary": {"interrupted": False}}
+
+    monkeypatch.setattr(train_run, "run", fake_run)
+    reports = run_curriculum(
+        CurriculumSettings(
+            base_config=str(tmp_path / "base.yaml"), stages=stages, out_dir=str(out_dir)
+        )
+    )
+
+    assert len(reports) == 2
+    assert seen[0].train.resume == str(own)
+    assert seen[0].train.resume_data is True
+    assert seen[1].train.resume == str(own)
+    assert seen[1].train.resume_data is False
+
+
 def test_curriculum_stage_index_topk_window(tmp_path):
     base = _config()
     stage = CurriculumStage(

@@ -123,6 +123,7 @@ def _stage_config(
     resume: str | None,
     schedule_steps: int,
     previous_step: int = 0,
+    resume_data: bool = False,
 ) -> TrainConfig:
     config = TrainConfig.from_dict(base.to_dict())
     config.model.seq_len = int(stage.seq_len)
@@ -171,8 +172,12 @@ def _stage_config(
     config.train.schedule_steps = int(schedule_steps)
     config.train.out_dir = str(out_dir / f"stage_{index:02d}_seq{stage.seq_len}")
     config.train.resume = resume
-    # Each stage has its own packed dataset/order.
-    config.train.resume_data = False
+    # Resuming this stage's *own* checkpoint replays the same deterministic
+    # packed order, so the already-consumed micro-batches can be skipped
+    # exactly.  A stage that continues from the *previous* stage's weights
+    # starts a new dataset, where the old ``data_batches`` counter would skip
+    # the wrong tokens.
+    config.train.resume_data = bool(resume_data)
     return config
 
 
@@ -219,6 +224,7 @@ def run_curriculum(settings: CurriculumSettings) -> list[dict[str, Any]]:
             resume=str(own) if own is not None else resume,
             schedule_steps=final_step,
             previous_step=previous_step,
+            resume_data=own is not None,
         )
         from .run import run as run_stage
 

@@ -14,6 +14,9 @@ reports/*
 *.bin
 *.npz
 *.npy
+# 打包产物（跑 run_145m_gpuhome.md 的 §2 生成）
+*.tar
+*.zst
 
 # 缓存 / 虚拟环境
 __pycache__/
