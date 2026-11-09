@@ -506,22 +506,27 @@ class Trainer:
                         coeff=self.config.train.balance_loss_coeff,
                     )
                 total = loss_output.total + balance_loss
-            metrics.main_loss = float(loss_output.main.detach())
-            metrics.mtp_losses = {
-                int(depth): float(value.detach())
-                for depth, value in loss_output.mtp.items()
-            }
-            metrics.mtp_loss = (
-                float(sum(metrics.mtp_losses.values()) / len(metrics.mtp_losses))
-                if metrics.mtp_losses
-                else 0.0
-            )
-            metrics.loss = float(loss_output.total.detach())
-            metrics.balance_loss = float(balance_loss.detach())
+            # One host sync for every scalar of this micro-batch.  Converting
+            # them one by one stalled the CPU right after each backward and
+            # kept the next micro-batch's forward from overlapping with it.
+            mtp_depths = list(loss_output.mtp)
+            scalars = [
+                loss_output.main.detach(),
+                loss_output.total.detach(),
+                balance_loss.detach(),
+                *[loss_output.mtp[depth].detach() for depth in mtp_depths],
+            ]
+            if loss_output.indexer is not None:
+                scalars.append(loss_output.indexer.detach())
+            flat = torch.cat([value.float().reshape(1) for value in scalars]).tolist()
+            metrics.main_loss = flat[0]
+            metrics.loss = flat[1]
+            metrics.balance_loss = flat[2]
+            mtp_values = flat[3 : 3 + len(mtp_depths)]
+            metrics.mtp_losses = {int(depth): value for depth, value in zip(mtp_depths, mtp_values)}
+            metrics.mtp_loss = sum(mtp_values) / len(mtp_values) if mtp_values else 0.0
             metrics.indexer_loss = (
-                float(loss_output.indexer.detach())
-                if loss_output.indexer is not None
-                else 0.0
+                flat[3 + len(mtp_depths)] if loss_output.indexer is not None else 0.0
             )
             # ``tokens`` is the LM token budget (main head only); MTP targets
             # are auxiliary prediction slots, not corpus tokens.

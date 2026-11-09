@@ -12,6 +12,7 @@ from ``DeepSeekV4Router.forward``.  Recording those tensors gives us:
 from __future__ import annotations
 
 import contextlib
+import math
 import types
 from dataclasses import dataclass, field
 
@@ -209,7 +210,12 @@ def domain_routing_metrics(
 
 
 def routing_metrics(record: RoutingRecord) -> dict[str, float]:
-    """Expert-load and routing-entropy summaries over all layers."""
+    """Expert-load and routing-entropy summaries over all layers.
+
+    Every per-layer scalar is kept on the device until one final ``tolist()``:
+    this runs once per micro-batch, so materialising each value individually
+    used to add ~20 GPU synchronisations per layer-loop.
+    """
     if not record:
         return {}
     max_ratios = []
@@ -220,19 +226,37 @@ def routing_metrics(record: RoutingRecord) -> dict[str, float]:
         counts = layer.routing_map.float().sum(dim=0)
         usage = counts / counts.sum().clamp_min(1.0)
         mean_count = usage.mean().clamp_min(1e-12)
-        max_ratios.append(float(usage.max() / mean_count))
+        max_ratios.append((usage.max() / mean_count).reshape(()))
         entropy = -(usage * usage.clamp_min(1e-12).log()).sum()
-        entropies.append(float(entropy / torch.log(torch.tensor(float(usage.numel())))))
-        active_fracs.append(float((counts > 0).float().mean()))
+        entropies.append((entropy / math.log(usage.numel())).reshape(()))
+        active_fracs.append((counts > 0).float().mean().reshape(()))
         usage_all.append(usage)
     usage_mean = torch.stack(usage_all).mean(dim=0)
-    return {
-        "expert_load_max_over_mean": float(sum(max_ratios) / len(max_ratios)),
-        "expert_load_max_over_mean_worst": float(max(max_ratios)),
-        "routing_entropy_normalized": float(sum(entropies) / len(entropies)),
-        "experts_used_fraction": float(sum(active_fracs) / len(active_fracs)),
-        "expert_usage_mean_std": float(usage_mean.std(unbiased=False)),
-    }
+    ratios = torch.stack(max_ratios)
+    entropy_values = torch.stack(entropies)
+    fractions = torch.stack(active_fracs)
+    values = torch.stack(
+        [
+            ratios.mean(),
+            ratios.max(),
+            entropy_values.mean(),
+            fractions.mean(),
+            usage_mean.std(unbiased=False),
+        ]
+    ).tolist()
+    return dict(
+        zip(
+            (
+                "expert_load_max_over_mean",
+                "expert_load_max_over_mean_worst",
+                "routing_entropy_normalized",
+                "experts_used_fraction",
+                "expert_usage_mean_std",
+            ),
+            values,
+            strict=True,
+        )
+    )
 
 
 def router_gate_snapshot(model) -> dict[str, dict[str, Tensor]]:

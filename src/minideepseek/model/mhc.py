@@ -8,9 +8,47 @@ reference implementation (20 iterations, log-space).
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+#: Lazily built ``torch.compile`` wrapper for the Sinkhorn loop.
+_SINKHORN_COMPILED = None
+_SINKHORN_UNAVAILABLE = False
+
+
+def _sinkhorn_normalise(comb: torch.Tensor, iters: int, eps: float) -> torch.Tensor:
+    for _ in range(iters):
+        comb = comb / (comb.sum(dim=-1, keepdim=True) + eps)
+        comb = comb / (comb.sum(dim=-2, keepdim=True) + eps)
+    return comb
+
+
+def _run_sinkhorn(comb: torch.Tensor, iters: int, eps: float) -> torch.Tensor:
+    """Normalise rows/columns ``iters`` times, optionally through torch.compile.
+
+    The loop is 40 tiny reductions per call and runs 16 times per step, so
+    launch overhead dominates.  Compiling only this helper keeps the rest of
+    the model out of the graph -- the MoE's dynamic shapes are what made a
+    whole-model compile fail.  Any failure falls back to the eager path.
+    """
+    global _SINKHORN_COMPILED, _SINKHORN_UNAVAILABLE
+    enabled = os.environ.get("MINIDEEPSEEK_COMPILE_MHC", "1") == "1"
+    if not enabled or _SINKHORN_UNAVAILABLE or not comb.is_cuda:
+        return _sinkhorn_normalise(comb, iters, eps)
+    if _SINKHORN_COMPILED is None:
+        try:
+            _SINKHORN_COMPILED = torch.compile(_sinkhorn_normalise, dynamic=True)
+        except Exception:  # pragma: no cover - depends on the local toolchain
+            _SINKHORN_UNAVAILABLE = True
+            return _sinkhorn_normalise(comb, iters, eps)
+    try:
+        return _SINKHORN_COMPILED(comb, iters, eps)
+    except Exception:  # pragma: no cover - depends on the local toolchain
+        _SINKHORN_UNAVAILABLE = True
+        return _sinkhorn_normalise(comb, iters, eps)
 
 
 class HcSplitSinkhorn(nn.Module):
@@ -33,11 +71,7 @@ class HcSplitSinkhorn(nn.Module):
         comb = comb * hc_scale[2] + hc_base[2 * hc :].view(*([1] * (comb.ndim - 2)), hc, hc)
         row_max = comb.max(dim=-1, keepdim=True).values
         comb = torch.exp(comb - row_max)
-        comb = comb / (comb.sum(dim=-1, keepdim=True) + self.eps)
-        comb = comb / (comb.sum(dim=-2, keepdim=True) + self.eps)
-        for _ in range(self.sinkhorn_iters - 1):
-            comb = comb / (comb.sum(dim=-1, keepdim=True) + self.eps)
-            comb = comb / (comb.sum(dim=-2, keepdim=True) + self.eps)
+        comb = _run_sinkhorn(comb, self.sinkhorn_iters, self.eps)
         return pre, post, comb
 
 

@@ -169,6 +169,32 @@ class SwiGLUStats:
     up_clamped: int = 0
     gate_abs_max: float = 0.0
     up_abs_max: float = 0.0
+    #: Device-side accumulators.  The activation hook runs dozens of times per
+    #: micro-batch; calling ``.item()`` there cost hundreds of synchronisations
+    #: per step, so scalars are materialised once when the monitor exits.
+    _counts: Tensor | None = field(default=None, repr=False, compare=False)
+    _maxes: Tensor | None = field(default=None, repr=False, compare=False)
+
+    def _accumulate(self, gate: Tensor, up: Tensor, limit: float | None) -> None:
+        if limit is not None:
+            pair = torch.stack([(gate > limit).sum(), (up.abs() > limit).sum()])
+            self._counts = pair if self._counts is None else self._counts + pair
+        maxes = torch.stack([gate.detach().abs().max(), up.detach().abs().max()]).float()
+        self._maxes = maxes if self._maxes is None else torch.maximum(self._maxes, maxes)
+
+    def _materialize(self) -> None:
+        parts = []
+        if self._counts is not None:
+            parts.append(self._counts.float())
+        if self._maxes is not None:
+            parts.append(self._maxes)
+        if not parts:
+            return
+        values = torch.cat(parts).tolist()
+        if self._counts is not None:
+            self.gate_clamped, self.up_clamped = int(values[0]), int(values[1])
+            values = values[2:]
+        self.gate_abs_max, self.up_abs_max = float(values[0]), float(values[1])
 
     def as_dict(self) -> dict[str, float]:
         return {
@@ -207,11 +233,7 @@ def swiglu_monitor(model) -> Iterator[SwiGLUStats]:
             with torch.no_grad():
                 stats.calls += 1
                 stats.elements += gate.numel()
-                if _activation.limit is not None:
-                    stats.gate_clamped += int((gate > _activation.limit).sum())
-                    stats.up_clamped += int((up.abs() > _activation.limit).sum())
-                stats.gate_abs_max = max(stats.gate_abs_max, float(gate.detach().abs().max()))
-                stats.up_abs_max = max(stats.up_abs_max, float(up.detach().abs().max()))
+                stats._accumulate(gate, up, _activation.limit)
             return _original(gate, up)
 
         activation._activation_fn = wrapper
@@ -219,5 +241,6 @@ def swiglu_monitor(model) -> Iterator[SwiGLUStats]:
     try:
         yield stats
     finally:
+        stats._materialize()
         for activation, original in patched:
             activation._activation_fn = original
