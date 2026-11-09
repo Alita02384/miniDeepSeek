@@ -182,7 +182,11 @@ class RoutedExperts(nn.Module):
             gate_up = torch.einsum("nd,efd->nef", x_e, self.w13.weight[expert])
             hidden = self.activation_fn(gate_up[:, 0], gate_up[:, 1])
             y_e = torch.einsum("nf,df->nd", hidden, self.w2.weight[expert])
-            out.index_add_(0, token_idx, y_e * weights.unsqueeze(-1).to(y_e.dtype))
+            update = y_e * weights.unsqueeze(-1).to(y_e.dtype)
+            # Under autocast the expert matmuls return bf16 while the residual
+            # stream (and therefore ``out``) stays fp32; index_add_ requires
+            # both operands to share a dtype.
+            out.index_add_(0, token_idx, update.to(out.dtype))
         return out
 
 

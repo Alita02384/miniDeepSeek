@@ -91,7 +91,13 @@ def test_mini_flavors_are_registered():
     assert len(config.layers) == 7
     assert config.tie_word_embeddings is True
     assert tuple(layer.attention.compress_ratio for layer in config.layers) == (
-        0, 0, 4, 32, 4, 32, 4
+        0,
+        0,
+        4,
+        32,
+        4,
+        32,
+        4,
     )
     assert config.layers[2].attention.compress_ratio == 4
     assert config.layers[3].attention.compress_ratio == 32
@@ -238,3 +244,24 @@ def test_three_model_designs_forward_backward():
         loss.total.backward()
         assert any(parameter.grad is not None for parameter in model.parameters())
         del model
+
+
+def test_routed_experts_accumulate_under_autocast():
+    """bf16 autocast: expert matmuls return bf16, residual stream stays fp32."""
+    moe = MoE(
+        MoEConfig(
+            dim=8,
+            hidden_dim=16,
+            num_experts=4,
+            num_shared_experts=1,
+            top_k=2,
+            n_hash_layers=0,
+            vocab_size=32,
+        )
+    )
+    x = torch.randn(6, 8)
+    ids = torch.randint(0, 32, (6,))
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        out = moe(x, input_ids=ids)
+    assert out.shape == x.shape
+    assert out.dtype == x.dtype
