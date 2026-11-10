@@ -1511,6 +1511,8 @@
     `checkpoints/opd_three_grpo_145m/final`；
   - 磁盘：数据盘 31 GB free、系统盘 25 GB free。
 - **验证**: 三个 GRPO/OPD 进程均正常退出并保存 final；OPD 20 step 完整。
+  服务器 `pytest -q` → **308 passed**（首轮有 2 个 GPU host 顺序相关
+  flaky，单独跑均通过，第二轮全通过）。
 - **未完成 / 风险**:
   - 10 step GRPO 不足以提升 reward，code/tool specialist 仍弱；
   - OPD 20 step KL 未收敛，需 200+ step 与 lr 扫描；
