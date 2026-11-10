@@ -34,10 +34,11 @@ import shutil
 import sys
 
 OLD = "for selected_slot in tl.static_range(0, TOPK):"
-#: Partial unroll: measured on the 2K shape (T=8192, S=2048, K=64, bf16) at
-#: 0.566 ms/launch vs 1.061 ms fully unrolled -- a partially rolled loop is also
-#: *faster* here, because 64 copies of the body thrash registers/i-cache.  At
-#: K=256 it compiles in 5.8 s instead of never finishing.
+#: Partial unroll.  Measured on the 2K shape (T=8192, S=2048, K=64, bf16),
+#: interleaved three rounds: 0.819 ms/launch vs 1.047 ms fully unrolled (-22%),
+#: and at K=256 the first call is 5.8 s instead of never finishing.  A partially
+#: rolled loop is *faster* here because 64 copies of the body thrash the
+#: register allocator and the instruction cache.
 UNROLL = 16
 NEW = (
     f"for selected_slot in tl.range(0, TOPK, loop_unroll_factor={UNROLL}):"
