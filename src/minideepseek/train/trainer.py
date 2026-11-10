@@ -485,6 +485,7 @@ class Trainer:
         routing_record=None,
         *,
         micro_index: int = 0,
+        collect_metrics: bool = True,
     ) -> StepMetrics:
         batch = batch.to(self.device)
         metrics = StepMetrics(mtp_weight=mtp_weight)
@@ -546,10 +547,16 @@ class Trainer:
             # ``tokens`` is the LM token budget (main head only); MTP targets
             # are auxiliary prediction slots, not corpus tokens.
             metrics.tokens = loss_output.main_token_count
-            metrics.router = routing_metrics(routing)
-            if self._router_snapshot_due():
-                metrics.router_layers = layer_expert_counts(routing)
-            metrics.swiglu = swiglu.as_dict()
+            # Diagnostics cost a reduction + a host sync per router layer per
+            # micro-batch (32 of them per optimizer step).  The step-level
+            # value is an average anyway, so only the last micro-batch pays for
+            # it; ``collect_metrics=False`` keeps the record accumulating but
+            # skips the host round-trip.
+            if collect_metrics:
+                metrics.router = routing_metrics(routing)
+                metrics.swiglu = swiglu.as_dict()
+                if self._router_snapshot_due():
+                    metrics.router_layers = layer_expert_counts(routing)
             return total, metrics
 
         total = None
@@ -643,6 +650,7 @@ class Trainer:
                         mtp_weight,
                         routing_record,
                         micro_index=micro,
+                        collect_metrics=micro == accum - 1,
                     )
                 )
         self._tokens_seen += sum(m.tokens for m in micro_metrics)
