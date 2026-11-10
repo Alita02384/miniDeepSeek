@@ -1396,3 +1396,34 @@
   - FSDP2 + cached 未接（只支持 DDP）；
   - general GRPO 的 1.8B reward model 尚未在 4090 上实测加载/显存；
   - SFT/GRPO/OPD 的完整三领域实跑尚未完成（SFT general 进行中）。
+
+## 2026-11-11（README / 视觉资产）
+
+- **commit**: `5d41f5f` docs: 重做 README，加入专属 logo、banner 与架构图
+
+- 做了什么:
+  - 重写 README：hero banner、徽章、模型矩阵、V4 架构图、Mermaid 流水线、
+    当前进展/实测、目录、边界、文档地图；
+  - 新增 `assets/logo.svg|png`、`assets/banner.svg|png`、`assets/architecture.svg|png`；
+  - 快速开始拆成 CPU 两分钟验证、数据准备、145M 训练、监控/评估/导出四步，
+    所有相对链接指向仓库内实际存在的文档/脚本。
+
+- 实现了什么:
+  - README 从“能力清单式”改为按使用路径组织：先跑通 CPU 门禁，再按
+    数据 → 预训练 → SFT/GRPO/OPD 的顺序复现；
+  - 视觉资产全部自包含（无外部图片依赖），SVG 在 GitHub 上直接渲染；
+  - 更新了过期状态：305 tests、145M 2K stage step 1200/1717、SFT/GRPO general
+    结果、vLLM/EP 等边界。
+
+- 验证:
+  - `pytest -q` → **305 passed, 2 skipped**；
+  - README 中 47 个相对链接全部存在；
+  - Mermaid 流水线用 mermaid 11 在本地渲染通过；
+  - 用 GitHub Markdown API 渲染预览，检查了 hero/表格/代码块/图片路径。
+
+- 未完成 / 风险:
+  - `scripts/run_pipeline.sh` 与 3B 分域 pack 布局仍未完全对齐，README 已注明
+    当前以 `train_curriculum.sh` + 单阶段脚本为准；
+  - 训练状态数据来自 `doc/PROCESS.md` / `doc/posttraining_plan.md`（2026-11-11），
+    后续 run 推进后需要同步更新；
+  - logo/banner 的 PNG 是本地 Chrome 渲染产物，不参与运行时。
