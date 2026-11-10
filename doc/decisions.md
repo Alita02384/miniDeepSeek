@@ -1113,3 +1113,27 @@
     tests/test_val_plumbing.py` → **61 passed**。
 - **代价**：每次验证多花约 265k token（聚合 65k + 三个域各 65k），约一个训练 step
   的量，每 200 步一次（~1 小时），可以忽略。
+
+### D80. 8K 的 K=256 编译：`tl.static_range` → `tl.range`，15 分钟变 3 秒
+
+- **根因**（不是候选数、不是显存）：`attn_gym/.../triton/forward.py` 里
+  `for selected_slot in tl.static_range(0, TOPK)` 会被 Triton **完全展开**。
+  TOPK=256 时 IR 里有 256 份 online-softmax 循环体，SM89 上 `make_ttgir` 跑
+  >15 分钟不产出、也不写 cache；而 backward 的同名循环作者用的是 `tl.range`
+  （动态 scf.for），所以一直只有 forward 编不出来。
+- **修法**：`scripts/patch_attn_gym.py` 把两处换成 `tl.range(0, TOPK)`（幂等、
+  留 `.orig` 备份、`--restore` 可回滚、`--check` 可判定）。语义不变：循环顺序、
+  累加顺序、mask 都一样，只是不再展开。
+- **实测**（8K 形状：T=8192, S=256, K=256, bf16, 4090）：
+  | | 打补丁前 | 打补丁后 |
+  |---|---|---|
+  | 首次调用（含编译） | >900 s，未产出 | **3.0 s** |
+  | backward（含编译） | 未测到 | 9.9 s |
+  | 稳态 fwd | — | 3.28 ms/launch |
+  | 数值 vs torch reference | — | max 7.8e-3 / mean 1.5e-4（bf16 噪声级） |
+  | 峰值显存 | — | 1.95 GiB |
+- **副作用**：kernel 源码变了，Triton 的 cache key 全变，三个 stage 的 attention
+  变体都要重编一次——但有了这个补丁是**秒级**，所以 prewarm 从「必须提前几小时约窗口」
+  降级成「可有可无」。正在跑的进程不会被改动生效，必须在 8K 阶段（step 8011）前重启一次。
+- **待办**：这是对已安装依赖的补丁，不是 fork。换机器/升级 attn_gym 后要重跑一次
+  `python scripts/patch_attn_gym.py`；上游把 forward 也改成 `tl.range` 之后可以删掉。
