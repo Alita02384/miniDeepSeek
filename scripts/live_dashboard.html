@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>miniDeepSeek · live training</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --line: #30363d; --fg: #e6edf3;
+    --dim: #8b949e; --accent: #58a6ff; --good: #3fb950; --warn: #d29922;
+    --c1: #58a6ff; --c2: #f78166; --c3: #3fb950; --c4: #d2a8ff; --c5: #ffa657;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap;
+           gap: 18px; align-items: baseline; padding: 10px 16px;
+           background: #0d1117ee; border-bottom: 1px solid var(--line);
+           backdrop-filter: blur(4px); }
+  header h1 { font-size: 13px; margin: 0; font-weight: 600; letter-spacing: .04em; }
+  header .stat { color: var(--dim); }
+  header .stat b { color: var(--fg); font-weight: 600; }
+  #state { margin-left: auto; }
+  #state.ok { color: var(--good); } #state.bad { color: var(--warn); }
+  main { display: grid; gap: 12px; padding: 12px 16px 28px;
+         grid-template-columns: repeat(auto-fit, minmax(430px, 1fr)); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 10px 12px 6px; min-width: 0; }
+  .panel.wide { grid-column: 1 / -1; }
+  .panel h2 { margin: 0 0 2px; font-size: 12px; font-weight: 600; color: var(--fg); }
+  .panel .sub { color: var(--dim); font-size: 11px; margin-bottom: 6px; }
+  canvas { width: 100%; height: 190px; display: block; }
+  .panel.wide canvas { height: 230px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--dim);
+            font-size: 11px; margin-top: 4px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 5px;
+              vertical-align: middle; border-radius: 2px; }
+  #experts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+             gap: 8px 18px; }
+  .layer { font-size: 11px; }
+  .layer .name { color: var(--dim); margin-bottom: 2px; }
+  .bar { display: flex; align-items: center; gap: 6px; margin: 1px 0; }
+  .bar span { width: 14px; color: var(--dim); }
+  .bar i { display: block; height: 7px; border-radius: 2px; background: var(--accent); }
+  .bar em { font-style: normal; color: var(--dim); font-size: 10px; }
+  footer { color: var(--dim); padding: 0 16px 20px; font-size: 11px; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>miniDeepSeek · live</h1>
+  <div class="stat">step <b id="s-step">–</b></div>
+  <div class="stat">loss <b id="s-loss">–</b> <span id="s-ema"></span></div>
+  <div class="stat">tok/s <b id="s-toks">–</b></div>
+  <div class="stat">ETA <b id="s-eta">–</b></div>
+  <div class="stat">tokens <b id="s-tokens">–</b></div>
+  <div class="stat">mem <b id="s-mem">–</b></div>
+  <div id="state" class="ok">connecting…</div>
+</header>
+
+<main>
+  <section class="panel wide">
+    <h2>loss</h2>
+    <div class="sub">train step loss (thin) · EMA (thick) · validation (dots)</div>
+    <canvas id="c-loss"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c1)"></i>train</span>
+      <span><i style="background:var(--c3)"></i>EMA</span>
+      <span><i style="background:var(--c2)"></i>val</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>validation by domain</h2>
+    <div class="sub">val_loss_general / code / tool</div>
+    <canvas id="c-val"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c1)"></i>general</span>
+      <span><i style="background:var(--c2)"></i>code</span>
+      <span><i style="background:var(--c3)"></i>tool</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>throughput</h2>
+    <div class="sub">tokens/s (whole job)</div>
+    <canvas id="c-speed"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>grad norm</h2>
+    <div class="sub">log scale</div>
+    <canvas id="c-grad"></canvas>
+  </section>
+
+  <section class="panel">
+    <h2>MoE routing</h2>
+    <div class="sub">max/mean expert load (left) · experts used (right, 0–1)</div>
+    <canvas id="c-router"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c4)"></i>load max/mean</span>
+      <span><i style="background:var(--c5)"></i>experts used</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>learning rate</h2>
+    <div class="sub">optimizer lr</div>
+    <canvas id="c-lr"></canvas>
+  </section>
+
+  <section class="panel wide">
+    <h2>expert load · latest snapshot</h2>
+    <div class="sub" id="exp-sub">per layer share of routed tokens (6 experts)</div>
+    <div id="experts"></div>
+  </section>
+</main>
+
+<footer id="foot">waiting for data…</footer>
+
+<script>
+const DATA_URL = new URLSearchParams(location.search).get('data')
+             || 'http://127.0.0.1:8765/data';
+const POLL_MS = 5000;
+const CSS = getComputedStyle(document.documentElement);
+const color = (name, fallback) => (CSS.getPropertyValue(name) || fallback).trim();
+
+const stateEl = document.getElementById('state');
+const setState = (text, ok) => { stateEl.textContent = text; stateEl.className = ok ? 'ok' : 'bad'; };
+
+function fmt(x, digits = 3) {
+  if (x === null || x === undefined || Number.isNaN(x)) return '–';
+  if (Math.abs(x) >= 1e6) return (x / 1e6).toFixed(2) + 'M';
+  if (Math.abs(x) >= 1e4) return (x / 1e3).toFixed(1) + 'k';
+  return Number(x).toFixed(digits);
+}
+function dur(seconds) {
+  if (!seconds || seconds < 0) return '–';
+  const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
+}
+
+/* ---------- tiny canvas line chart ---------- */
+function chart(canvas, series, opts = {}) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const live = series.filter(s => s.points && s.points.length);
+  const pad = { l: 46, r: opts.right ? 40 : 10, t: 8, b: 22 };
+  const plotW = Math.max(10, w - pad.l - pad.r), plotH = Math.max(10, h - pad.t - pad.b);
+  ctx.font = '10px ui-monospace, monospace';
+
+  if (!live.length) {
+    ctx.fillStyle = color('--dim', '#8b949e');
+    ctx.fillText('no data yet', pad.l, pad.t + 14);
+    return;
+  }
+
+  const xs = live.flatMap(s => s.points.map(p => p[0]));
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const span = x1 - x0 || 1;
+  const X = x => pad.l + (x - x0) / span * plotW;
+
+  const axisFor = (which) => {
+    const pts = live.filter(s => (s.axis || 'left') === which)
+                    .flatMap(s => s.points.map(p => p[1]))
+                    .filter(v => Number.isFinite(v) && (!opts.log || v > 0));
+    if (!pts.length) return null;
+    let lo = Math.min(...pts), hi = Math.max(...pts);
+    if (opts.log) { lo = Math.log10(lo); hi = Math.log10(hi); }
+    if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+    const m = (hi - lo) * 0.08; lo -= m; hi += m;
+    const Y = opts.log
+      ? v => pad.t + (1 - (Math.log10(v) - lo) / (hi - lo)) * plotH
+      : v => pad.t + (1 - (v - lo) / (hi - lo)) * plotH;
+    return { lo, hi, Y };
+  };
+  const left = axisFor('left'), right = axisFor('right');
+
+  // grid + left axis labels
+  ctx.strokeStyle = color('--line', '#30363d'); ctx.lineWidth = 1;
+  ctx.fillStyle = color('--dim', '#8b949e');
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.t + plotH * i / 4;
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + plotW, y); ctx.stroke();
+    if (left) {
+      const frac = 1 - i / 4;
+      const v = opts.log ? Math.pow(10, left.lo + (left.hi - left.lo) * frac)
+                         : left.lo + (left.hi - left.lo) * frac;
+      ctx.fillText(fmt(v, opts.digits ?? 2), 4, y + 3);
+    }
+  }
+  if (right) {
+    ctx.fillStyle = color('--dim', '#8b949e');
+    for (let i = 0; i <= 4; i++) {
+      const y = pad.t + plotH * i / 4;
+      const v = right.lo + (right.hi - right.lo) * (1 - i / 4);
+      ctx.fillText(fmt(v, 2), pad.l + plotW + 6, y + 3);
+    }
+  }
+  // x labels
+  ctx.fillStyle = color('--dim', '#8b949e');
+  ctx.fillText(String(Math.round(x0)), pad.l, h - 6);
+  const endLabel = String(Math.round(x1));
+  ctx.fillText(endLabel, pad.l + plotW - ctx.measureText(endLabel).width, h - 6);
+
+  for (const s of live) {
+    const axis = (s.axis || 'left') === 'right' ? right : left;
+    if (!axis) continue;
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 1.6;
+    ctx.setLineDash(s.dash || []);
+    ctx.beginPath();
+    let started = false;
+    for (const [x, y] of s.points) {
+      if (!Number.isFinite(y) || (opts.log && y <= 0)) { started = false; continue; }
+      const px = X(x), py = axis.Y(y);
+      if (!started) { ctx.moveTo(px, py); started = true; } else { ctx.lineTo(px, py); }
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+    if (s.dots) {
+      ctx.fillStyle = s.color;
+      for (const [x, y] of s.points) {
+        if (!Number.isFinite(y)) continue;
+        ctx.beginPath(); ctx.arc(X(x), axis.Y(y), 2.4, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+  }
+}
+
+/* ---------- rendering ---------- */
+function series(rows, key, opts = {}) {
+  return rows.filter(r => Number.isFinite(r[key]))
+             .map(r => [r.step, r[key]]);
+}
+
+function render(data) {
+  const rows = data.rows || [];
+  const latest = data.latest || {};
+  document.getElementById('s-step').textContent = latest.step ?? '–';
+  document.getElementById('s-loss').textContent = fmt(latest.loss, 4);
+  document.getElementById('s-ema').textContent =
+    latest.loss_ema ? `(ema ${fmt(latest.loss_ema, 4)})` : '';
+  document.getElementById('s-toks').textContent = fmt(latest.tokens_per_sec, 0);
+  document.getElementById('s-eta').textContent = dur(latest.eta_seconds);
+  document.getElementById('s-tokens').textContent = fmt(latest.tokens_seen, 0);
+  document.getElementById('s-mem').textContent =
+    latest.mem_peak_mb ? (latest.mem_peak_mb / 1024).toFixed(1) + ' GiB' : '–';
+
+  const c = {
+    c1: color('--c1', '#58a6ff'), c2: color('--c2', '#f78166'),
+    c3: color('--c3', '#3fb950'), c4: color('--c4', '#d2a8ff'),
+    c5: color('--c5', '#ffa657'), dim: color('--dim', '#8b949e'),
+  };
+
+  chart(document.getElementById('c-loss'), [
+    { color: c.c1, points: series(rows, 'loss'), width: 1 },
+    { color: c.c3, points: series(rows, 'loss_ema'), width: 2.2 },
+    { color: c.c2, points: series(rows, 'val_loss'), width: 1.2, dots: true },
+  ], { digits: 2 });
+
+  chart(document.getElementById('c-val'), [
+    { color: c.c1, points: series(rows, 'val_loss_general'), dots: true },
+    { color: c.c2, points: series(rows, 'val_loss_code'), dots: true },
+    { color: c.c3, points: series(rows, 'val_loss_tool'), dots: true },
+  ], { digits: 2 });
+
+  chart(document.getElementById('c-speed'),
+        [{ color: c.c3, points: series(rows, 'tokens_per_sec') }], { digits: 0 });
+
+  chart(document.getElementById('c-grad'),
+        [{ color: c.c5, points: series(rows, 'grad_norm') }], { log: true, digits: 2 });
+
+  chart(document.getElementById('c-router'), [
+    { color: c.c4, points: series(rows, 'router_learned_expert_load_max_over_mean') },
+    { color: c.c5, points: series(rows, 'router_learned_experts_used_fraction'),
+      axis: 'right' },
+  ], { digits: 2 });
+
+  chart(document.getElementById('c-lr'),
+        [{ color: c.c1, points: series(rows, 'lr') }], { digits: 6 });
+
+  renderExperts(data.router_layers);
+}
+
+function renderExperts(snapshot) {
+  const host = document.getElementById('experts');
+  const sub = document.getElementById('exp-sub');
+  if (!snapshot || !snapshot.layers) {
+    host.innerHTML = '<span style="color:var(--dim)">no routing snapshot yet ' +
+                     '(train.router_every steps)</span>';
+    return;
+  }
+  sub.textContent = `snapshot at step ${snapshot.step} · share of routed tokens per expert ` +
+                    `(dashed = would be 1/6)`;
+  const layers = Object.entries(snapshot.layers);
+  host.innerHTML = layers.map(([name, info]) => {
+    const counts = info.counts || [];
+    const total = counts.reduce((a, b) => a + b, 0) || 1;
+    const max = Math.max(...counts, 1);
+    const bars = counts.map((n, i) => {
+      const share = n / total;
+      const width = Math.max(1, Math.round(n / max * 90));
+      const warn = share < 1 / 12 ? 'background:var(--c2)' : '';
+      return `<div class="bar"><span>e${i}</span>` +
+             `<i style="width:${width}px;${warn}"></i>` +
+             `<em>${(share * 100).toFixed(1)}%</em></div>`;
+    }).join('');
+    const tag = info.hash ? 'hash' : 'learned';
+    const short = name.replace('layers.', 'L').replace('.feed_forward.router', '')
+                      .replace('mtp_layers.', 'mtp');
+    return `<div class="layer"><div class="name">${short} · ${tag}</div>${bars}</div>`;
+  }).join('');
+}
+
+/* ---------- polling ---------- */
+let lastGood = 0;
+async function poll() {
+  try {
+    const res = await fetch(DATA_URL + '?t=' + Date.now(), { cache: 'no-store' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    lastGood = Date.now();
+    render(data);
+    const age = data.age_s === null ? '?' : `${Math.round(data.age_s)}s`;
+    const err = data.error ? ` · ${data.error}` : '';
+    setState(`live · lag ${age}${err}`, !data.error);
+    document.getElementById('foot').textContent =
+      `${data.file}  ·  ${(data.rows || []).length} points  ·  ` +
+      `updated ${new Date().toLocaleTimeString()}`;
+  } catch (err) {
+    setState(`offline · ${err.message} — is live_dashboard.py running?`, false);
+    if (lastGood) {
+      document.getElementById('foot').textContent =
+        `last successful update ${new Date(lastGood).toLocaleTimeString()}`;
+    }
+  }
+}
+poll();
+setInterval(poll, POLL_MS);
+window.addEventListener('resize', () => poll());
+</script>
+</body>
+</html>

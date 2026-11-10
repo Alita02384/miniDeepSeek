@@ -269,17 +269,38 @@ class RolloutCache:
         index = positions % layer.window
         layer.kv[slots, index] = kv
 
-    def write_comp(self, layer_id: int, slots: Tensor, values: Tensor) -> None:
+    def write_comp(
+        self,
+        layer_id: int,
+        slots: Tensor,
+        values: Tensor,
+        completed: Tensor,
+    ) -> None:
+        """Write the blocks that just closed; no host sync / ``nonzero``.
+
+        Every slot advances only where ``completed`` is true, which keeps the
+        call capturable by CUDA graphs.
+        """
         layer = self.layers[layer_id]
         index = layer.n_comp[slots]
-        layer.cmp[slots, index] = values.to(layer.cmp.dtype)
-        layer.n_comp[slots] = index + 1
+        previous = layer.cmp[slots, index]
+        update = completed.to(values.dtype)[:, None]
+        layer.cmp[slots, index] = previous + (values.to(layer.cmp.dtype) - previous) * update
+        layer.n_comp[slots] = index + completed.long()
 
-    def write_idx(self, layer_id: int, slots: Tensor, values: Tensor) -> None:
+    def write_idx(
+        self,
+        layer_id: int,
+        slots: Tensor,
+        values: Tensor,
+        completed: Tensor,
+    ) -> None:
         layer = self.layers[layer_id]
-        # ``n_comp`` was advanced by ``write_comp`` for the same completed block.
-        index = layer.n_comp[slots] - 1
-        layer.idx[slots, index] = values.to(layer.idx.dtype)
+        # ``n_comp`` was advanced by ``write_comp`` for the same block.
+        index = (layer.n_comp[slots] - completed.long()).clamp_min(0)
+        previous = layer.idx[slots, index]
+        update = completed.to(values.dtype)[:, None]
+        layer.idx[slots, index] = previous + (values.to(layer.idx.dtype) - previous) * update
 
     def advance(self, slots: Tensor) -> None:
         self.length[slots] += 1

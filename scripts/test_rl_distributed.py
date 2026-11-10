@@ -20,7 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 
-def _worker(rank: int, world: int, port: int, method: str, device: str) -> None:
+def _worker(
+    rank: int,
+    world: int,
+    port: int,
+    method: str,
+    device: str,
+    dist_mode: str,
+    rollout_backend: str,
+) -> None:
     import torch
 
     os.environ.update(
@@ -71,7 +79,7 @@ def _worker(rank: int, world: int, port: int, method: str, device: str) -> None:
 
     settings = DistributedSettings(
         enabled=True,
-        mode="fsdp2",
+        mode=dist_mode,
         backend="gloo" if device == "cpu" else "nccl",
         param_dtype="float32" if device == "cpu" else "bfloat16",
         reduce_dtype="float32",
@@ -95,7 +103,12 @@ def _worker(rank: int, world: int, port: int, method: str, device: str) -> None:
                 log_every=99,
                 out_dir=f"/tmp/minideepseek-rl-dist-{method}",
             ),
-            rl=RLSettings(group_size=2, prompts_per_step=2, max_new_tokens=3),
+            rl=RLSettings(
+                group_size=2,
+                prompts_per_step=2,
+                max_new_tokens=3,
+                rollout_backend=rollout_backend,
+            ),
             reward=RewardSettings(kind="math"),
             distributed=settings,
         )
@@ -150,6 +163,8 @@ def main() -> int:
     parser.add_argument("--method", choices=["grpo", "opd"], default="grpo")
     parser.add_argument("--world-size", type=int, default=2)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--dist-mode", choices=["fsdp2", "ddp"], default="fsdp2")
+    parser.add_argument("--rollout-backend", choices=["torch", "cached"], default="torch")
     args = parser.parse_args()
     if args.device != "cpu":
         import torch
@@ -165,7 +180,14 @@ def main() -> int:
     try:
         mp.spawn(
             _worker,
-            args=(args.world_size, port, args.method, args.device),
+            args=(
+                args.world_size,
+                port,
+                args.method,
+                args.device,
+                args.dist_mode,
+                args.rollout_backend,
+            ),
             nprocs=args.world_size,
             join=True,
         )

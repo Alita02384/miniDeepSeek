@@ -35,6 +35,7 @@ import torch
 
 from ..model.cache import RolloutCache
 from ..model.wrapper import _sample_tokens
+from .graph_decode import GraphDecodeRunner
 from .rollout import RolloutGroup, RolloutSample, TorchRolloutEngine
 
 
@@ -69,25 +70,34 @@ class CachedRolloutEngine(TorchRolloutEngine):
         thinking_ratio: float = 1.0,
         max_slots: int = 256,
         max_context: int | None = None,
+        use_cuda_graph: bool | None = None,
     ):
         super().__init__(model, tokenizer, thinking_ratio=thinking_ratio)
         self.max_slots = int(max_slots)
         self.max_context = int(max_context or model.max_context_length)
         self._cache: RolloutCache | None = None
+        self._graph: GraphDecodeRunner | None = None
         self._cache_generation = 0
+        if use_cuda_graph is None:
+            use_cuda_graph = bool(
+                torch.cuda.is_available() and model.device.type == "cuda"
+            )
+        self.use_cuda_graph = bool(use_cuda_graph)
 
     # -- cache reuse ---------------------------------------------------------
     def _ensure_cache(self, slots: int) -> RolloutCache:
-        capacity = max(slots, 1)
+        # One extra row is the graph-padding scratch slot.
+        capacity = max(slots + 1, 1)
         if self._cache is None or self._cache.num_slots < capacity:
-            capacity = max(capacity, self.max_slots)
+            capacity = max(capacity, self.max_slots + 1)
             self._cache = RolloutCache.from_model(
                 self.model,
                 num_slots=capacity,
                 max_context=self.max_context,
             )
+            self._graph = None
         cache = self._cache
-        cache.reset(torch.arange(capacity, device=self.model.device))
+        cache.reset(torch.arange(cache.num_slots, device=self.model.device))
         return cache
 
     @property
@@ -129,6 +139,16 @@ class CachedRolloutEngine(TorchRolloutEngine):
         if total > self._cache_capacity():
             self._cache = None
         cache = self._ensure_cache(total)
+        runner = None
+        if self.use_cuda_graph and total <= cache.num_slots - 1:
+            if self._graph is None or self._graph.cache is not cache:
+                self._graph = GraphDecodeRunner(self.model, cache)
+            runner = self._graph
+        previous_mhc = os.environ.get("MINIDEEPSEEK_COMPILE_MHC")
+        if runner is not None:
+            # The Sinkhorn helper is compiled on CUDA; capture the eager loop
+            # instead so the graph trace stays deterministic.
+            os.environ["MINIDEEPSEEK_COMPILE_MHC"] = "0"
         device = self.model.device
         generator = None
         if seed is not None:
@@ -190,7 +210,10 @@ class CachedRolloutEngine(TorchRolloutEngine):
                         dtype=torch.long,
                         device=device,
                     )
-                    logits = self.model.decode_step(feed, positions, cache, slots)
+                    if runner is not None:
+                        logits = runner.step(feed, positions, slots)
+                    else:
+                        logits = self.model.decode_step(feed, positions, cache, slots)
                     next_ids, next_logprobs = _sample_tokens(
                         logits.float(),
                         temperature=float(temperature),
@@ -210,6 +233,10 @@ class CachedRolloutEngine(TorchRolloutEngine):
                             still_active.append(slot)
                     active = still_active
         finally:
+            if previous_mhc is None:
+                os.environ.pop("MINIDEEPSEEK_COMPILE_MHC", None)
+            else:
+                os.environ["MINIDEEPSEEK_COMPILE_MHC"] = previous_mhc
             if was_training:
                 self.model.train()
 

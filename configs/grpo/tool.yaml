@@ -28,10 +28,10 @@ train:
   steps: 400
   grad_accum: 1
   log_every: 1
-  ckpt_every: 50
+  ckpt_every: 25
   resume: checkpoints/sft_tool/final
   resume_step: false
-  out_dir: checkpoints/grpo_tool
+  out_dir: checkpoints/grpo_tool_145m
 rl:
   method: grpo
   group_size: 4
@@ -42,6 +42,8 @@ rl:
   loss_type: cispo
   epsilon_high: 5.0
   kl_coeff: 0.0
+  rollout_backend: cached
+  recompute_old_logprobs: true
   thinking_ratio: 0.1
   max_turns: 3
   max_tool_calls: 4

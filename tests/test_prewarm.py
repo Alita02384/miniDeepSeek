@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -8,12 +9,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "prewarm_attn.py"
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def _run(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT), *args],
         cwd=ROOT,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -32,7 +34,11 @@ def test_prewarm_dry_run_plans_one_entry_per_sequence_length():
 
 
 def test_prewarm_refuses_to_tune_on_cpu():
-    completed = _run("--flavor", "debugmodel", "--seq-len", "128")
+    # Hide the GPU explicitly: on a CUDA host the script would legitimately
+    # proceed, and this test is about the CPU refusal path.
+    env = dict(os.environ)
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    completed = _run("--flavor", "debugmodel", "--seq-len", "128", env=env)
 
     assert completed.returncode == 2
     assert "no CUDA device" in completed.stderr

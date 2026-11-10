@@ -1,4 +1,5 @@
-# General specialist: MiniMind sft_t2t_mini, full-parameter SFT.
+# General specialist SFT (145M): broad chat/knowledge, a little code+tool to keep formats alive.
+# Data: 90% general / 7% code / 3% tool
 model_file: configs/model/mini_145m_a60m.yaml
 model:
   flavor: mini_145m_a60m
@@ -16,26 +17,38 @@ optim:
   weight_decay: 0.1
   grad_clip: 1.0
 schedule:
-  warmup_steps: 50
+  warmup_steps: 10
   decay: cosine
   min_lr_ratio: 0.1
   decay_start_ratio: 0.8
 data:
-  tokenized_path: data/tokenization/sft_general.npz
-  batch_tokens: 32768
+  sources:
+    - path: data/tokenization/sft_general.npz
+      weight: 0.9
+      domain: general
+    - path: data/tokenization/sft_code.npz
+      weight: 0.07
+      domain: code
+    - path: data/tokenization/sft_tool.npz
+      weight: 0.03
+      domain: tool
+  batch_tokens: 8192
   shuffle: true
   seed: 1234
   domain: general
+  lockstep: false
 train:
-  steps: 2000
-  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+  steps: 120
+  resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
   resume_data: false
   resume_optimizer: false
   resume_step: false
-  grad_accum: 8
-  log_every: 10
-  ckpt_every: 100
-  out_dir: checkpoints/sft_general
+  grad_accum: 16
+  log_every: 1
+  ckpt_every: 40
+  keep_last_ckpt: 2
+  auto_resume: true
+  out_dir: checkpoints/sft_general_145m
   mtp_weight: 0.3
   mtp_weight_final: 0.1
   mtp_decay_ratio: 0.8
@@ -43,6 +56,6 @@ train:
   index_topk_final: 64
   index_topk_warmup_ratio: 0.05
 distributed:
-  mode: fsdp2
+  mode: ddp
   param_dtype: bfloat16
   reduce_dtype: float32

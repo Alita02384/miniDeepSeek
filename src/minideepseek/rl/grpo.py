@@ -202,11 +202,19 @@ class GRPOTrainer:
                 temperature=self.config.rl.temperature,
             )
             routing_stats = {}
-        old_logprobs = torch.tensor(
-            [value for sample in flat_samples for value in sample.loss_logprobs()],
-            dtype=torch.float32,
-            device=self.model.device,
-        )
+        if self.config.rl.recompute_old_logprobs:
+            # Behaviour policy = the actor at this step.  The sampled log-probs
+            # came from the decode engine (different bf16 kernel order), so
+            # using them as the denominator would leave a ~1e-2 systematic
+            # bias in every ratio.  One forward at the current weights gives
+            # the exact on-policy denominator.
+            old_logprobs = actor_logprobs.detach()
+        else:
+            old_logprobs = torch.tensor(
+                [value for sample in flat_samples for value in sample.loss_logprobs()],
+                dtype=torch.float32,
+                device=self.model.device,
+            )
         if actor_logprobs.numel() != old_logprobs.numel():
             raise RuntimeError(
                 "rollout/actor response token count mismatch: "
@@ -424,6 +432,16 @@ def build_grpo_trainer(
     distributed: DistributedContext | None = None,
 ) -> tuple[GRPOTrainer, MiniDeepSeekModel]:
     context = distributed or init_distributed(config.distributed, config.model.device)
+    if (
+        config.rl.rollout_backend in {"cached", "kv"}
+        and context.enabled
+        and context.mode != "ddp"
+    ):
+        raise ValueError(
+            "cached rollout keeps one full model replica per rank; use "
+            "distributed.mode=ddp (D81). FSDP2 needs a gathered rollout copy, "
+            "which is not wired yet."
+        )
     device = context.device if context.enabled else resolve_device(config.model.device)
     set_seed(config.model.seed)
     model = build_model(

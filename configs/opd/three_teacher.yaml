@@ -22,20 +22,21 @@ data:
   path: data/opd_prompts_mixed.jsonl
   domain: mixed
 train:
-  steps: 500
+  steps: 50
   grad_accum: 1
   log_every: 1
-  ckpt_every: 50
-  resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+  ckpt_every: 25
+  resume: checkpoints/sft_general_145m/final
   resume_step: false
-  out_dir: checkpoints/opd_three_teacher
+  out_dir: checkpoints/opd_three_teacher_145m
 rl:
   method: opd
-  prompts_per_step: 32
-  max_new_tokens: 1024
+  prompts_per_step: 16
+  max_new_tokens: 512
   temperature: 0.8
   thinking_ratio: 0.1
   max_turns: 3
+  rollout_backend: cached
   teacher_weights:
     general: 0.3333333333
     tool: 0.3333333333
@@ -43,23 +44,23 @@ rl:
 teachers:
   - name: general_teacher
     key: general
-    checkpoint: checkpoints/grpo_general/final
+    checkpoint: checkpoints/grpo_general_145m/final
     flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333333
   - name: tool_teacher
     key: tool
-    checkpoint: checkpoints/grpo_tool/final
+    checkpoint: checkpoints/grpo_tool_145m/final
     flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333333
   - name: code_teacher
     key: code
-    checkpoint: checkpoints/grpo_code/final
+    checkpoint: checkpoints/grpo_code_145m/final
     flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333334
 distributed:
-  mode: fsdp2
+  mode: ddp
   param_dtype: bfloat16
   reduce_dtype: float32

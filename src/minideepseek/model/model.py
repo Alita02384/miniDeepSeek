@@ -115,10 +115,7 @@ class DeepSeekV4TransformerBlock(nn.Module):
         x = self.hc_post(x, residual, post, comb)
         residual = x
         x, post, comb = self.hc_ffn_pre(x)
-        if getattr(self.feed_forward, "router", None) is not None and self.feed_forward.router.hash:
-            x = self.feed_forward(self.ffn_norm(x), input_ids=input_ids)
-        else:
-            x = self.feed_forward(self.ffn_norm(x))
+        x = self.feed_forward.forward_decode(self.ffn_norm(x), input_ids=input_ids)
         x = self.hc_post(x, residual, post, comb)
         return x
 
@@ -289,6 +286,7 @@ class DeepSeekV4Model(nn.Module):
         cache=None,
         slot: int | None = None,
         use_mtp: bool = True,
+        return_hidden: bool = False,
     ):
         del padding_mask, aux_loss_denominators
         if positions is None:
@@ -310,6 +308,8 @@ class DeepSeekV4Model(nn.Module):
         prev_hc = h
         hidden = self.hc_head(h)
         hidden = self.norm(hidden)
+        if return_hidden:
+            return hidden
         main = self.lm_head(hidden) if self.lm_head is not None else hidden
         if not self.mtp_layers or not use_mtp:
             return main

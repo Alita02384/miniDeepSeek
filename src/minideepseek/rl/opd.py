@@ -194,17 +194,17 @@ class OPDTrainer:
         if int(positions.min()) == 0:
             raise RuntimeError("response token at position 0 has no prediction logit")
         prediction_positions = positions - 1
-        student_logits = self.student.full_logits(
-            batch, temperature=self.config.rl.temperature
-        )[prediction_positions]
+        student_logits = self.student.logits_at(
+            batch, prediction_positions, temperature=self.config.rl.temperature
+        )
         student_logp = F.log_softmax(student_logits.float(), dim=-1)
         student_prob = student_logp.exp()
         teacher = self.teachers[teacher_key]
         with torch.no_grad():
             teacher.eval()
-            teacher_logits = teacher.full_logits(
-                batch, temperature=self.config.rl.temperature
-            )[prediction_positions]
+            teacher_logits = teacher.logits_at(
+                batch, prediction_positions, temperature=self.config.rl.temperature
+            )
             teacher_logp = F.log_softmax(teacher_logits.float(), dim=-1)
         kl = (student_prob * (student_logp - teacher_logp)).sum(dim=-1).mean()
         return kl, float(kl.detach()), int(positions.numel())
@@ -432,6 +432,16 @@ def build_opd_trainer(
     distributed: DistributedContext | None = None,
 ) -> tuple[OPDTrainer, MiniDeepSeekModel]:
     context = distributed or init_distributed(config.distributed, config.model.device)
+    if (
+        config.rl.rollout_backend in {"cached", "kv"}
+        and context.enabled
+        and context.mode != "ddp"
+    ):
+        raise ValueError(
+            "cached rollout keeps one full model replica per rank; use "
+            "distributed.mode=ddp (D81). FSDP2 needs a gathered rollout copy, "
+            "which is not wired yet."
+        )
     tokenizer = tokenizer or load_tokenizer(vocab_limit=config.model.vocab_limit)
     device = context.device if context.enabled else resolve_device(config.model.device)
     set_seed(config.model.seed)

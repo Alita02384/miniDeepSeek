@@ -49,6 +49,7 @@ def _gather_attention_reference(
     sliding_window_size: int,
     *,
     scale: float,
+    query_chunk: int = 128,
 ):
     """Packed gather attention: local sliding window + selected compressed KV.
 
@@ -56,13 +57,19 @@ def _gather_attention_reference(
     ``[1, 1, S, D]``, kv_indices ``[1, T, K]``.  Pure-torch reference used on
     CPU, for tests, and as the fallback when the optional fused kernel is
     unavailable.
+
+    Queries are processed in chunks.  Materialising ``[H, T, K, D]`` for a long
+    prefill is hundreds of MiB per layer; chunking keeps the working set small
+    without changing the arithmetic (each query still sees exactly the same
+    keys).
     """
     batch, heads, tokens, dim = query.shape
-    positions = torch.arange(tokens, device=query.device)
+    device = query.device
     window = min(sliding_window_size, tokens)
-    local_indices = positions[:, None] - window + 1 + torch.arange(window, device=query.device)
+    all_positions = torch.arange(tokens, device=device)
+    local_indices = all_positions[:, None] - window + 1 + torch.arange(window, device=device)
     local_valid = (local_indices >= 0).unsqueeze(0)
-    documents = torch.searchsorted(cu_seqlens[1:], positions, right=True)
+    documents = torch.searchsorted(cu_seqlens[1:], all_positions, right=True)
     starts = cu_seqlens[documents]
     local_valid = local_valid & (local_indices >= starts[:, None])
     local_indices = local_indices.clamp_min(0).expand(batch, -1, -1)
@@ -75,25 +82,41 @@ def _gather_attention_reference(
     valid = torch.cat((local_valid, sparse_valid), dim=-1)[:, None, :, :, None]
     kv = torch.cat((local_kv, sparse_kv), dim=2)
     kv_heads = kv.shape[1]
-    slots = kv[
-        torch.arange(batch, device=query.device)[:, None, None, None],
-        torch.arange(kv_heads, device=query.device)[None, :, None, None],
-        indices[:, None],
-    ]
-    slots = torch.where(valid, slots, 0)
     acc = torch.promote_types(query.dtype, torch.float32)
-    slots_acc = slots.to(acc)
-    grouped = query.reshape(batch, kv_heads, heads // kv_heads, tokens, dim)
-    grouped = grouped.permute(0, 1, 3, 2, 4).to(acc)
-    logits = torch.matmul(grouped, slots_acc.transpose(-2, -1)) * scale
-    logits = logits.permute(0, 1, 3, 2, 4).reshape(batch, heads, tokens, indices.shape[-1])
-    logits = logits.masked_fill(~valid.squeeze(-1), float("-inf"))
-    probs, lse = _softmax_with_sink(logits, attention_sink)
-    probs = probs.to(query.dtype)
-    grouped_probs = probs.reshape(batch, kv_heads, heads // kv_heads, tokens, indices.shape[-1]).permute(0, 1, 3, 2, 4)
-    output = torch.matmul(grouped_probs.to(acc), slots_acc)
-    output = output.permute(0, 1, 3, 2, 4).reshape(batch, heads, tokens, dim)
-    return output.to(query.dtype), lse
+    outputs = []
+    lses = []
+    chunk = max(int(query_chunk), 1)
+    for start in range(0, tokens, chunk):
+        stop = min(start + chunk, tokens)
+        query_chunk_tensor = query[:, :, start:stop]
+        chunk_indices = indices[:, start:stop]
+        chunk_valid = valid[:, :, start:stop]
+        slots = kv[
+            torch.arange(batch, device=device)[:, None, None, None],
+            torch.arange(kv_heads, device=device)[None, :, None, None],
+            chunk_indices[:, None],
+        ]
+        slots = torch.where(chunk_valid, slots, 0)
+        slots_acc = slots.to(acc)
+        grouped = query_chunk_tensor.reshape(
+            batch, kv_heads, heads // kv_heads, stop - start, dim
+        )
+        grouped = grouped.permute(0, 1, 3, 2, 4).to(acc)
+        logits = torch.matmul(grouped, slots_acc.transpose(-2, -1)) * scale
+        logits = logits.permute(0, 1, 3, 2, 4).reshape(
+            batch, heads, stop - start, indices.shape[-1]
+        )
+        logits = logits.masked_fill(~chunk_valid.squeeze(-1), float("-inf"))
+        probs, lse = _softmax_with_sink(logits, attention_sink)
+        probs = probs.to(query.dtype)
+        grouped_probs = probs.reshape(
+            batch, kv_heads, heads // kv_heads, stop - start, indices.shape[-1]
+        ).permute(0, 1, 3, 2, 4)
+        output = torch.matmul(grouped_probs.to(acc), slots_acc)
+        output = output.permute(0, 1, 3, 2, 4).reshape(batch, heads, stop - start, dim)
+        outputs.append(output.to(query.dtype))
+        lses.append(lse)
+    return torch.cat(outputs, dim=2), torch.cat(lses, dim=2)
 
 
 _ATTN_GYM_IMPL: tuple | None | bool = None
@@ -513,45 +536,34 @@ class DeepSeekV4Attention(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return ``[B, K]`` local compressed indices and a validity mask.
 
-        Indices are local to ``layer.cmp`` (not the packed prefill space); ``-1``
-        marks padding and is masked out by the caller.
+        ``K`` is a static per-layer bound (``index_topk`` for CSA, the whole
+        compressed axis for HCA), so neither the shape nor a host-side
+        ``n_comp.max()`` changes from step to step: decode can be captured by a
+        CUDA graph.  Slots with fewer entries are masked, and ``-1`` marks
+        padding.
         """
+        device = positions.device
+        batch = positions.shape[0]
         if layer.cmp is None:
-            device = positions.device
-            return torch.empty(
-                (positions.shape[0], 0), dtype=torch.long, device=device
-            ), torch.zeros(
-                (positions.shape[0], 0), dtype=torch.bool, device=device
+            return torch.empty((batch, 0), dtype=torch.long, device=device), torch.zeros(
+                (batch, 0), dtype=torch.bool, device=device
             )
         n_comp = layer.n_comp[slots]
-        device = positions.device
-        if n_comp.numel() == 0:
-            return torch.full((0, 0), -1, dtype=torch.long, device=device), torch.zeros(
-                (0, 0), dtype=torch.bool, device=device
-            )
-        n_max = int(n_comp.max().item())
-        if n_max == 0:
-            return torch.empty(
-                (positions.shape[0], 0), dtype=torch.long, device=device
-            ), torch.zeros(
-                (positions.shape[0], 0), dtype=torch.bool, device=device
-            )
+        max_comp = layer.max_comp
         if idx_q is not None:
-            k = min(int(self.index_topk), max(n_max, 1))
-            keys = layer.idx[slots[:, None], torch.arange(n_max, device=device)[None, :]]
-            dots = torch.einsum("bhd,bkd->bhk", idx_q.float(), keys.float())
+            k = min(int(self.index_topk), max_comp)
+            columns = torch.arange(max_comp, device=device)
+            keys = layer.idx[slots[:, None], columns[None, :]]
+            dots = torch.bmm(idx_q.float(), keys.float().transpose(1, 2))
             scores = (torch.relu(dots) * idx_w.float().unsqueeze(-1)).sum(dim=1)
             scores = scores * (idx_q.shape[1] * idx_q.shape[2]) ** -0.5
-            scores = scores.masked_fill(
-                torch.arange(n_max, device=device)[None, :] >= n_comp[:, None],
-                float("-inf"),
-            )
+            scores = scores.masked_fill(columns[None, :] >= n_comp[:, None], float("-inf"))
             selected = scores.topk(k, dim=-1).indices
             valid = selected < n_comp[:, None]
             return torch.where(valid, selected, -1).long(), valid
         # HCA: every compressed entry up to the current position is visible.
-        k = min(int(layer.max_comp), int(getattr(self, "hca_topk_max", None) or layer.max_comp))
-        selected = torch.arange(k, device=device)[None, :].expand(n_comp.shape[0], k)
+        k = max_comp
+        selected = torch.arange(k, device=device)[None, :].expand(batch, k)
         valid = selected < n_comp[:, None]
         return torch.where(valid, selected, -1).long(), valid
 
@@ -593,21 +605,16 @@ class DeepSeekV4Attention(nn.Module):
             )
             layer.comp_state_kv[slots] = state_kv
             layer.comp_state_score[slots] = state_score
-            done = completed.nonzero(as_tuple=False).flatten()
-            if done.numel():
-                done_slots = slots[done]
-                cache.write_comp(self.layer_id, done_slots, compressed[done])
-                if self.indexer is not None:
-                    idx_state_kv = layer.idx_state_kv[done_slots]
-                    idx_state_score = layer.idx_state_score[done_slots]
-                    idx_compressed, idx_completed = self.indexer.compress_decode(
-                        x[done], positions[done], idx_state_kv, idx_state_score
-                    )
-                    layer.idx_state_kv[done_slots] = idx_state_kv
-                    layer.idx_state_score[done_slots] = idx_state_score
-                    # ``write_comp`` advanced n_comp for these slots already.
-                    cache.write_idx(self.layer_id, done_slots, idx_compressed)
+            cache.write_comp(self.layer_id, slots, compressed, completed)
             if self.indexer is not None:
+                idx_state_kv = layer.idx_state_kv[slots]
+                idx_state_score = layer.idx_state_score[slots]
+                idx_compressed, _ = self.indexer.compress_decode(
+                    x, positions, idx_state_kv, idx_state_score
+                )
+                layer.idx_state_kv[slots] = idx_state_kv
+                layer.idx_state_score[slots] = idx_state_score
+                cache.write_idx(self.layer_id, slots, idx_compressed, completed)
                 idx_q, idx_w = self.indexer.query(x, qr, positions)
 
         sparse, sparse_valid = self._select_sparse(
@@ -621,14 +628,14 @@ class DeepSeekV4Attention(nn.Module):
             sparse_keys = layer.cmp[slots[:, None], sparse.clamp_min(0)]
         keys = torch.cat([local, sparse_keys], dim=1)
         valid = torch.cat([local_valid, sparse_valid], dim=1)
-        logits = torch.einsum("bhd,bkd->bhk", q.float(), keys.float())
+        logits = torch.bmm(q.float(), keys.float().transpose(1, 2))
         logits = logits * self.softmax_scale
         logits = logits.masked_fill(~valid[:, None, :], float("-inf"))
         sink = self.attn_sink.weight.squeeze(-1).float()
         sink_logits = sink.view(1, -1, 1).expand(tokens, -1, 1)
         all_logits = torch.cat([logits, sink_logits], dim=-1)
         probs = torch.softmax(all_logits, dim=-1)[..., :-1]
-        out = torch.einsum("bhk,bkd->bhd", probs, keys.float()).to(q.dtype)
+        out = torch.bmm(probs, keys.float()).to(q.dtype)
         o_nope, o_rope = torch.split(out, [self.nope_dim, self.rope_head_dim], dim=-1)
         o_rope = self.rope(o_rope, positions=positions, inverse=True)
         out = torch.cat([o_nope, o_rope], dim=-1)

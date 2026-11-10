@@ -508,6 +508,11 @@ class RLSettings(BaseConfig):
     log_domain_routing: bool = False
     weight_sync_check_every: int = 0
     weight_sync_threshold: float = 1e-3
+    #: Recompute the behaviour-policy log-probs with the actor before the
+    #: update (verl's ``compute_log_prob``).  With a separate rollout engine the
+    #: sampling log-probs differ from the actor by bf16 kernel order (~1e-2);
+    #: using them directly biases the ratio.  On-policy old = actor is exact.
+    recompute_old_logprobs: bool = True
 
 
 @dataclass

@@ -1164,3 +1164,46 @@
   220M（216.7M 参数）能不能同样切要按显存实测决定，`full_6b.yaml` 暂留 fsdp2。
 - **验证**：`pytest tests/` 292 passed / 2 skipped；线上从 step 1068 的 checkpoint
   续训，loss 3.71 接得上，1,070/1,080 两步均 29.6k tok/s。
+
+### D82. rollout 不用 vLLM，改项目内 KV-cache 引擎（2026-11-11，4090 实测）
+
+- **原方案**：roadmap 的 `verl + vLLM`；`rl/backends/vllm.py` 也按
+  “导出 HF 目录 + `vllm.LLM` 采样”写好了。
+- **核查结果**（vLLM 0.33.0 wheel，`vllm/models/deepseek_v4/`）：
+  - 只有两类 sparse-MLA 后端：`FLASHMLA_SPARSE_DSV4`（`supports_compute_capability`
+    要求 major ∈ {9,10}，kernel 内 `head_dim_v=512`、FP8 KV）和
+    `FLASHINFER_MLA_SPARSE_DSV4`（SM100/120）；
+  - 我们的 4090 是 **SM89**；mini 模型是 **head_dim=64、bf16**；
+  - 即使换 H100，`head_dim_v=512` 也与 64 不匹配。
+  - 结论：vLLM 原生 V4 无法服务 mini-145M；要让 vLLM 跑，只能自写自定义
+    attention backend（工期与风险都不可控）。
+- **改法**：在项目内实现与训练前向数学一致的 slot 寻址 KV cache（`model/cache.py`），
+  compressor/indexer 的增量状态机按 official `inference/model.py` 移植；
+  `rl/cached_rollout.py` 做批量 prefill + group fork + 压缩解码；
+  `rl/graph_decode.py` 做分桶 CUDA graph。保留 `rollout_backend` 的 vLLM seam，
+  `vllm` 仍是可选 extra。
+- **实测**（4090，145M bf16，batch 64）：
+  - decode eager **49 ms/step**（CPU launch 主导，GPU 仅 ~5 ms）；
+  - decode CUDA graph **5.4 ms/step**（≈12k tok/s）；
+  - fp32 CPU 逐 token 与全量前向 max|Δ|=2e-6；bf16 rollout/actor logprob 差
+    ~4e-2（kernel 顺序/批量形状，见 D83）。
+- **影响**：
+  - 不再期待 `rollout_backend=vllm` 在当前模型上可用；文档与 preflight 都写明；
+  - 多卡只用 DDP（D81）：每 rank 一份完整模型 + 一份 cache；
+  - 需要为 tool 多轮补 `prefill_append`（当前仍回退全量重算）。
+
+### D83. GRPO 的 old logprob 由 actor 重算（2026-11-11）
+
+- **原方案**：`GRPOTrainer.compute_loss` 用 rollout 采样时记录的
+  `sampling_logprobs` 作 old logprob。
+- **问题**：rollout 走 decode 引擎（bf16 bmm、batch 形状不同），actor 走全量
+  packed forward；逐 token logprob 实测差 **~4e-2**。直接拿采样值当分母，会让
+  每个 ratio 从一开始就带 4% 量级的系统偏差，clip 也会误触发。
+- **改法**：新增 `rl.recompute_old_logprobs`（默认 true），old = 当前 actor
+  forward 的 `response_logprobs.detach()`；ratio 从 1 开始，等价于 on-policy
+  GRPO/REINFORCE+baseline。仍保留采样 logprob 用于诊断。
+- **依据**：verl 的 actor 侧 `compute_log_prob` 同样在 rollout 后重算 old
+  logprob；对 145M 的 forward 成本（~0.1 s）远小于 decode（~5 s/step）。
+- **影响**：
+  - 一致性门禁不再用 sampling-vs-actor 的 1e-3 阈值卡 cached 引擎；
+  - 若将来做多 epoch PPO，需要在第一个 epoch 保存 old，后续 epoch 复用。

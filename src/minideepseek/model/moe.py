@@ -206,6 +206,35 @@ class RoutedExperts(nn.Module):
         return out.to(x.dtype)
 
 
+    def forward_decode(
+        self,
+        x: torch.Tensor,
+        topk_scores: torch.Tensor,
+        topk_ids: torch.Tensor,
+    ) -> torch.Tensor:
+        """Decode-time dispatch that never synchronises with the host.
+
+        The training path groups token->expert pairs with ``argsort`` and a
+        ``cumsum().tolist()``.  For a handful of decode tokens that host sync
+        dominates, and it makes the step uncapturable by CUDA graphs.  Here we
+        evaluate every expert on every token and mask by membership: at most a
+        few dozen tokens, so the extra FLOPs are cheaper than the sync.
+        """
+        tokens = x.shape[0]
+        hidden_dim = self.hidden_dim
+        out = None
+        for expert in range(self.num_experts):
+            w13 = self.w13.weight[expert].reshape(2 * hidden_dim, self.dim)
+            gate_up = F.linear(x, w13)
+            hidden = self.activation_fn(gate_up[:, :hidden_dim], gate_up[:, hidden_dim:])
+            value = F.linear(hidden, self.w2.weight[expert])
+            weight = (topk_ids == expert).to(x.dtype) * topk_scores
+            contribution = value.unsqueeze(1) * weight.unsqueeze(-1)
+            out = contribution if out is None else out + contribution
+        assert out is not None
+        return out.sum(dim=1).to(x.dtype)
+
+
 class SharedExperts(nn.Module):
     def __init__(self, config: MoEConfig):
         super().__init__()
@@ -226,6 +255,12 @@ class SharedExperts(nn.Module):
         up = torch.einsum("nd,fd->nf", x, self.w13.weight[1])
         hidden = self.activation_fn(gate, up)
         return torch.einsum("nf,df->nd", hidden, self.w2.weight)
+
+    def forward_decode(self, x: torch.Tensor) -> torch.Tensor:
+        gate = F.linear(x, self.w13.weight[0])
+        up = F.linear(x, self.w13.weight[1])
+        hidden = self.activation_fn(gate, up)
+        return F.linear(hidden, self.w2.weight)
 
 
 class MoE(nn.Module):
@@ -268,4 +303,17 @@ class MoE(nn.Module):
         out = self.routed_experts(x, scores, ids)
         if self.shared_experts is not None:
             out = out + self.shared_experts(x)
+        return out
+
+    def forward_decode(
+        self,
+        x: torch.Tensor,
+        *,
+        input_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Graph-safe single-token dispatch (see ``RoutedExperts.forward_decode``)."""
+        scores, ids, _ = self.router(x, self.expert_bias_E, input_ids=input_ids)
+        out = self.routed_experts.forward_decode(x, scores, ids)
+        if self.shared_experts is not None:
+            out = out + self.shared_experts.forward_decode(x)
         return out

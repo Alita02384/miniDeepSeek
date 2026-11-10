@@ -262,6 +262,46 @@ class MiniDeepSeekModel:
             out[1:] = values
         return out
 
+    def logits_at(
+        self,
+        batch: PackedBatch,
+        positions: Tensor,
+        *,
+        temperature: float = 1.0,
+    ) -> Tensor:
+        """Main-depth logits only at ``positions`` (``[N, vocab]``).
+
+        The RL/OPD losses only supervise response tokens.  Computing the LM
+        head for every packed token materialises ``[T, 6400]`` (hundreds of MiB
+        per micro-batch) and wastes a third of the forward; slice the hidden
+        states first.
+        """
+        if positions.numel() == 0:
+            return self.model.tok_embeddings.weight.new_zeros((0, self.vocab_size))
+        if batch.input_ids.device != self.device:
+            batch = batch.to(self.device)
+        # FSDP2 shards ``lm_head.weight`` as a DTensor; slicing the hidden
+        # states produces a plain tensor and mixing the two in F.linear is an
+        # error.  Pay the full-vocabulary forward on that path only.
+        head_weight = getattr(self.model.lm_head, "weight", None)
+        if head_weight is not None and type(head_weight).__name__ == "DTensor":
+            logits = self.full_logits(batch, temperature=temperature)
+            return logits[positions.to(logits.device)]
+        metadata = self.attention_metadata(batch)
+        with _autocast(self.device, self.autocast_dtype):
+            hidden = self.model(
+                batch.input_ids,
+                batch.positions,
+                metadata,
+                padding_mask=batch.padding_mask,
+                aux_loss_denominators=None,
+                use_mtp=False,
+                return_hidden=True,
+            )
+            selected = hidden[positions.to(hidden.device)]
+            logits = self.model.lm_head(selected) if self.model.lm_head is not None else selected
+        return logits if temperature == 1.0 else logits / temperature
+
     def response_logprobs(
         self,
         batch: PackedBatch,
@@ -271,9 +311,17 @@ class MiniDeepSeekModel:
         temperature: float = 1.0,
     ) -> Tensor:
         """Log-probabilities at response-token positions (``response_mask`` is ``[T]``)."""
-        return self.token_logprobs(
-            batch, requires_grad=requires_grad, temperature=temperature
-        )[response_mask]
+        positions = response_mask.nonzero(as_tuple=False).flatten()
+        if positions.numel() == 0:
+            return torch.zeros(0, dtype=torch.float32, device=self.device)
+        if int(positions.min()) == 0:
+            raise ValueError("response token at position 0 has no prediction logit")
+        context = torch.enable_grad() if requires_grad else torch.no_grad()
+        with context:
+            logits = self.logits_at(batch, positions - 1, temperature=temperature)
+            log_probs = F.log_softmax(logits.float(), dim=-1)
+            targets = batch.input_ids[positions]
+            return log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
 
     def full_logits(self, batch: PackedBatch, *, temperature: float = 1.0) -> Tensor:
         """Main-depth logits (``[T, vocab]``) without MTP."""
@@ -281,6 +329,13 @@ class MiniDeepSeekModel:
         return logits if temperature == 1.0 else logits / temperature
 
     # -- incremental prefill/decode (rollout) --------------------------------
+    def _core(self):
+        """Unwrap DDP-style containers to the module that owns ``decode``."""
+        module = self.model
+        while hasattr(module, "module") and not hasattr(module, "decode"):
+            module = module.module
+        return module
+
     @torch.no_grad()
     def prefill(
         self,
@@ -313,7 +368,7 @@ class MiniDeepSeekModel:
             max_seqlen=length,
         )
         with _autocast(self.device, self.autocast_dtype):
-            logits = self.model(
+            logits = self._core()(
                 tokens,
                 positions,
                 metadata,
@@ -333,7 +388,7 @@ class MiniDeepSeekModel:
     ) -> torch.Tensor:
         """One token per slot; returns ``[B, vocab]`` main-depth logits."""
         with _autocast(self.device, self.autocast_dtype):
-            return self.model.decode(input_ids, positions, cache, slots)
+            return self._core().decode(input_ids, positions, cache, slots)
 
     # -- generation -----------------------------------------------------------
     @torch.no_grad()

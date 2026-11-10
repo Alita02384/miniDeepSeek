@@ -175,10 +175,13 @@ class Compressor(nn.Module):
         block_positions = pos + 1 - ratio
         compressed = self._finalize(pooled, block_positions, x.dtype)
         if self.overlap:
-            done = completed.nonzero(as_tuple=False).flatten()
-            if done.numel():
-                state_kv[done, :ratio] = state_kv[done, ratio:]
-                state_score[done, :ratio] = state_score[done, ratio:]
+            # Shift only the rows whose block closed; ``torch.where`` keeps the
+            # shape static (a ``nonzero`` index would break CUDA-graph capture).
+            shift = completed[:, None, None]
+            state_kv[:, :ratio] = torch.where(shift, state_kv[:, ratio:], state_kv[:, :ratio])
+            state_score[:, :ratio] = torch.where(
+                shift, state_score[:, ratio:], state_score[:, :ratio]
+            )
         return compressed, completed
 
     def forward(self, x: torch.Tensor, positions: torch.Tensor, cu_seqlens: torch.Tensor):
