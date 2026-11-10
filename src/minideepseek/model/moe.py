@@ -195,10 +195,15 @@ class RoutedExperts(nn.Module):
             expert_out[start:stop] = torch.einsum("nf,df->nd", hidden, self.w2.weight[expert])
             start = stop
 
-        weighted = expert_out * flat_scores[order].unsqueeze(-1)
-        out = torch.zeros_like(x)
-        out.index_add_(0, sorted_owner, weighted.to(out.dtype))
-        return out
+        # Un-permute into (token, slot) order and reduce the k slots: one gather
+        # plus a contiguous sum, instead of a bf16 atomic ``index_add_`` into
+        # ``[T, dim]`` (1 ms/call, 8 calls per micro-batch).  Same math, and
+        # deterministic where the atomics were not.
+        weighted = expert_out.float() * flat_scores[order].unsqueeze(-1)
+        inverse = torch.empty_like(order)
+        inverse[order] = torch.arange(order.numel(), device=order.device)
+        out = weighted[inverse].view(tokens, k, x.shape[-1]).sum(dim=1)
+        return out.to(x.dtype)
 
 
 class SharedExperts(nn.Module):

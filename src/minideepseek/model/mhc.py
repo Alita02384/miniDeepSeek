@@ -51,6 +51,15 @@ def _run_sinkhorn(comb: torch.Tensor, iters: int, eps: float) -> torch.Tensor:
         return _sinkhorn_normalise(comb, iters, eps)
 
 
+def _contract(pre: torch.Tensor, flat: torch.Tensor) -> torch.Tensor:
+    """``sum_hc pre[..., hc] * flat[..., hc, :]`` as one batched matmul.
+
+    Same arithmetic as the broadcast multiply-then-sum, without materialising
+    ``[T, hc, dim]`` for the product (100 MiB per call at 8192 tokens).
+    """
+    return torch.bmm(pre.unsqueeze(1), flat).squeeze(1)
+
+
 class HcSplitSinkhorn(nn.Module):
     def __init__(self, hc_mult: int, sinkhorn_iters: int = 20, eps: float = 1e-6):
         super().__init__()
@@ -105,14 +114,21 @@ class HcPre(nn.Module):
         rsqrt = torch.rsqrt(flat.square().mean(-1, keepdim=True) + self.norm_eps)
         mixes = F.linear(flat, self.hc_fn.float()) * rsqrt
         pre, post, comb = self.sinkhorn(mixes, self.hc_scale.float(), self.hc_base.float())
-        y = torch.sum(pre.unsqueeze(-1) * flat.view(shape), dim=-2)
+        y = _contract(pre, flat.view(shape))
         return y.to(dtype), post, comb
 
 
 class HcPost(nn.Module):
     def forward(self, x, residual, post, comb):
-        y = post.unsqueeze(-1) * x.unsqueeze(-2) + torch.sum(
-            comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=1
+        # ``combᵀ @ residual`` over the branch axis, as one batched matmul.  The
+        # broadcast form (``comb.unsqueeze(-1) * residual.unsqueeze(-2)``) sums
+        # over the *first* hc axis, i.e. the transpose of ``comb`` -- ``comb`` is
+        # doubly stochastic but not symmetric, so the transpose is not optional.
+        # It is also what materialises a ``[T, hc, hc, dim]`` fp32 tensor: 402 MiB
+        # at 8192 tokens, 16 times per micro-batch.  ``bmm`` keeps ``[T, hc, dim]``
+        # and makes the op tensor-core eligible.
+        y = post.unsqueeze(-1) * x.unsqueeze(-2) + torch.bmm(
+            comb.transpose(1, 2), residual.to(comb.dtype)
         )
         return y.type_as(x)
 
@@ -138,5 +154,5 @@ class HcHead(nn.Module):
         rsqrt = torch.rsqrt(flat.square().mean(-1, keepdim=True) + self.norm_eps)
         mixes = F.linear(flat, self.hc_fn.float()) * rsqrt
         pre = torch.sigmoid(mixes * self.hc_scale + self.hc_base) + self.eps
-        y = torch.sum(pre.unsqueeze(-1) * flat.view(shape), dim=-2)
+        y = _contract(pre, flat.view(shape))
         return y.to(dtype)

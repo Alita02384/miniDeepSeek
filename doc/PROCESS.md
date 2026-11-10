@@ -1262,3 +1262,42 @@
     `OMP_NUM_THREADS=1` 或先停训练；
   - 工作区里 `model/mhc.py`、`model/moe.py` 有别人未提交的改动，本次未触碰；
   - 旧的扁平 `metrics.jsonl` 保留未动，供对比。
+
+## 2026-11-10（夜：实测分解 + mHC/MoE 内存重写，续训 12.0k tok/s）
+
+- commit: perf: mHC 分支混合改 bmm、MoE dispatch 去掉 bf16 原子累加
+- 做了什么:
+  - 在**真 4090 上独占 GPU**（SIGTERM → 存 `step_000085` → 定位 → 重启续跑）做了
+    一次干净的分解测量：`data / fwd+bwd / clip / optimizer` 四段分别计时，
+    `torch.profiler` 出 CUDA kernel 口径的 profile，再用 CUPTI kernel 时间做 A/B
+    （宿主 CPU 被邻居抢到 load 77–185，墙钟口径噪声 ±30%，不可用）；
+  - `HcPost` 的 `sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=1)` 改成
+    `torch.bmm(comb.transpose(1, 2), residual)`；`HcPre`/`HcHead` 的同型收缩
+    抽成 `_contract()` 走 bmm；
+  - `RoutedExperts` 的 dispatch 尾部从 `index_add_`（bf16 原子累加）改成
+    `inverse[order]` 反置换 + `view(T, k, dim).sum(1)`；**不能省 transpose**：
+    `sum(..., dim=1)` 求和的是 comb 的第一维，等价于 `combᵀ @ residual`，
+    而 Sinkhorn 之后的 comb 并不对称（写错过一次，max|Δ|=5.5 才发现）。
+- 实现了什么:
+  - **分解结果（8192 token/micro-batch，2K stage）**：
+    `data` 0.5ms/batch（可忽略）、`fwd+bwd` 705ms、`clip` 3ms、`optimizer` 356ms；
+    32 个 micro-batch 推算 22.9s/step，与线上 21.2–24.4s 吻合；
+  - GPU kernel 时间占比：**attention 40%**（fp32，5 层共 205ms/次）、`aten::mm` 27%、
+    MoE dispatch 15%、mHC 的 mul+sum 7.5%；
+  - 这两个改动**数值等价**：同一 seed、同一真实 batch，`main loss` 6 位小数完全相同
+    （9.177011）；单测 23 passed / 1 skipped（mhc、moe、router、expert 相关）；
+  - 线上效果（同一进程，改前 step 80 vs 改后 step 100）：**22.4s → 17.3–19.0s**，
+    **8.4–9.4k → 10.5–12.0k tok/s**，ETA **3.0d → 2.4d**；峰值显存 12.8 GiB。
+  - 其中一部分来自 `MINIDEEPSEEK_ROUTING_GPU=1`（本次重启才真正打开，见 D72）。
+- 验证:
+  - CUPTI kernel 时间 A/B：base 1113ms/iter → patched 1104ms/iter（-0.8%），
+    `mhc_mulsum` 84→83ms、`moe_dispatch` 168→164ms —— 省的主要是显存搬运
+    （`[T,4,4,768]` fp32 单次 402 MiB 不再物化），墙钟上被 attention 盖住；
+  - 线上 `grep ^step logs/curriculum_145m.log`：step 100 `17.34s / 12,017 tok/s`，
+    loss 8.27→7.28 继续下降，|g| 1.95。
+- 未完成 / 风险:
+  - **attention 才是大头（kernel 时间 40%）**：q/kv 仍是 fp32，走 attn_gym 的非
+    tensor-core 路径；`MINIDEEPSEEK_ATTN_BF16=1` 要先 prewarm，本次因为工作区
+    被并行会话改到 import 失败而没跑成，需要单独一个窗口；
+  - micro-batch 8192 仍受 autotune 的 12.8 GiB 峰值限制，16384 未验证；
+  - 宿主 load 77–185 时同一配置能差 30%，所有吞吐数字都要标注负载。
