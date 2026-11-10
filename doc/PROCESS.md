@@ -1494,3 +1494,24 @@
   - 20 step 的 KL 没有单调下降，不能说明收敛；lr/步数需要扫；
   - code/tool teacher 还是 SFT（GRPO 只有 smoke），上限受 teacher 限制；
   - prefill 仍是 reference；下一步 chunked prefill。
+
+## 2026-11-11（三领域 GRPO 10 step + 全 GRPO teacher OPD 20 step）
+
+- **做了什么**:
+  - 修正 `configs/grpo/{code,tool}.yaml` 的 `train.resume`（旧路径
+    `checkpoints/sft_code/final` → `sft_code_145m/final`）；
+  - code/tool GRPO 各 10 step（cached rollout；tool 走 CachedToolRolloutEngine）；
+  - 用三个 GRPO final 作 teacher，再跑 20 step OPD；
+  - 清理 `/tmp` smoke checkpoint 与 OPD 中间 step。
+- **实现了什么**:
+  - code GRPO：reward mean −0.085（std 0.040），grad 0.27，24.6k resp tok/step；
+  - tool GRPO：reward mean −2.235（std 0.827），grad 0.46，49.2k resp tok/step；
+  - OPD（全 GRPO teacher）：KL total mean 0.065（first 0.066 / last 0.067），
+    general 0.040 / code 0.054 / tool 0.098，grad mean 0.87；
+    `checkpoints/opd_three_grpo_145m/final`；
+  - 磁盘：数据盘 31 GB free、系统盘 25 GB free。
+- **验证**: 三个 GRPO/OPD 进程均正常退出并保存 final；OPD 20 step 完整。
+- **未完成 / 风险**:
+  - 10 step GRPO 不足以提升 reward，code/tool specialist 仍弱；
+  - OPD 20 step KL 未收敛，需 200+ step 与 lr 扫描；
+  - 多卡仍只有 CPU 2-proc DDP smoke，没有真实 2-GPU 实跑。

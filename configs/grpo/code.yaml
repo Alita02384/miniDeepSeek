@@ -30,7 +30,7 @@ train:
   activation_checkpointing: true
   log_every: 1
   ckpt_every: 20
-  resume: checkpoints/sft_code/final
+  resume: checkpoints/sft_code_145m/final
   resume_step: false
   out_dir: checkpoints/grpo_code_145m
 rl:

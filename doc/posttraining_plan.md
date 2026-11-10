@@ -184,10 +184,10 @@ prompt 按 `records[rank::world]` 分片。
 | OPD smoke（同 teacher） | ✅ | KL 0，grad 0（同权重应然） |
 | OPD smoke（pretrain teacher） | ✅ | KL 0.315，grad 13.2（不同权重，验证 KL 路径） |
 | SFT code / tool | ✅ `sft_code_145m/final`、`sft_tool_145m/final` | code 90 step / tool 80 step，顺序跑 |
-| GRPO code smoke | ✅ | 2 step，reward −0.08，grad 4.0/0 |
-| GRPO tool smoke | ✅ | 2 step，reward −2.09，grad 9.0（cached tool 引擎） |
-| 三教师 OPD smoke | ✅（2 step） | KL：general 0.063 / code 0.197 / tool 0.173；total 0.144 |
-| 三教师 OPD 20 step | ✅ `checkpoints/opd_three_teacher_145m/final` | 9135 prompt pool；KL total mean 0.065（first 0.066 / last 0.070）；general 0.041 / code 0.052 / tool 0.100；~17 s/step |
+| GRPO code | ✅ 10 step `checkpoints/grpo_code_145m/final` | reward mean −0.085（std 0.040），grad 0.27，24.6k resp tok/step |
+| GRPO tool | ✅ 10 step `checkpoints/grpo_tool_145m/final` | reward mean −2.235（std 0.827），grad 0.46，49.2k resp tok/step（cached tool 引擎） |
+| 三教师 OPD（SFT teacher） | ✅ 20 step `checkpoints/opd_three_teacher_145m/final` | KL total mean 0.065；general 0.041 / code 0.052 / tool 0.100 |
+| 三教师 OPD（全 GRPO teacher） | ✅ 20 step `checkpoints/opd_three_grpo_145m/final` | KL total mean 0.065（first 0.066 / last 0.067）；general 0.040 / code 0.054 / tool 0.098；grad mean 0.87 |
 
 ### 7.1 已知现象
 
@@ -200,11 +200,12 @@ prompt 按 `records[rank::world]` 分片。
   8.9 / opt 0.4。rollout 已不是唯一瓶颈，actor 的 reference attention 仍是
   大头；进一步提速需要 chunked prefill + 更大 query chunk + 更快的
   gather attention（H100 上可用 attn_gym/FlashAttention）。
-- 三教师 OPD 的 teacher 组合：general=GRPO final，code/tool=SFT final
-  （code/tool GRPO 尚未全量跑；roadmap 允许 tool teacher 只做 SFT）。
-  20 step 的 KL total 在 0.055–0.085 间波动，没有单调下降；lr 5e-6、20 step
-  远不足以判断收敛，需要 200+ step 或按 KL 调 lr。tool teacher 的 KL 最大
-  （0.10），说明 SFT tool 与 student 的分布差最大。
+- 三教师 OPD 有两版：`opd_three_teacher_145m`（code/tool 用 SFT teacher）和
+  `opd_three_grpo_145m`（三个 teacher 都是 GRPO final）。两版 20 step 的 KL
+  total 都在 0.065 左右、没有单调下降；lr 5e-6、20 step 远不足以判断收敛。
+  tool teacher 的 KL 最大（0.098），说明 tool specialist 与 student 分布差最大。
+- code/tool GRPO 只跑了 10 step：reward 仍很低（code −0.085、tool −2.24），
+  不能说明 specialists 变强；它们作为 OPD teacher 的“格式/行为来源”仍可用。
 
 ### 7.2 磁盘
 
