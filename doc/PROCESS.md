@@ -1211,3 +1211,21 @@
     973%，host 侧被抢；等负载降下来再复测，不能拿现在的数字当结论；
   - 8K stage 仍未端到端跑过：`docs=1` 时 `num_documents==1` 会命中 Triton 的
     "==1" specialization，可能还要一次 `K=128` 编译（分钟级，不是小时级）。
+
+## 2026-11-10（夜：吞吐 A/B + HCA 语义收口）
+
+- commit: 5d4a928 perf: 路由/SwiGLU 诊断只在累加组最后一个 micro-batch 采
+- commit: 531408a fix: 去掉 HCA 的 128 封顶，8K 恢复覆盖全部压缩段（D75）
+- 做了什么:
+  - `routing_metrics` / `swiglu.as_dict()` / `layer_expert_counts` 只在
+    `micro == accum-1` 时执行（一个 step 32 个 micro-batch → 1 次）；
+  - HCA 去掉 `hca_topk_max`，宽度回到静态 `ceil(seq_len/ratio)` = 64/128/256。
+- 实现了什么（4090 A/B，同一台机器，前后各跑 10+ step）:
+  - `step_time_s` **33.0 → 21.8**；tok/s **5.82k → 9.43k（1.62x）**；
+    ETA **4.7d → 3.0d**；
+  - GPU 占用率 1Hz 采样：**38.7% → 72%**；
+  - `step 10` 的 loss/main/mtp/|g| 与改前**逐位相同**（11.9252 / 9.1565 /
+    9.2229 / 3.329）——只动了观测，没动训练。
+- 未完成 / 风险:
+  - 8K 的 `K=256` 变体首次编译 >1 h，需找 GPU 空闲窗口预热（训练占着 12 GiB，
+    8K 预检也要 ~12 GiB）；8K stage 在 step 8011，约 2.5 天后才到。
