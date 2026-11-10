@@ -1327,3 +1327,32 @@
     必须开；
   - 回放假定 `data.batch_warmup_ratio == 0`（现有配置都是 0），warmup 打开时最多
     多走一个 micro-batch。
+
+## 2026-11-11（2×4090D 迁移：并行、口径、日志）
+
+- **commit**: `bd22c8c` perf: 145M 多卡并行改 ddp（实测 2.16×）
+- **commit**: `52e0684` feat: 多卡日志按全局口径统计，续训沿用同一 run 目录与日志文件
+- **commit**: `e30ef7c` chore: 日志只留训练主线，框架噪声分流到 .err
+
+- 做了什么:
+  - `pretrain_145m.yaml` 的 `distributed.mode` 由 `fsdp2` 改 `ddp`（依据 D81）；
+  - metrics 的 `tokens` / `tokens_seen` 求和、loss 与 router/swiglu 按 token 加权、
+    `mem_*` 取各 rank 最大（`Trainer._globalize`，新增 `dist.all_reduce_max`）；
+  - `runs/current.json` 记录在跑的 run，只有"同 flavor + 盘上有 checkpoint"才续写同一个
+    `runs/<id>/`，否则新建；`loss_ema` 与 `tokens_seen` 写进 checkpoint extra 并在
+    resume 时恢复；
+  - 日志改名 `logs/<config>_<campaign stamp>.log`（stamp 存 `logs/.<config>.stamp`），
+    stderr 分流到 `<log>.err`，`init_process_group` 传 `device_id`，非 rank0 静音。
+- 实现了什么:
+  - 2×4090D：19.12 → **8.86 s/step**，13,708 → **29,580 tok/s**（2.16× 单卡），
+    峰值显存 14.5 → **12.8 GiB**/卡，3B tokens ETA 2.5 d → **1.2 d**；
+  - 一份训练从 step 1015（单卡）续到 1200（双卡）再续，metrics 与日志始终是同一份；
+    日志只剩 `== start` / `[trainer]` / `step` 三类行。
+- 验证: `pytest tests/` **293 passed / 2 skipped**，ruff 通过；线上 step 1200 续训
+  loss 3.6331、29.2k tok/s，val 在 1199 跑出 2.4560 / ppl 6.3。
+- 未完成 / 风险:
+  - 迁移途中一度同时跑了两个训练进程（旧进程未退），已清掉并按 step_001200 续训；
+    `step_001200` 的 meta 校验过（step/data_tokens 都对）;
+  - 老机 hn01 现在 SSH 被拒（`Connection closed`），代码只同步到 GitHub，
+    恢复后需要 `git pull` + 重新 rsync 数据；
+  - `mem_allocated_mb` 是"取数时刻"的分配量（优化器步之后），会偏低，看 `mem_peak_mb`。
