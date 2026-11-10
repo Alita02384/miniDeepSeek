@@ -19,13 +19,23 @@
 | `/opt/mds-venv` | Python 环境 | 系统盘，30 GB 足够 |
 
 ```bash
-# 本文所有命令里的连接参数，先 export 一次
-export HOST=hn01-ssh.gpuhome.cc
-export PORT=31185
+# 每开一次实例，地址和端口都会变，以控制台 "SSH 连接信息" 为准，先 export 一次
+export HOST=sc01-ssh.gpuhome.cc      # 例：hn01-ssh.gpuhome.cc / sc01-ssh.gpuhome.cc
+export PORT=31122                    # 例：31185 / 31122
+```
+
+首次连接建议先把公钥装上去，否则每次 rsync 都要输密码：
+
+```bash
+ssh-copy-id -p "$PORT" root@"$HOST"        # 只输一次密码
+ssh -p "$PORT" root@"$HOST" 'echo ok'      # 之后应当免密
 ```
 
 > 服务器**连不上 GitHub**，代码一律用 rsync 同步（见 §4）。数据也不能从 ModelScope 拉，
 > 全部从 Mac 直接 rsync。
+>
+> **保存镜像只带系统盘**：`/opt/mds-venv` 会跟着镜像走；`/root/rivermind-data`
+> 下的代码、数据、checkpoint 不会，换实例后必须重新 rsync。
 
 ---
 
@@ -130,14 +140,19 @@ ls -lh val_packs.tar.zst        # 约 8 MB
 ```bash
 ssh -p "$PORT" root@"$HOST"
 df -h / /root/rivermind-data
-nproc
-free -g
-python3 -c "import torch; print(torch.__version__, torch.version.cuda)"
+nproc; free -g
+/opt/conda/bin/python -V
+/opt/conda/bin/python -c "import torch; print(torch.__version__, torch.version.cuda)"
+/opt/conda/bin/pip list 2>/dev/null | grep -Ei '^(torch|numpy|jinja2|pyyaml|tokenizers|safetensors) '
 mkdir -p /root/rivermind-data/miniDeepSeek/{data,logs}
 ```
 
+- 当前 gpuhome 镜像实测（2026-11-09）：Python 3.12.13、`torch 2.12.1+cu130`、
+  numpy 2.4.4、jinja2 3.1.6、PyYAML 6.0.3；**没有** tokenizers / safetensors /
+  pytest / ruff / transformers。系统盘 30 GB（初始已用 1.7 GB）。
 - 数据盘建议 ≥ 80 GB：packs 27 G + 非预训练 JSONL 2.4 G + ckpt ~6 G；
-- 无卡启动时 `nvidia-smi` 不存在、`torch.cuda.is_available()` 为 False 都正常。
+- 无卡启动时 `nvidia-smi` 不存在、`torch.cuda.is_available()` 为 False 都正常；
+  判断装没装 CUDA 版看 `torch.version.cuda` 是否非空（本镜像为 `13.0`）。
 
 ---
 
@@ -146,14 +161,30 @@ mkdir -p /root/rivermind-data/miniDeepSeek/{data,logs}
 ```bash
 cd /Users/cjh/Workspace/miniDeepSeek
 rsync -avz --partial --progress -e "ssh -p $PORT" \
-  --exclude '.venv' --exclude '.cache' --exclude '.pytest_cache' --exclude '.ruff_cache' \
-  --exclude 'data' --exclude 'download' --exclude 'dist' --exclude 'checkpoints' \
-  --exclude 'runs' --exclude 'reports' --exclude 'internlm2-1_8b-reward' \
+  --exclude '/.venv' --exclude '/.cache' --exclude '/.pytest_cache' --exclude '/.ruff_cache' \
+  --exclude '/data' --exclude '/download' --exclude '/dist' --exclude '/checkpoints' \
+  --exclude '/runs' --exclude '/reports' --exclude '/internlm2-1_8b-reward' \
   --exclude '__pycache__' --exclude '*.zst' --exclude '*.tar' \
   miniDeepSeek/ root@"$HOST":/root/rivermind-data/miniDeepSeek/
 ```
 
 `internlm2-1_8b-reward`（3.2 GB）是 GRPO 用的奖励模型，预训练不需要，已排除。
+
+> **排除规则必须带前导 `/`。** `--exclude 'data'` 匹配的是任意层级的 `data`
+> 目录，会把 `src/minideepseek/data/`（代码包，15 个 `.py`）一起排掉，结果服务器上
+> 所有测试在 collection 阶段就报
+> `ModuleNotFoundError: No module named 'minideepseek.data'`。
+> 同理 `dist` / `runs` / `reports` 也应锚定到仓库根。
+>
+> 传完自查（10 秒，别省）：
+>
+> ```bash
+> cd /root/rivermind-data/miniDeepSeek
+> ls src/minideepseek/data/*.py | wc -l   # 15
+> find src -name '*.py' | wc -l           # 76
+> ```
+>
+> 这条命令没有 `--delete`，重跑不会删服务器上的 `data/`、`checkpoints/`。
 
 ---
 
@@ -224,29 +255,60 @@ packs 的 token 数必须和 §1 的验收结果一致；不一致就停下来�
 
 ## 7. 服务器：装环境（系统盘 + 软链）
 
+一键版（幂等，换实例后重跑即可）：
+
 ```bash
-python3 -m venv --system-site-packages /opt/mds-venv
 cd /root/rivermind-data/miniDeepSeek
-ln -sfn /opt/mds-venv .venv
+bash scripts/setup_env_gpu.sh --test
+```
+
+等价的手工步骤：
+
+```bash
+/opt/conda/bin/python -m venv --system-site-packages /opt/mds-venv
+cd /root/rivermind-data/miniDeepSeek
+ln -sfn /opt/mds-venv .venv        # scripts/*.sh 全部按 .venv/... 调用
 
 export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 PIP_NO_CACHE_DIR=1 .venv/bin/pip install -U pip
-PIP_NO_CACHE_DIR=1 .venv/bin/pip install -e . --no-deps
-PIP_NO_CACHE_DIR=1 .venv/bin/pip install \
-  safetensors tokenizers jinja2 pyyaml pytest ruff \
-  transformers sentencepiece protobuf
-
-.venv/bin/python -m pytest -q
+PIP_NO_CACHE_DIR=1 .venv/bin/pip install -e '.[dev,hf]'   # torch 由镜像提供，不会重复下载
 ```
 
-- 用镜像自带的 CUDA torch（`--system-site-packages`），**不要**跑 `scripts/server_setup.sh`（会重复装 2.5 GB cu124 torch）；
+装完校验（这三条必须过）：
+
+```bash
+.venv/bin/python -c "import sys, torch; print(sys.prefix); print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.__file__)"
+# 期望：/opt/mds-venv / 2.12.1 13.0 False / /opt/conda/lib/python3.12/site-packages/torch/__init__.py
+
+.venv/bin/pip list --local | grep -Ei 'torch|token|safetensors|ruff|pytest'  # 不应出现 torch
+du -sh /opt/mds-venv                                                          # 约 76 MB
+```
+
+`pytest` 期望值：
+
+```bash
+.venv/bin/python -m pytest -q
+# 装了 [hf]：237 passed
+# 不装 transformers：230 passed, 7 skipped（test_hf.py 整模块被 importorskip 跳过）
+```
+
+- 用镜像自带的 CUDA torch（`--system-site-packages`），**不要**跑
+  `scripts/server_setup.sh`：它会从 `download.pytorch.org` 重装 2.5 GB 的 cu124 torch
+  （慢且版本低于项目要求的 2.9），无卡时还会直接 `raise SystemExit`；
+- 单核无卡实例上**第一次 `import torch` 可能很慢**（冷缓存读几 GB `.so`），先热一次：
+  `time .venv/bin/python -c "import torch"`。跑测试时建议
+  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -q`：容器里
+  torch 默认按宿主机核数开线程，1 核配额上会互相拖慢几十倍，看起来像卡死；
 - 这种 venv **没有 `.venv/bin/torchrun`**：`--system-site-packages` 只共享
   site-packages，console script 留在系统 bin 目录。多卡一律用
   `.venv/bin/python -m torch.distributed.run`（`scripts/train_*.sh` 已按此改好），
   可用 `ls .venv/bin/torchrun` 复核（应当不存在）；
-- 若 `torch.version.cuda` 为空或导入失败，再补：
+- `[hf]` 把 transformers 锁在 `<5`，别手动 `pip install transformers` 装成 5.x；
+- 只有 `torch.version.cuda` 为空或导入失败才需要补 torch，且**不要用 cu124**
+  （该索引最高只到 torch 2.6.0，低于本项目 `torch>=2.9` 的要求），走国内镜像：
   ```bash
-  PIP_NO_CACHE_DIR=1 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu124
+  PIP_NO_CACHE_DIR=1 .venv/bin/pip install torch \
+    --index-url https://mirrors.aliyun.com/pytorch-wheels/cu130
   ```
 
 ---
@@ -377,7 +439,16 @@ tail -f checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl
   2.1B token（约 70%）不受影响；OOM 只会在第 3 阶段开头发生，
   前两个阶段的 `final/` 已经落盘；
 - **loss NaN**：预训练先把 lr 降到 3e-4 重跑；
-- **磁盘不够**：方案 A 已省 13 G；再不够就删 `data/pretrain_*.jsonl` 或调小 `keep_last_ckpt`。
+- **磁盘不够**：方案 A 已省 13 G；再不够就删 `data/pretrain_*.jsonl` 或调小 `keep_last_ckpt`；
+- **`ModuleNotFoundError: No module named 'minideepseek.data'`**：§4 的 rsync
+  排除规则没加前导 `/`，代码包被当成数据目录排掉了；改 `--exclude '/data'` 后重传，
+  按 §4 末尾两条命令自查；
+- **pytest 跑很久没动静**：先看 `time .venv/bin/python -c "import torch"` 是不是
+  分钟级（冷缓存），再确认有没有被线程超订拖慢——
+  `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -q -v`；
+  实在慢就按文件跑：`for f in tests/test_*.py; do ... "$f"; done`；
+- **`test_hf.py` 被 skip**：没装 transformers，不影响预训练，只影响 `export_hf`；
+  要导 HF 就补 `pip install -e '.[hf]'`。
 
 ---
 
@@ -391,7 +462,7 @@ tail -f checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl
 | 传数据（方案 A） | 10–20 min | +2.4 GB |
 | 传 packs | ~30 min（3.4 GB @ 2 MB/s） | +3.4 GB → 解压后 27 GB |
 | 传验证 packs | < 1 min（8 MB） | +78 MB |
-| 装环境 | 10 min | 系统盘 ~0.5 GB |
+| 装环境 | 2–3 min | 系统盘 ~0.1 GB（torch 复用镜像） |
 | 冒烟 | 10 min | — |
 | 预训练 3B（4×4090） | **6–9 h** | ckpt ~4–6 GB |
 
