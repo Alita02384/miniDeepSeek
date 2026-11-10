@@ -110,3 +110,43 @@ def test_legacy_flat_metrics_is_still_detected(tmp_path):
     (tmp_path / runs.METRICS_FILENAME).write_text('{"step": 0, "loss": 1.0}\n', encoding="utf-8")
     assert runs.list_runs(tmp_path) == []
     assert runs.legacy_metrics_path(tmp_path) is not None
+
+
+def test_continuation_needs_a_checkpoint_and_the_same_flavour(tmp_path):
+    """A resume appends to the live run; a different model starts a new one."""
+    out_dir = tmp_path / "stage"
+    runs.write_current(
+        out_dir, run_id="20260101T000000Z_m_1.0M_1g", flavor="m", total_params=1e6
+    )
+    assert runs.continuation(out_dir, "m") is None  # nothing to resume yet
+
+    (out_dir / "step_000001").mkdir(parents=True)
+    assert runs.continuation(out_dir, "m") == "20260101T000000Z_m_1.0M_1g"
+    assert runs.continuation(out_dir, "other-model") is None
+
+
+def test_campaign_stamp_follows_resumable_state(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    out = tmp_path / "campaign"
+    (out / "stage_00_seq2048" / "step_000100").mkdir(parents=True)
+    first = runs.campaign_stamp(out, logs, "curriculum_x")
+    assert runs.is_stamp(first)
+    assert runs.campaign_stamp(out, logs, "curriculum_x") == first
+
+    # ``final`` counts as resumable too (a restarted finished stage resumes it).
+    (out / "stage_00_seq2048" / "final").mkdir()
+    assert runs.campaign_stamp(out, logs, "curriculum_x") == first
+
+    # Nothing left to resume: the next launch is a new training -> new stamp.
+    for child in (out / "stage_00_seq2048").iterdir():
+        child.rmdir()
+    monkeypatch.setattr(runs, "utc_stamp", lambda: "20270101T000000Z")
+    assert runs.campaign_stamp(out, logs, "curriculum_x") == "20270101T000000Z"
+
+
+def test_launch_log_path_puts_the_stamp_last(tmp_path):
+    config = tmp_path / "curriculum_145m_g2.yaml"
+    config.write_text(f"out_dir: {tmp_path / 'cp'}\n", encoding="utf-8")
+    path = runs.launch_log_path(config, tmp_path / "logs")
+    assert path.name.startswith("curriculum_145m_g2_")
+    assert runs.is_stamp(path.stem.rsplit("_", 1)[1])

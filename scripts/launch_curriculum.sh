@@ -30,20 +30,26 @@ if [ -z "$GPUS" ]; then
   GPUS="$(.venv/bin/python -c "import torch; print(max(1, torch.cuda.device_count()))" 2>/dev/null || echo 1)"
 fi
 
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-NAME="$(basename "${CONFIG%.yaml}")"
-LOG="logs/${RUN_ID}_${NAME}.log"
 mkdir -p logs
+# ``logs/<config>_<stamp>.log``: the stamp is the *campaign* stamp kept in
+# ``logs/.<config>.stamp``, so an interrupted training appends to the log it
+# already had instead of spawning one file per restart.  A different config
+# (different model) or a run with no checkpoint left gets a new stamp.
+LOG="$(.venv/bin/python -m minideepseek.runs logpath "$CONFIG" --logs-dir logs)"
+STAMP="${LOG%.log}"
+STAMP="${STAMP##*_}"
+APPENDING=no
+[ -s "$LOG" ] && APPENDING=yes
 
-printf 'run id : %s\nconfig : %s\ngpus   : %s\nlog    : %s\n\n' \
-  "$RUN_ID" "$CONFIG" "$GPUS" "$LOG"
+printf 'run id  : %s\nconfig  : %s\ngpus    : %s\nlog     : %s\nappending: %s\n\n' \
+  "$STAMP" "$CONFIG" "$GPUS" "$LOG" "$APPENDING"
 
-export MINIDEEPSEEK_RUN_ID="$RUN_ID"
+export MINIDEEPSEEK_RUN_ID="$STAMP"
 export NPROC_PER_NODE="$GPUS"
-# From here on stdout/stderr go to the per-run log; the banner above stays on
+# From here on stdout/stderr go to the campaign log; the banner above stays on
 # the terminal (and in nohup.out if the caller redirects).
 exec >>"$LOG" 2>&1
-echo "== start $(date -u +%FT%TZ)  config=$CONFIG  gpus=$GPUS  run_id=$RUN_ID"
+echo "== start $(date -u +%FT%TZ)  config=$CONFIG  gpus=$GPUS  run_id=$STAMP  appending=$APPENDING"
 if [ "$GPUS" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   exec .venv/bin/python -m torch.distributed.run --standalone --nproc_per_node="$GPUS" \
     scripts/train_curriculum.py --config "$CONFIG"

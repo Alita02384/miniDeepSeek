@@ -631,3 +631,64 @@ def test_trainer_logs_per_domain_val_loss(tmp_path):
     assert "val_loss_general" in val_record
     assert "val_loss_code" in val_record
     assert val_record["val_tokens_general"] > 0
+
+
+class _TwoRanks:
+    """Stand-in for ``DistributedContext`` with two identical ranks."""
+
+    enabled = True
+    world_size = 2
+    is_main = True
+
+    def all_reduce_sum(self, tensor):
+        tensor.mul_(2)
+        return tensor
+
+    def all_reduce_max(self, tensor):
+        return tensor
+
+    def barrier(self):
+        return None
+
+
+def test_globalize_reports_whole_job_numbers(tmp_path):
+    trainer, _model = build_trainer(
+        _config(tmp_path, steps=1), [from_sequences([[1, 2]])], tokenizer_hash="stub"
+    )
+    trainer.dist = _TwoRanks()
+    record = {
+        "loss": 3.0,
+        "main_loss": 2.9,
+        "tokens": 100,
+        "tokens_seen": 500,
+        "mem_peak_mb": 1000.0,
+        "router_entropy": 0.5,
+        "lr": 1e-3,
+        "step": 7,
+    }
+    out = trainer._globalize(record, tokens=100)
+    assert out["tokens"] == 200
+    assert out["tokens_seen"] == 1000
+    # Identical per-rank values survive the weighted mean unchanged.
+    assert out["loss"] == pytest.approx(3.0)
+    assert out["main_loss"] == pytest.approx(2.9)
+    assert out["router_entropy"] == pytest.approx(0.5)
+    assert out["mem_peak_mb"] == pytest.approx(1000.0)
+    assert out["lr"] == 1e-3
+    assert out["step"] == 7
+
+
+def test_restart_continues_the_same_run_directory(tmp_path):
+    """An interrupted run keeps one metrics file instead of one per launch."""
+    batches = [from_sequences([[index + 1, index + 2]]) for index in range(4)]
+    first, _model = build_trainer(
+        _config(tmp_path, steps=1), batches, tokenizer_hash="stub"
+    )
+    first.train(1)
+    first.save("step_000001")
+
+    second, _model = build_trainer(
+        _config(tmp_path, steps=2), batches, tokenizer_hash="stub"
+    )
+    assert second.run_dir == first.run_dir
+    assert second.run_id == first.run_id

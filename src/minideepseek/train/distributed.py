@@ -63,6 +63,11 @@ class DistributedContext:
             tensor.div_(self.world_size)
         return tensor
 
+    def all_reduce_max(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.enabled and dist.is_initialized():
+            dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+        return tensor
+
     def broadcast_object(self, obj: Any, *, src: int = 0) -> Any:
         if not self.enabled or not dist.is_initialized():
             return obj

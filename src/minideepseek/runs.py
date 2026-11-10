@@ -137,6 +137,162 @@ def update_meta(path: str | Path, **fields: Any) -> dict[str, Any]:
     return meta
 
 
+CURRENT_FILENAME = "current.json"
+
+
+def current_path(out_dir: str | Path) -> Path:
+    """Where ``runs/`` records which run is currently live for ``out_dir``."""
+    return runs_root(out_dir) / CURRENT_FILENAME
+
+
+def read_current(out_dir: str | Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(current_path(out_dir).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_current(
+    out_dir: str | Path, *, run_id: str, flavor: str, total_params: float
+) -> Path:
+    target = current_path(out_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": str(run_id),
+        "flavor": str(flavor),
+        "total_params": float(total_params),
+        "stamp": str(run_id).split("_", 1)[0],
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return target
+
+
+def has_checkpoints(out_dir: str | Path) -> bool:
+    """True when ``out_dir`` holds something a trainer could resume from."""
+    root = Path(out_dir)
+    if not root.is_dir():
+        return False
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if child.name.startswith("step_") or child.name == "final":
+            return True
+    return False
+
+
+def has_campaign_state(out_dir: str | Path) -> bool:
+    """True when any stage under ``out_dir`` has a checkpoint."""
+    if has_checkpoints(out_dir):
+        return True
+    root = Path(out_dir)
+    if not root.is_dir():
+        return False
+    return any(child.is_dir() and has_checkpoints(child) for child in root.iterdir())
+
+
+def continuation(out_dir: str | Path, flavor: str) -> str | None:
+    """Run id this launch should append to, or ``None`` for a fresh run.
+
+    A continuation requires both a checkpoint on disk and a live pointer that
+    names the same model flavour; anything else (new model, cleaned output dir)
+    starts a new run directory instead of polluting the previous one.
+    """
+    pointer = read_current(out_dir)
+    if not pointer or not has_checkpoints(out_dir):
+        return None
+    if str(pointer.get("flavor") or "") != str(flavor):
+        return None
+    run_id = pointer.get("run_id")
+    return str(run_id) if run_id else None
+
+
+def record_launch(
+    run_dir: str | Path,
+    *,
+    world_size: int,
+    distributed: bool,
+    distributed_mode: str,
+) -> dict[str, Any]:
+    """Append one launch to a run's ``meta.json`` history."""
+    meta = read_meta(run_dir)
+    if not meta:
+        return meta
+    launches = list(meta.get("launches") or [])
+    launches.append(
+        {
+            "at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "world_size": int(world_size),
+            "distributed": bool(distributed),
+            "distributed_mode": str(distributed_mode),
+        }
+    )
+    meta["launches"] = launches
+    meta["last_launch_at"] = launches[-1]["at"]
+    write_meta(run_dir, meta)
+    return meta
+
+
+def campaign_stamp(out_dir: str | Path, logs_dir: str | Path, stem: str) -> str:
+    """Stamp shared by every launch of one training campaign.
+
+    ``logs/.<config>.stamp`` remembers the first launch's stamp, so a restart
+    appends to the same log instead of spawning one file per attempt.  Once
+    nothing is resumable under ``out_dir`` the next launch is a fresh training
+    and gets a new stamp (a new log).
+    """
+    logs = Path(logs_dir)
+    marker = logs / f".{stem}.stamp"
+    if marker.exists() and has_campaign_state(out_dir):
+        recorded = marker.read_text(encoding="utf-8").strip()
+        if is_stamp(recorded):
+            return recorded
+    stamp = utc_stamp()
+    logs.mkdir(parents=True, exist_ok=True)
+    marker.write_text(stamp + "\n", encoding="utf-8")
+    return stamp
+
+
+def launch_log_path(config_path: str | Path, logs_dir: str | Path = "logs") -> Path:
+    """``logs/<config stem>_<campaign stamp>.log`` -- timestamp last."""
+    import yaml  # only the launcher needs this, so keep it out of the import path
+
+    config_path = Path(config_path)
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        config = {}
+    out_dir = (
+        config.get("out_dir")
+        or (config.get("train") or {}).get("out_dir")
+        or "checkpoints/run"
+    )
+    stamp = campaign_stamp(out_dir, logs_dir, config_path.stem)
+    return Path(logs_dir) / f"{config_path.stem}_{stamp}.log"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Tiny CLI: the launcher asks for the log path it should append to."""
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="minideepseek.runs", description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    log_command = sub.add_parser("logpath", help="print the log file for a config")
+    log_command.add_argument("config")
+    log_command.add_argument("--logs-dir", default="logs")
+    args = parser.parse_args(argv)
+    if args.command == "logpath":
+        print(launch_log_path(args.config, args.logs_dir))
+        return 0
+    parser.error(f"unknown command {args.command!r}")
+    return 2
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised by the launcher
+    raise SystemExit(main())
+
+
 @dataclass
 class RunInfo:
     """One launch: where it lives and which steps it covered."""

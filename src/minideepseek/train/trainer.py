@@ -224,6 +224,31 @@ def _stop_signals(trainer: Trainer):
             signal.signal(signum, handler)
 
 
+#: Loss terms: averaged over ranks weighted by each rank's token count.
+_TOKEN_WEIGHTED_KEYS = (
+    "loss",
+    "main_loss",
+    "mtp_loss",
+    "mtp_loss_d1",
+    "balance_loss",
+    "indexer_loss",
+    "ar_active",
+)
+
+#: Diagnostic rates/ratios that follow the same token weighting as the losses.
+_STAT_PREFIXES = ("router_", "swiglu_")
+
+#: Allocator readings: the maximum across ranks is the binding constraint.
+_MEMORY_KEYS = ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb")
+
+
+def _is_reducible(key: str, value: Any) -> bool:
+    """True for a per-rank scalar that should become a whole-job mean."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return key in _TOKEN_WEIGHTED_KEYS or key.startswith(_STAT_PREFIXES)
+
+
 class Trainer:
     """Train a :class:`MiniDeepSeekModel` on packed batches."""
 
@@ -741,38 +766,110 @@ class Trainer:
         world = self.dist.world_size if self.dist.enabled else 1
         averaged.tokens_seen = self._tokens_seen
         averaged.step_time_s = elapsed
+        # ``averaged.tokens`` is this rank's share; the rate has always been a
+        # whole-job figure (x world), which is what the ETA is derived from.
         averaged.tokens_per_sec = (averaged.tokens * world / elapsed) if elapsed > 0 else 0.0
         averaged.eta_seconds = mean_step * remaining
-        self._loss_ema = (
-            averaged.loss
-            if self._loss_ema is None
-            else 0.98 * self._loss_ema + 0.02 * averaged.loss
-        )
-        averaged.loss_ema = self._loss_ema
         for key, value in memory_stats(self.device).items():
             setattr(averaged, key, value)
 
-        self._last_loss = averaged.loss
         record = averaged.as_dict()
+        record = self._globalize(record, tokens=averaged.tokens)
+        self._loss_ema = (
+            record["loss"]
+            if self._loss_ema is None
+            else 0.98 * self._loss_ema + 0.02 * record["loss"]
+        )
+        record["loss_ema"] = self._loss_ema
+        self._last_loss = record["loss"]
         record["index_topk"] = float(self.model.current_index_topk() or 0)
         record["lr_factor"] = lr_factor
-        record.update(self._handle_spike(averaged.loss))
+        record.update(self._handle_spike(record["loss"]))
+        return record
+
+    def _globalize(self, record: dict[str, Any], *, tokens: float) -> dict[str, Any]:
+        """Rewrite per-rank fields of one metrics record as whole-job figures.
+
+        Without this a 2-GPU log reports half the tokens and a rank-local loss,
+        which makes two runs on different GPU counts look like different
+        trainings.  Counters are summed, losses and the routing/SwiGLU
+        statistics become token-weighted means (every rank processes the same
+        number of tokens, so this equals the plain mean), and memory is the
+        maximum across ranks -- the binding constraint on the slowest card.
+        """
+        world = int(self.dist.world_size) if self.dist.enabled else 1
+        if world <= 1:
+            return record
+        record["tokens"] = int(round(tokens * world))
+        record["tokens_seen"] = int(round(float(record.get("tokens_seen") or 0.0) * world))
+        weighted = [
+            key
+            for key, value in record.items()
+            if _is_reducible(key, value)
+        ]
+        if weighted and tokens > 0:
+            values = torch.tensor(
+                [float(record[key]) * tokens for key in weighted] + [float(tokens)],
+                device=self.device,
+                dtype=torch.float64,
+            )
+            self.dist.all_reduce_sum(values)
+            total = float(values[-1])
+            if total > 0:
+                for index, key in enumerate(weighted):
+                    record[key] = float(values[index]) / total
+        memory = [key for key in _MEMORY_KEYS if isinstance(record.get(key), (int, float))]
+        if memory:
+            stats = torch.tensor(
+                [float(record[key]) for key in memory],
+                device=self.device,
+                dtype=torch.float64,
+            )
+            self.dist.all_reduce_max(stats)
+            for index, key in enumerate(memory):
+                record[key] = float(stats[index])
         return record
 
     # -- run identity ---------------------------------------------------------
     def _start_run(self) -> None:
-        """Allocate this launch's ``runs/<run_id>/`` and record its provenance.
+        """Pick this launch's ``runs/<run_id>/`` and record its provenance.
 
-        One directory per launch is what keeps two restarts from sharing a
-        metrics file.  The id is fixed at boot: timestamp + model + world size,
-        so ``ls runs/`` alone tells you what ran when.
+        A *resumed* training keeps writing into the run directory it already
+        had, so one interrupted-and-restarted training stays one metrics file
+        (and one line in the report).  A different model, or a run with no
+        checkpoint to resume, gets a fresh directory: ``runs/current.json``
+        records which run is live, and only a matching flavour with an actual
+        checkpoint on disk counts as a continuation.
+
+        The id itself is timestamp + model + world size, so ``ls runs/`` alone
+        tells you what ran when.
         """
         report = self.model.parameter_report()
         total_params = float(report.get("total", 0.0))
         world = int(self.dist.world_size) if self.dist.enabled else 1
-        self.run_id = runs.make_run_id(
-            self.config.model.flavor, total_params, world
-        )
+        flavor = self.config.model.flavor
+        continued = runs.continuation(self.config.train.out_dir, flavor)
+        if continued:
+            self.run_id = continued
+            self.run_dir = runs.runs_root(self.config.train.out_dir) / continued
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            runs.record_launch(
+                self.run_dir,
+                world_size=world,
+                distributed=bool(self.dist.enabled),
+                distributed_mode=str(self.config.distributed.mode),
+            )
+            dump_config(
+                self.config,
+                self.run_dir / f"config_{runs.utc_stamp()}.yaml",
+            )
+            print(
+                f"[trainer] continuing run {self.run_id} -> {self.run_dir} "
+                "(metrics appended)",
+                flush=True,
+            )
+            return
+        self.run_id = runs.make_run_id(flavor, total_params, world)
         self.run_dir = runs.allocate_run_dir(self.config.train.out_dir, self.run_id)
         self.run_id = self.run_dir.name
         meta = {
@@ -800,8 +897,22 @@ class Trainer:
             "planned_steps": int(self.config.train.steps),
             "git": _git_state(),
         }
+        meta["launches"] = [
+            {
+                "at": meta["started_at"],
+                "world_size": world,
+                "distributed": bool(self.dist.enabled),
+                "distributed_mode": str(self.config.distributed.mode),
+            }
+        ]
         runs.write_meta(self.run_dir, meta)
         dump_config(self.config, self.run_dir / runs.CONFIG_FILENAME)
+        runs.write_current(
+            self.config.train.out_dir,
+            run_id=self.run_id,
+            flavor=flavor,
+            total_params=total_params,
+        )
         print(f"[trainer] run {self.run_id} -> {self.run_dir}", flush=True)
 
     def request_stop(self, signum: int | None = None, frame: Any = None) -> None:
@@ -830,7 +941,8 @@ class Trainer:
                 "first_loss": self._first_loss,
                 "last_loss": self._last_loss,
                 "wall_seconds": round(time.time() - started, 3),
-                "tokens": self._tokens_seen,
+                "tokens": self._tokens_seen
+                * (int(self.dist.world_size) if self.dist.enabled else 1),
                 "interrupted": bool(self._stop_requested),
                 "best_val_loss": (
                     self.best_val_loss if math.isfinite(self.best_val_loss) else None
