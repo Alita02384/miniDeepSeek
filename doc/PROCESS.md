@@ -1353,6 +1353,6 @@
 - 未完成 / 风险:
   - 迁移途中一度同时跑了两个训练进程（旧进程未退），已清掉并按 step_001200 续训；
     `step_001200` 的 meta 校验过（step/data_tokens 都对）;
-  - 老机 hn01 现在 SSH 被拒（`Connection closed`），代码只同步到 GitHub，
-    恢复后需要 `git pull` + 重新 rsync 数据；
+  - 老机 hn01 已关机（用户操作），代码以 GitHub 为准；单卡那份
+    `checkpoints/curriculum_145m_3b/stage_00_seq2048` 已随新机的续训接上；
   - `mem_allocated_mb` 是"取数时刻"的分配量（优化器步之后），会偏低，看 `mem_peak_mb`。
