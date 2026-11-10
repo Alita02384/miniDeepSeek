@@ -1296,8 +1296,18 @@ def _mean(values: Iterable[float]) -> float:
 
 
 def _merge_dicts(dicts: list[dict[str, float]]) -> dict[str, float]:
-    keys = set.intersection(*(set(item) for item in dicts)) if dicts else set()
-    return {key: _mean(item[key] for item in dicts) for key in keys}
+    """Average each key over the micro-batches that actually reported it.
+
+    Intersecting the key sets would drop every router/SwiGLU metric as soon as
+    one micro-batch skipped diagnostics: only the last micro-batch of an
+    accumulation group collects them (``collect_metrics``), so an intersection
+    is empty for any ``grad_accum > 1``.
+    """
+    merged: dict[str, float] = {}
+    for key in {key for item in dicts for key in item}:
+        values = [item[key] for item in dicts if key in item]
+        merged[key] = sum(values) / len(values)
+    return merged
 
 
 class _null_context:

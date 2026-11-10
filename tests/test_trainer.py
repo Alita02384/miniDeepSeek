@@ -470,6 +470,25 @@ def test_router_snapshot_logs_raw_counts_and_bias(tmp_path):
     assert "domain_name_min" not in summary
 
 
+def test_grad_accum_keeps_router_and_swiglu_metrics(tmp_path):
+    """Diagnostics are collected once per step; the merge must not drop them.
+
+    Only the last micro-batch of an accumulation group pays for
+    ``routing_metrics``/``swiglu``; intersecting the per-micro-batch key sets
+    would then leave nothing and silently erase every MoE panel from the report.
+    """
+    batches = [from_sequences([[1, 2, 3, 4]]), from_sequences([[5, 6, 7]])]
+    config = _config(tmp_path, steps=1, grad_accum=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(1)
+
+    record = _read_metrics(tmp_path / "run")[-1]
+    assert record["tokens"] > 0
+    assert "router_learned_expert_load_max_over_mean" in record
+    assert "router_learned_min_relative_load" in record
+    assert record["swiglu_calls"] > 0
+
+
 def test_router_snapshot_is_off_by_default(tmp_path):
     batches = [from_sequences([[1, 2, 3, 4]])]
     config = _config(tmp_path, steps=2)
