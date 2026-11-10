@@ -1027,3 +1027,44 @@
 - **备选（未采用）**：把 HCA 压缩率从 32 改成 64（更接近官方的 128），8K 就只需要
   `K=128`、可直接复用缓存；代价是所有 stage 的长程分辨率减半，属于比"付一次编译"
   更大的结构性偏离。留作消融。
+
+### D76. bf16 attention 默认打开：443ms → 17ms（2026-11-11，4090 实测）
+
+- **背景**：D72 把 bf16 边界 cast 默认关掉了，理由是“bf16 的 Triton lowering 在
+  本机冷编译多次 >30 分钟未完成”。这条在 2K/4K 上**不成立**：今天在干净缓存上
+  实测 K=64 **55.2s**、K=128 **372.3s**，都比 fp32 的同变体（89.2s / 459.3s）还快。
+  真正病态的只有 8K 的 K=256（fp32 当年 >1h，bf16 未编完，主动中止）。
+- **实测（同进程、同 seed、同一条真实 batch，CUPTI kernel 时间）**：
+  | | fwd+bwd kernel | attention | main loss |
+  |---|---|---|---|
+  | fp32 | 1092 ms | 443 ms（40.6%） | 9.177011 |
+  | bf16 | 666 ms | **17 ms（2.6%）** | 9.177383 |
+  attention **26x**，整步 kernel **-39%**，loss 差 3.7e-4。
+- **线上效果**：`step_time` 17.7 → **13.6s**，tok/s 11.2k → **14.1k（+26%）**，
+  GPU 利用率 86% → **100%**，功耗 216W/450W。
+- **为什么不到 -39%**：bf16 只砍掉 attention 那一块，剩下的每 micro-batch 固定开销
+  （MoE dispatch、mHC、rope、~千次 launch）没变；现在 GPU 100% 忙但只有 216W，
+  说明是 kernel 开销/访存受限，不是算力受限。下一个杠杆是把 micro-batch 装满
+  （见下面的 fill rate 条目），而不是继续压 attention。
+- **代价**：8K 阶段（step 8011）首次调用要现编 K=256，必须在那之前找窗口
+  `MINIDEEPSEEK_ATTN_BF16=1 prewarm_attn.py --max-seq-len 8192`。没预热就开始跑
+  会表现为“卡住一小时”。
+- **默认值**：`scripts/train_curriculum.sh` 里 `MINIDEEPSEEK_ATTN_BF16` 默认 1。
+
+### D77（待决）. pack 填充率 75.7% / 81.3% / 95.3%，实际只训到 2.54B token
+
+- **现象**：`pack_domain.py` 是 next-fit——文档放不下就 flush，从不切分。2K 阶段
+  平均文档 1,549 token，于是 2048 的 pack 只有 75.7% 满；三阶段合计
+  198.3k / 213.1k / 249.8k token 每 step，11444 步只有 **2.54B**，比计划的 3B 少 15.3%。
+- **不是 padding**：pack 里没有 padding，GPU 没白算 FLOPs；亏的是每 micro-batch
+  固定开销的摊薄，以及 token 预算本身。
+- **三个候选**（当前决定：先不动，只做了 D76）：
+  1. **loader 侧虚拟重排**（推荐）：`__getitem__` 按 `index * seq_len` 切平坦流，
+     positions 在切点归零，`__len__` 改成 `ceil(total / seq_len)`。约 20 行，
+     不动数据文件、零磁盘开销、可单测；
+  2. 离线重排数据：已在 `pretrain_tool_2k` 上验证（token 流 sha256 与源相同、
+     fill 99.996%、800/800 pack 结构合法、mask 与段首一致），但**磁盘只剩 14 GB**，
+     4K 那份要 ~15 GB，只能按数组就地原子替换（峰值额外 8.3 GB）；
+  3. 加 `until_step`（×1.3）：零风险，+15% 墙钟。
+- **额外发现**：`pack_domain.py` 对 `len(ids) > seq_len` 的文档是**截断**而不是切块
+  （`ids = ids[:seq_len]`），所以 2K/4K/8K 三份数据是同一语料的不同截断版本。
