@@ -1229,3 +1229,36 @@
 - 未完成 / 风险:
   - 8K 的 `K=256` 变体首次编译 >1 h，需找 GPU 空闲窗口预热（训练占着 12 GiB，
     8K 预检也要 ~12 GiB）；8K stage 在 step 8011，约 2.5 天后才到。
+
+## 2026-11-10（新实例 hn01-30167）
+
+- commit: 6c3cbf2 feat: 每次启动一个 run 目录，日志与 metrics 按启动时间/模型命名
+- commit: 6700317 fix: grad_accum>1 时路由/SwiGLU 指标被整个丢掉
+- 做了什么: 直接回应“好几次训练都记到同一个 metrics.jsonl”。根因不是日志设计本身，
+  而是那几次启动都没存过 checkpoint（ckpt_every=200，只跑到 30–80 步），
+  auto_resume 找不到可续点，每次从 step 0 重来，全部追加进同一文件 → 文件里有
+  3 段（0→30、0→30、0→70）和两次 step 回退，report 的 loss 在无关曲线间来回跳。
+- 实现了什么:
+  - `minideepseek/runs.py`：run id = `启动时刻_模型_参数量_卡数`，
+    每次启动分配 `<out_dir>/runs/<run_id>/`；同秒冲突加 `-2` 后缀；
+  - `MetricsLogger` 写 run 目录，每条记录带 `run_id`；
+  - trainer 写 `meta.json`（启动时间、argv、hostname、device/卡数、tokenizer hash、
+    参数量、git commit/dirty、planned_steps）与 `config.yaml`，resume 时补
+    `resumed_from` / `resumed_at_step`；
+  - report.html 按 lineage 渲染（当前 run + 续跑来的祖先，废弃的 step-0 分支不混入）；
+  - `scripts/launch_curriculum.sh`：一次启动一个时间戳，同时决定
+    `logs/<run_id>_<config>.log` 与 `MINIDEEPSEEK_RUN_ID`；
+  - `plot_training.py` 支持 metrics 文件 / run 目录 / stage 目录，以及
+    `--run lineage|latest|all|<id>`；
+  - **顺带修了 5d4a928 引入的回归**：`_merge_dicts` 用 key 集合交集，而诊断只在
+    最后一个 micro-batch 采 → 交集为空 → `grad_accum>1` 时 metrics 里一个
+    router/swiglu 字段都没有。实测当前这次训练 steps 0–80 全是 0 个路由字段。
+- 验证: 本地 `pytest tests/` → **280 passed, 2 skipped**；`ruff check src/ tests/ scripts/`
+  通过；服务器上旧 stage（扁平文件、3 段混合）→ 22 条记录、16 面板仍可渲染。
+- 未完成 / 风险:
+  - **已跑的这次训练用的是旧代码**，要重启才会写进 run 目录；它在 step 84 收到
+    SIGTERM 并存了 `step_000085`，所以下次启动会续跑（step 85）而不是从 0 重来；
+  - 服务器上当时的 pytest 与训练抢 CPU（load average 130+），跑测试前应设
+    `OMP_NUM_THREADS=1` 或先停训练；
+  - 工作区里 `model/mhc.py`、`model/moe.py` 有别人未提交的改动，本次未触碰；
+  - 旧的扁平 `metrics.jsonl` 保留未动，供对比。
