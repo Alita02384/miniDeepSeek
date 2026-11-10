@@ -1185,3 +1185,29 @@
   - 服务器 `/opt/mds-venv` 还没重装（当时有 `prewarm_attn.py` 在跑），所以 GRPO
     general 在服务器上仍跑不了；需要时重跑一次 `bash scripts/setup_env_gpu.sh`；
   - RM 的 CUDA 批量打分吞吐仍未测（只在 CPU 上验证过单条打分）。
+
+## 2026-11-10（晚：4090 上跑通训练）
+
+- commit: f811b50 fix: HCA 的 top-k 改为静态上界，不再随 batch 布局重编
+- 做了什么: 在真 4090 上把"能训练"这件事收口。
+  - `index_topk=64`、`hca_topk_max=128`、schedule 量化到 2 的幂（D74）；
+  - `_hca_topk` 的宽度从 `int(limit.max().item())`（数据相关 + 每层一次 D2H
+    同步）改为静态 `ceil(seq_len / compress_ratio)`，短文档由 `cmp < limit` 掩掉。
+- 实现了什么:
+  - 编译成本：`K=64` 冷编 89.2s、`K=128` 459s、`K=256` >1h（夜里的 28min 是
+    `K=512`）；现在 2K stage 两个变体 **0s 编译**（全命中缓存）；
+  - 重编消失：改之前训练进程 2 分钟内新建 17 个 cache 目录、GPU 0% 空转；
+    改之后 prewarm 0s、训练 0 新建目录；
+  - 8K 的 `K=256` 病态编译被 `hca_topk_max=128` 消掉（8K 只保留最近 128 个压缩
+    条目），最坏情况退回一次 ~5 分钟的 `K=128` 编译。
+- 验证（4090，24 GB）:
+  - `prewarm_attn.py --curriculum ... --max-seq-len 2048` → 2 variants, **0s 编译**，
+    稳态 **7,221 tok/s**，11.4 GiB；
+  - 训练 `step 0` → `step 10`：loss 12.0116 → **11.9252**（main 9.2386→9.1565），
+    |g| 3.33，**5.85k tok/s**，12.0 GiB 峰值，ETA 4.9d；
+  - 同机 benchmark（4K×2，load ~100 时）：8,545 tok/s / 11.4 GiB。
+- 未完成 / 风险:
+  - 吞吐 5.85k vs 历史 8.05k：这台机器 load 150–250（128 核超卖），进程 pcpu
+    973%，host 侧被抢；等负载降下来再复测，不能拿现在的数字当结论；
+  - 8K stage 仍未端到端跑过：`docs=1` 时 `num_documents==1` 会命中 Triton 的
+    "==1" specialization，可能还要一次 `K=128` 编译（分钟级，不是小时级）。
