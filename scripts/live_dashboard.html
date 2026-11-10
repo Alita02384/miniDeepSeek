@@ -105,6 +105,23 @@
   </section>
 
   <section class="panel">
+    <h2>predictive distribution</h2>
+    <div class="sub">H(p) nats (left) · top-1 probability (right)</div>
+    <canvas id="c-entropy"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c2)"></i>entropy</span>
+      <span><i style="background:var(--c5)"></i>top-1 prob</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>domain specialisation</h2>
+    <div class="sub">JS divergence of each domain's expert load vs the pooled load</div>
+    <canvas id="c-domain"></canvas>
+    <div class="legend" id="domain-legend"></div>
+  </section>
+
+  <section class="panel">
     <h2>learning rate</h2>
     <div class="sub">optimizer lr</div>
     <canvas id="c-lr"></canvas>
@@ -281,6 +298,29 @@ function render(data) {
     { color: c.c5, points: series(rows, 'router_learned_experts_used_fraction'),
       axis: 'right' },
   ], { digits: 2 });
+
+  chart(document.getElementById('c-entropy'), [
+    { color: c.c2, points: series(rows, 'entropy') },
+    { color: c.c5, points: series(rows, 'top1_prob'), axis: 'right' },
+  ], { digits: 3 });
+
+  const domainKeys = new Set();
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (key.startsWith('router_domain_') && key.endsWith('_js_vs_pooled')) domainKeys.add(key);
+    }
+  }
+  const palette = [c.c3, c.c4, c.c1, c.c5, c.c2];
+  const domains = [...domainKeys].sort();
+  chart(document.getElementById('c-domain'), domains.map((key, index) => ({
+    color: palette[index % palette.length],
+    points: series(rows, key),
+    dots: true,
+  })), { digits: 3 });
+  document.getElementById('domain-legend').innerHTML = domains.map((key, index) => {
+    const name = key.replace('router_domain_', '').replace('_js_vs_pooled', '');
+    return `<span><i style="background:${palette[index % palette.length]}"></i>${name}</span>`;
+  }).join('') || '<span>waiting for a router_every snapshot…</span>';
 
   chart(document.getElementById('c-lr'),
         [{ color: c.c1, points: series(rows, 'lr') }], { digits: 6 });

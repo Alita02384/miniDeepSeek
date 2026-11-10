@@ -38,7 +38,25 @@ HERE = Path(__file__).resolve().parent
 HTML_PATH = HERE / "live_dashboard.html"
 
 #: Fields the dashboard draws.  Everything else stays on the server.
-KEEP = tuple(dict.fromkeys(['"step', "loss", "loss_ema", "main_loss", "mtp_loss", "val_loss", "val_ppl", "val_main_loss", '"', '"val_loss_general', "val_loss_code", "val_loss_tool", "val_main_loss_general", '"', '"val_main_loss_code', "val_main_loss_tool", "tokens", "tokens_per_sec", "tokens_seen", '"', '"step_time_s', "grad_norm", "lr", "eta_seconds", '"', '"router_learned_expert_load_max_over_mean', "router_learned_experts_used_fraction", '"', '"router_learned_routing_entropy_normalized', "router_learned_min_relative_load", '"', '"router_hash_expert_load_max_over_mean', "swiglu_gate_clamp_rate", '"', '"mem_peak_mb', "domain_name", "loss_spike", "indexer_loss", 'balance_loss"']))
+#: Fields the dashboard draws (per-domain ``router_domain_*`` keys are added
+#: dynamically in ``_slim``).  Everything else stays on the server.
+KEEP = (
+    "step", "loss", "loss_ema", "main_loss", "mtp_loss",
+    "val_loss", "val_ppl", "val_main_loss",
+    "val_loss_general", "val_loss_code", "val_loss_tool",
+    "val_main_loss_general", "val_main_loss_code", "val_main_loss_tool",
+    "tokens", "tokens_per_sec", "tokens_seen", "step_time_s",
+    "grad_norm", "lr", "eta_seconds",
+    "entropy", "top1_prob",
+    "router_learned_expert_load_max_over_mean",
+    "router_learned_experts_used_fraction",
+    "router_learned_routing_entropy_normalized",
+    "router_learned_routing_entropy_nats",
+    "router_learned_min_relative_load",
+    "router_hash_expert_load_max_over_mean",
+    "swiglu_gate_clamp_rate",
+    "mem_peak_mb", "domain_name", "loss_spike", "indexer_loss", "balance_loss",
+)
 
 
 class Remote:
@@ -186,7 +204,13 @@ def _parse(text: str) -> list[dict]:
 
 
 def _slim(record: dict) -> dict:
-    return {key: record[key] for key in KEEP if key in record}
+    out = {key: record[key] for key in KEEP if key in record}
+    # Per-domain routing keys are emitted every ``router_every`` steps and name
+    # their domain, so they cannot live in the fixed list above.
+    for key, value in record.items():
+        if key.startswith("router_domain_"):
+            out[key] = value
+    return out
 
 
 def _thin(rows: list[dict], budget: int = 1500) -> list[dict]:
