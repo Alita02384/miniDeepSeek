@@ -75,3 +75,26 @@ def test_interleaved_mixer_reports_per_batch_source():
         seen.append(iterator.current_source)
     assert set(seen) == {"a", "b"}
     assert mixer.current_index in (0, 1)
+
+
+def test_mixer_factory_restarts_after_the_schedule_is_spent():
+    """A spent mixer must be rebuilt, not re-iterated.
+
+    ``Trainer._pull_batch`` restarts the loader whenever it runs dry, and
+    resume replay can consume the last slot of a stage -- re-iterating the same
+    mixer then yields an immediately-exhausted iterator and killed the run at
+    the 2K -> 4K boundary (2026-11-11).
+    """
+    from minideepseek.train.run import _mixer_factory
+
+    sources = [
+        BatchSource("a", _factory(1), weight=0.75),
+        BatchSource("b", _factory(2), weight=0.25),
+    ]
+    factory = _mixer_factory(
+        sources, total_batches=8, seed=3, shuffle=True, batches_per_step=1, lockstep=False
+    )
+    first = list(factory())
+    assert len(first) == 8
+    # Same factory, second use: a full schedule again instead of StopIteration.
+    assert len(list(factory())) == 8

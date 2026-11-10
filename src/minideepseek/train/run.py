@@ -112,6 +112,41 @@ def _batch_factory(
     return factory
 
 
+def _mixer_factory(
+    sources: list,
+    *,
+    total_batches: int,
+    seed: int,
+    shuffle: bool,
+    batches_per_step: int,
+    lockstep: bool,
+):
+    """Build a *restartable* iterator factory over the domain mixer.
+
+    The mixer's schedule is finite (``total_batches`` draws).  Handing back
+    ``iter(existing_mixer)`` makes a restart return an iterator whose cursor is
+    already at the end -- and ``Trainer._pull_batch`` restarts the factory
+    whenever the loader runs dry, which is exactly what happens when resume
+    replay consumes the last slot of a stage.  That killed the run at the
+    2K -> 4K boundary, so the factory rebuilds the mixer instead.
+    """
+
+    from ..data.mix import WeightedBatchMixer
+
+    def factory():
+        mixer = WeightedBatchMixer(
+            sources,
+            total_batches=total_batches,
+            seed=seed,
+            shuffle=shuffle,
+            batches_per_step=batches_per_step,
+            lockstep=lockstep,
+        )
+        return iter(mixer)
+
+    return factory
+
+
 def load_dataset(
     config: TrainConfig,
     mode: str,
@@ -127,7 +162,7 @@ def load_dataset(
     train_full_packs = bool(config.data.full_packs) and explicit_path is None
     path = path or config.data.tokenized_path
     if config.data.sources and explicit_path is None:
-        from ..data.mix import BatchSource, WeightedBatchMixer
+        from ..data.mix import BatchSource
 
         total_batches = max(config.train.steps * max(config.train.grad_accum, 1), 1)
         sources = []
@@ -168,17 +203,16 @@ def load_dataset(
                     "tokens": getattr(dataset, "num_tokens", None),
                 }
             )
-        mixer = WeightedBatchMixer(
-            sources,
-            total_batches=total_batches,
-            seed=config.data.seed,
-            shuffle=config.data.shuffle,
-            batches_per_step=max(int(config.train.grad_accum), 1),
-            lockstep=bool(config.data.lockstep),
-        )
         return (
             MixedDataset(meta={"sources": meta_sources}, datasets=list(child_datasets)),
-            (lambda: iter(mixer)),
+            _mixer_factory(
+                sources,
+                total_batches=total_batches,
+                seed=config.data.seed,
+                shuffle=config.data.shuffle,
+                batches_per_step=max(int(config.train.grad_accum), 1),
+                lockstep=bool(config.data.lockstep),
+            ),
         )
     if not path:
         raise SystemExit(
