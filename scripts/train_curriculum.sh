@@ -11,6 +11,10 @@ CONFIG="${1:-configs/pretrain/length_curriculum.yaml}"
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$ROOT/.cache/triton}"
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$ROOT/.cache/inductor}"
 export ATTN_GYM_CUTE_CACHE_DIR="${ATTN_GYM_CUTE_CACHE_DIR:-$ROOT/.cache/attn_gym}"
+# Router diagnostics are read every micro-batch; keeping the recorded tensors on
+# the GPU instead of copying them to the host removes 21 blocking D2H syncs per
+# micro-batch (672 per optimizer step at grad_accum=32).  See decisions.md D72.
+export MINIDEEPSEEK_ROUTING_GPU="${MINIDEEPSEEK_ROUTING_GPU:-1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if [ "$NPROC_PER_NODE" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   # ``python -m`` instead of ``.venv/bin/torchrun``: the runbook's venv
