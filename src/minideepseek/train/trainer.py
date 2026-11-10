@@ -15,21 +15,27 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import re
 import shutil
 import signal
+import socket
+import subprocess
+import sys
 import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import Tensor
 
-from ..config import TrainConfig, resolve_device, set_seed
+from .. import runs
+from ..config import TrainConfig, dump_config, resolve_device, set_seed
 from ..model.anticipatory import (
     AnticipatoryConfig,
     AnticipatoryState,
@@ -250,8 +256,18 @@ class Trainer:
             min_lr_ratio=config.schedule.min_lr_ratio,
             decay_start_ratio=config.schedule.decay_start_ratio,
         )
+        self.run_id: str | None = None
+        self.run_dir: Path | None = None
+        if self.dist.is_main:
+            self._start_run()
         self.logger = (
-            MetricsLogger(config.train.out_dir) if self.dist.is_main else None
+            MetricsLogger(
+                config.train.out_dir,
+                run_id=self.run_id,
+                run_dir=self.run_dir,
+            )
+            if self.dist.is_main
+            else None
         )
         self._topk_schedule = None
         current_topk = model.current_index_topk()
@@ -605,7 +621,12 @@ class Trainer:
     def _router_layer_snapshot(
         self, micro_metrics: list[StepMetrics]
     ) -> dict[str, dict[str, Any]]:
-        """Sum the micro-batch expert counts and attach the current biases."""
+        """Merge the micro-batch expert counts and attach the current biases.
+
+        Only the last micro-batch of an accumulation group collects routing
+        diagnostics, so this normally sees one populated entry; the loop keeps
+        the merge correct if that ever changes.
+        """
         merged: dict[str, dict[str, Any]] = {}
         for metric in micro_metrics:
             for name, layer in metric.router_layers.items():
@@ -730,6 +751,51 @@ class Trainer:
         record["lr_factor"] = lr_factor
         record.update(self._handle_spike(averaged.loss))
         return record
+
+    # -- run identity ---------------------------------------------------------
+    def _start_run(self) -> None:
+        """Allocate this launch's ``runs/<run_id>/`` and record its provenance.
+
+        One directory per launch is what keeps two restarts from sharing a
+        metrics file.  The id is fixed at boot: timestamp + model + world size,
+        so ``ls runs/`` alone tells you what ran when.
+        """
+        report = self.model.parameter_report()
+        total_params = float(report.get("total", 0.0))
+        world = int(self.dist.world_size) if self.dist.enabled else 1
+        self.run_id = runs.make_run_id(
+            self.config.model.flavor, total_params, world
+        )
+        self.run_dir = runs.allocate_run_dir(self.config.train.out_dir, self.run_id)
+        self.run_id = self.run_dir.name
+        meta = {
+            "run_id": self.run_id,
+            "started_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "hostname": socket.gethostname(),
+            "argv": list(sys.argv),
+            "cwd": os.getcwd(),
+            "out_dir": str(self.config.train.out_dir),
+            "run_name": self.run_name,
+            "model": {
+                "flavor": self.config.model.flavor,
+                "total_params": total_params,
+                "active_params": float(report.get("active_estimate", 0.0)),
+                "seq_len": int(self.config.model.seq_len),
+                "seed": int(self.config.model.seed),
+            },
+            "runtime": {
+                "device": str(self.device),
+                "world_size": world,
+                "distributed": bool(self.dist.enabled),
+                "distributed_mode": str(self.config.distributed.mode),
+                "tokenizer_hash": self.tokenizer_hash,
+            },
+            "planned_steps": int(self.config.train.steps),
+            "git": _git_state(),
+        }
+        runs.write_meta(self.run_dir, meta)
+        dump_config(self.config, self.run_dir / runs.CONFIG_FILENAME)
+        print(f"[trainer] run {self.run_id} -> {self.run_dir}", flush=True)
 
     def request_stop(self, signum: int | None = None, frame: Any = None) -> None:
         """Ask the loop to checkpoint and exit after the current step."""
@@ -911,27 +977,33 @@ class Trainer:
             },
         }
 
-    def _write_report(self) -> None:
-        """Refresh ``report.html`` from the on-disk ``metrics.jsonl``.
+    def _report_records(self) -> list[dict[str, Any]]:
+        """Metrics for this run plus every run it resumed from.
 
-        Reading the file instead of ``logger.history`` keeps the report whole
-        across ``auto_resume``: a resumed run starts with an empty in-memory
-        history, and rendering that alone would silently truncate every step
-        logged before the interruption.  The logger flushes each record before
-        this runs, so the file is always at least as complete as memory.
+        Not ``logger.history``: a resumed run starts with an empty in-memory
+        history, so rendering that alone would truncate everything logged before
+        the interruption.  Not *all* runs either: abandoned launches that
+        restarted at step 0 would be spliced into the same curve.
         """
+        out_dir = Path(self.config.train.out_dir)
+        chain = runs.lineage(out_dir, self.run_id)
+        if not chain:
+            legacy = runs.legacy_metrics_path(out_dir)
+            return runs.load_records(legacy) if legacy is not None else []
+        return runs.collect_records(chain, self.logger.filename if self.logger else "metrics.jsonl")
+
+    def _write_report(self) -> None:
+        """Refresh ``<out_dir>/report.html`` from this run's lineage."""
         if self.logger is None:
             return
         out_dir = Path(self.config.train.out_dir)
-        metrics_path = out_dir / self.logger.filename
-        if not metrics_path.exists():
-            return
         try:
-            from ..viz.report import build_report, load_metrics
+            from ..viz.report import build_report
 
-            records = load_metrics(metrics_path)
+            records = self._report_records()
             if not records:
                 return
+            chain = runs.lineage(out_dir, self.run_id)
             build_report(
                 records,
                 out_dir / "report.html",
@@ -941,6 +1013,8 @@ class Trainer:
                     "step": self.step,
                     "tokens_seen": self._tokens_seen,
                     "device": str(self.device),
+                    "run": self.run_id,
+                    "runs": len(chain) if chain else 1,
                 },
             )
         except Exception as error:  # pragma: no cover - report must never kill training
@@ -1114,6 +1188,14 @@ class Trainer:
                 f"{expected_tokenizer} != {self.tokenizer_hash}"
             )
         self.step = int(meta.get("step", 0)) if self.config.train.resume_step else 0
+        if self.run_dir is not None:
+            # Provenance: which checkpoint a run started from, so `lineage()`
+            # and a human reading meta.json agree on what this run covers.
+            runs.update_meta(
+                self.run_dir,
+                resumed_from=str(directory),
+                resumed_at_step=self.step,
+            )
         saved_extra = meta.get("extra", {}) or {}
         best_val = saved_extra.get("best_val_loss")
         if best_val is not None:
@@ -1175,6 +1257,37 @@ def build_trainer(
     if resume_path:
         trainer.resume(resume_path)
     return trainer, model
+
+
+def _git_state() -> dict[str, Any]:
+    """Best-effort ``git rev-parse`` for the provenance record.
+
+    Never fatal: a box can have a git directory owned by another uid (git then
+    refuses with "dubious ownership"), or no git at all.
+    """
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=Path(__file__).resolve().parents[3],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return {
+            "commit": commit.stdout.strip() or None,
+            "dirty": bool(dirty.stdout.strip()) if dirty.returncode == 0 else None,
+        }
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "dirty": None}
 
 
 def _mean(values: Iterable[float]) -> float:

@@ -1,0 +1,252 @@
+"""Run identity: one directory per training launch.
+
+Every launch writes ``<out_dir>/runs/<run_id>/`` holding its own
+``metrics.jsonl``, the resolved ``config.yaml`` and a ``meta.json`` provenance
+record.  Keeping launches apart is what makes "which run produced this point"
+answerable at all.
+
+Appending every launch to a single ``<out_dir>/metrics.jsonl`` instead makes
+restarts indistinguishable: a crashed run that never checkpointed restarts at
+step 0, so the file ends up holding ``0,10,20,30`` twice and the loss curve of
+the report zig-zags between unrelated trainings.
+
+Resuming is still supported: :func:`lineage` walks back from a run to the run it
+resumed from (by step range, newest first), so a report can span a resumed chain
+without also dragging in the abandoned branches.
+
+Deliberately torch-free: ``scripts/plot_training.py`` imports this module to
+resolve paths without pulling in the training stack.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+#: Set by a launcher so the shell log name and the run directory share one
+#: timestamp even though two different processes create them.
+RUN_ID_ENV = "MINIDEEPSEEK_RUN_ID"
+
+RUNS_DIRNAME = "runs"
+METRICS_FILENAME = "metrics.jsonl"
+META_FILENAME = "meta.json"
+CONFIG_FILENAME = "config.yaml"
+
+
+def utc_stamp(moment: datetime | None = None) -> str:
+    """Compact UTC timestamp, e.g. ``20261110T121245Z``."""
+    moment = moment or datetime.now(UTC)
+    return moment.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def is_stamp(stamp: str) -> bool:
+    return bool(re.fullmatch(r"\d{8}T\d{6}Z", str(stamp)))
+
+
+def format_params(count: float) -> str:
+    """``145.8M`` / ``1.31B`` -- short enough to sit in a directory name."""
+    if count >= 1e9:
+        return f"{count / 1e9:.2f}B"
+    return f"{count / 1e6:.1f}M"
+
+
+def make_run_id(
+    flavor: str,
+    total_params: float,
+    world_size: int,
+    *,
+    stamp: str | None = None,
+) -> str:
+    """``<utc stamp>_<flavor>_<params>_<world>g``, e.g. ``20261110T121245Z_mini_145m_a60m_145.8M_1g``."""
+    stamp = stamp or os.environ.get(RUN_ID_ENV) or utc_stamp()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", str(flavor)).strip("-") or "model"
+    return f"{stamp}_{slug}_{format_params(float(total_params))}_{int(world_size)}g"
+
+
+def runs_root(out_dir: str | Path) -> Path:
+    return Path(out_dir) / RUNS_DIRNAME
+
+
+def allocate_run_dir(out_dir: str | Path, run_id: str) -> Path:
+    """Create ``<out_dir>/runs/<run_id>/``.
+
+    A second launch inside the same UTC second would otherwise share (and
+    silently append to) the first one's directory, so collisions get a numeric
+    suffix instead.
+    """
+    root = runs_root(out_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    candidate = root / run_id
+    attempt = 2
+    while candidate.exists():
+        candidate = root / f"{run_id}-{attempt}"
+        attempt += 1
+    candidate.mkdir(parents=True)
+    return candidate
+
+
+def load_records(path: str | Path) -> list[dict[str, Any]]:
+    """Read one JSONL metrics file, skipping blank lines."""
+    records: list[dict[str, Any]] = []
+    file_path = Path(path)
+    if not file_path.exists():
+        return records
+    with file_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+    return records
+
+
+def read_meta(path: str | Path) -> dict[str, Any]:
+    meta_path = Path(path) / META_FILENAME
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_meta(path: str | Path, meta: dict[str, Any]) -> Path:
+    target = Path(path) / META_FILENAME
+    target.write_text(
+        json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=False) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
+def update_meta(path: str | Path, **fields: Any) -> dict[str, Any]:
+    """Merge ``fields`` into the run's ``meta.json`` (no-op if it is missing)."""
+    meta = read_meta(path)
+    if not meta:
+        return meta
+    meta.update(fields)
+    write_meta(path, meta)
+    return meta
+
+
+@dataclass
+class RunInfo:
+    """One launch: where it lives and which steps it covered."""
+
+    run_id: str
+    path: Path
+    started_at: str = ""
+    start_step: int | None = None
+    end_step: int | None = None
+    records: int = 0
+    meta: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def has_records(self) -> bool:
+        return self.start_step is not None and self.end_step is not None
+
+    @property
+    def label(self) -> str:
+        if self.started_at:
+            return f"{self.run_id} ({self.started_at})"
+        return self.run_id
+
+
+def summarize_run(path: str | Path) -> RunInfo:
+    """Step range of one run directory, read from its metrics file."""
+    run_path = Path(path)
+    meta = read_meta(run_path)
+    records = load_records(run_path / METRICS_FILENAME)
+    steps = [int(record["step"]) for record in records if "step" in record]
+    return RunInfo(
+        run_id=str(meta.get("run_id") or run_path.name),
+        path=run_path,
+        started_at=str(meta.get("started_at") or ""),
+        start_step=min(steps) if steps else None,
+        end_step=max(steps) if steps else None,
+        records=len(records),
+        meta=meta,
+    )
+
+
+def list_runs(out_dir: str | Path) -> list[RunInfo]:
+    """Every run directory under ``out_dir``, oldest first."""
+    root = runs_root(out_dir)
+    if not root.is_dir():
+        return []
+    infos = [summarize_run(child) for child in sorted(root.iterdir()) if child.is_dir()]
+    infos.sort(key=lambda info: (info.started_at or "", info.run_id))
+    return infos
+
+
+def latest_run(out_dir: str | Path) -> RunInfo | None:
+    infos = [info for info in list_runs(out_dir) if info.has_records]
+    return infos[-1] if infos else None
+
+
+def find_run(out_dir: str | Path, run_id: str) -> RunInfo | None:
+    """Exact id, else unique prefix match."""
+    infos = list_runs(out_dir)
+    for info in infos:
+        if info.run_id == run_id:
+            return info
+    matches = [info for info in infos if info.run_id.startswith(run_id)]
+    return matches[-1] if len(matches) == 1 else None
+
+
+def lineage(out_dir: str | Path, upto: str | None = None, *, at_most: int = 64) -> list[RunInfo]:
+    """The run ``upto`` plus every run it resumed from, oldest first.
+
+    A resume continues from the newest checkpoint, so the ancestor is the newest
+    run whose last step is at or before this run's first step.  Runs that were
+    abandoned (e.g. a crashed launch that restarted at step 0 instead of
+    resuming) never match and stay out of the chain.
+    """
+    infos = [info for info in list_runs(out_dir) if info.has_records]
+    if not infos:
+        return []
+    current = find_run(out_dir, upto) if upto else infos[-1]
+    if current is None or not current.has_records:
+        current = infos[-1]
+
+    chain = [current]
+    seen = {current.run_id}
+    cursor = current.start_step
+    while len(chain) < at_most:
+        candidates = [
+            info
+            for info in infos
+            if info.run_id not in seen and info.end_step is not None and info.end_step <= cursor
+        ]
+        if not candidates:
+            break
+        # Newest ancestor wins: that is the one whose checkpoint was loaded.
+        previous = max(candidates, key=lambda info: (info.end_step or 0, info.started_at or ""))
+        chain.insert(0, previous)
+        seen.add(previous.run_id)
+        cursor = previous.start_step
+    return chain
+
+
+def collect_records(
+    run_infos: list[RunInfo], filename: str = METRICS_FILENAME
+) -> list[dict[str, Any]]:
+    """Concatenate the metrics of several runs, in the order given."""
+    records: list[dict[str, Any]] = []
+    for info in run_infos:
+        records.extend(load_records(info.path / filename))
+    return records
+
+
+def legacy_metrics_path(out_dir: str | Path) -> Path | None:
+    """The pre-run-directory flat ``metrics.jsonl``, if the stage still has one."""
+    candidate = Path(out_dir) / METRICS_FILENAME
+    return candidate if candidate.exists() else None

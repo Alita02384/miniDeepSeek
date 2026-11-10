@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -19,6 +20,21 @@ from minideepseek.model import from_sequences
 from minideepseek.train.distributed import scale_gradients
 from minideepseek.train.losses import iter_moe_layers, update_expert_biases
 from minideepseek.train.trainer import build_trainer
+
+
+def _run_metrics(out_dir: Path) -> Path:
+    """This launch's metrics file (one run directory per launch)."""
+    found = sorted((out_dir / "runs").glob("*/metrics.jsonl"))
+    assert len(found) == 1, f"expected exactly one run directory, got {found}"
+    return found[0]
+
+
+def _read_metrics(out_dir: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in _run_metrics(out_dir).read_text().splitlines()
+        if line.strip()
+    ]
 
 
 def _config(tmp_path, **train_overrides) -> TrainConfig:
@@ -54,11 +70,8 @@ def test_trainer_two_steps_and_checkpoint(tmp_path):
     summary = trainer.train(2)
     assert summary["steps_run"] == 2
     assert summary["last_loss"] is not None
-    assert (tmp_path / "run" / "metrics.jsonl").exists()
-    metrics = [
-        json.loads(line)
-        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
-    ]
+    assert _run_metrics(tmp_path / "run").exists()
+    metrics = _read_metrics(tmp_path / "run")
     assert len(metrics) == 2
     assert metrics[-1]["tokens"] > 0
     assert metrics[-1]["swiglu_calls"] > 0
@@ -434,11 +447,7 @@ def test_router_snapshot_logs_raw_counts_and_bias(tmp_path):
     trainer, model = build_trainer(config, batches, tokenizer_hash="stub")
     trainer.train(2)
 
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
+    records = _read_metrics(tmp_path / "run")
     snapped = [record for record in records if "router_layers" in record]
     assert snapped, "no router snapshot was logged"
     layers = snapped[0]["router_layers"]
@@ -466,11 +475,7 @@ def test_router_snapshot_is_off_by_default(tmp_path):
     config = _config(tmp_path, steps=2)
     trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
     trainer.train(2)
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
-        if line.strip()
-    ]
+    records = _read_metrics(tmp_path / "run")
     assert not any("router_layers" in record for record in records)
 
 
@@ -479,19 +484,29 @@ def test_training_report_keeps_records_logged_before_resume(tmp_path):
 
     ``auto_resume`` starts with an empty in-memory metric history, so a report
     rendered from memory would drop every step logged before the interruption.
+    The earlier run lives in its own directory, and the report stitches it back
+    through :func:`minideepseek.runs.lineage`.
     """
     out_dir = tmp_path / "run"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    previous = {"step": 999, "loss": 7.5, "lr": 1e-4, "tokens_seen": 1_000_000}
-    (out_dir / "metrics.jsonl").write_text(json.dumps(previous) + "\n", encoding="utf-8")
+    previous_dir = out_dir / "runs" / "20260101T000000Z_debugmodel_13.0M_1g"
+    previous_dir.mkdir(parents=True)
+    (previous_dir / "meta.json").write_text(
+        json.dumps({"run_id": previous_dir.name, "started_at": "2026-01-01T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    with (previous_dir / "metrics.jsonl").open("w", encoding="utf-8") as handle:
+        for step in range(0, 5):
+            handle.write(json.dumps({"step": step, "loss": 7.5, "tokens": 10}) + "\n")
 
     batches = [from_sequences([[1, 2, 3, 4]])]
     config = _config(tmp_path, steps=2, report_every=1)
     trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
-    trainer.train(2)
+    # Pretend the new launch resumed from the previous run's last step.
+    trainer.step = 4
+    trainer._write_report()
 
     document = (out_dir / "report.html").read_text(encoding="utf-8")
-    assert "<td>999</td>" in document
+    assert "<td>0</td>" in document  # the ancestor's first step survived
 
 
 def test_trainer_logs_domain_id_from_mixer(tmp_path):
@@ -514,11 +529,9 @@ def test_trainer_logs_domain_id_from_mixer(tmp_path):
     config = _config(tmp_path, steps=2, grad_accum=1)
     trainer, _model = build_trainer(config, lambda: iter(mixer), tokenizer_hash="stub")
     trainer.train(2)
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
-    ]
+    records = _read_metrics(tmp_path / "run")
     assert [record["domain_id"] for record in records] == [0.0, 1.0]
+    assert [record["run_id"] for record in records] == [records[0]["run_id"]] * 2
 
 
 def test_trainer_logs_per_domain_val_loss(tmp_path):
@@ -537,10 +550,7 @@ def test_trainer_logs_per_domain_val_loss(tmp_path):
         tokenizer_hash="stub",
     )
     trainer.train(1)
-    records = [
-        json.loads(line)
-        for line in (tmp_path / "run" / "metrics.jsonl").read_text().splitlines()
-    ]
+    records = _read_metrics(tmp_path / "run")
     val_record = records[-1]
     assert "val_loss" in val_record
     assert "val_loss_general" in val_record

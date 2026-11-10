@@ -396,40 +396,44 @@ export NCCL_P2P_DISABLE=1
   --curriculum "configs/pretrain/generated/curriculum_145m_g${GPUS}.yaml" \
   --json-out logs/prewarm.json
 
-nohup env NPROC_PER_NODE=$GPUS bash scripts/train_curriculum.sh \
-  "configs/pretrain/generated/curriculum_145m_g${GPUS}.yaml" \
-  > logs/curriculum_145m.log 2>&1 &
+# 启动器给每次启动一个 run id：日志写 logs/<run_id>_<config>.log，
+# metrics 写 <stage>/runs/<run_id>_<flavor>_<params>_<gpus>g/，重启不会污染上一次的落盘。
+nohup bash scripts/launch_curriculum.sh \
+  "configs/pretrain/generated/curriculum_145m_g${GPUS}.yaml" --gpus "$GPUS" \
+  > logs/launch.out 2>&1 &
 
-# 多卡时脚本内部是 `.venv/bin/python -m torch.distributed.run`（venv 里没有 torchrun 脚本）
+# 启动器内部：多卡走 `.venv/bin/python -m torch.distributed.run`（venv 里没有 torchrun 脚本）。
+# 直接 `train_curriculum.sh` 仍然可用，只是日志/指标会落回固定路径。
 ```
 
 ---
 
 ## 9. 监控 / 续跑 / 常见问题
 
+**每次启动一个目录**（`runs/<run_id>/`：`metrics.jsonl` + `meta.json` + `config.yaml`），
+启动时间的 run id 和下面的日志同名，`ls` 就能对上：
+
 ```bash
-tail -f logs/curriculum_145m.log
+STAGE=checkpoints/curriculum_145m_3b/stage_00_seq2048
+ls -1 $STAGE/runs/                       # 每次启动一个目录
+tail -f $STAGE/runs/<最新>/metrics.jsonl
+tail -f logs/<最新>.log
 watch -n 5 nvidia-smi
-tail -f checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl
 ```
 
-- **可视化**：`train.report_every: 200` 已打开，训练会每 200 步把当前 metrics.jsonl
-  渲染成 `<stage_dir>/report.html`（内联 SVG，无外部依赖）。它读的是磁盘上的
-  metrics.jsonl，所以续跑不会丢中断前的曲线。旧/已结束的 run 可手动补：
+- **可视化**：`train.report_every: 200` 已打开，训练会每 200 步把
+  **当前 run + 它续跑来的祖先** 渲染成 `<stage_dir>/report.html`（内联 SVG，无外部依赖）。
+  它读磁盘，所以续跑不会丢中断前的曲线；但重启后从 step 0 重来的那些已废弃分支
+  不会混进来。任意一份可手动重建：
 
   ```bash
-  .venv/bin/python scripts/plot_training.py \
-    checkpoints/curriculum_145m_3b/stage_00_seq2048/metrics.jsonl \
-    --out checkpoints/curriculum_145m_3b/stage_00_seq2048/report.html
+  .venv/bin/python scripts/plot_training.py $STAGE            # 默认 lineage
+  .venv/bin/python scripts/plot_training.py $STAGE --run all   # 全部启动合成一张
+  .venv/bin/python scripts/plot_training.py $STAGE/runs/<id>   # 只看某一次
   ```
 
-  每个 stage 各自一个 out_dir，所以是三份 report.html。要一张跨阶段的图，把三个
-  jsonl 直接按阶段顺序拼起来再渲染一次即可（step / tokens_seen 本来就是跨阶段累加的）：
-
-  ```bash
-  cat checkpoints/curriculum_145m_3b/stage_0*/metrics.jsonl > /tmp/all_stages.jsonl
-  .venv/bin/python scripts/plot_training.py /tmp/all_stages.jsonl --out /tmp/all_stages.html
-  ```
+  每个 stage 各自一个 out_dir，所以是三份 report.html。要一张跨阶段的图，用
+  `--run all` 分别导出再按阶段顺序拼 jsonl（step / tokens_seen 本来就跨阶段累加）。
 
 - **续跑**：重跑 §8.4 同一条命令；已完成的 stage 会跳过，当前 stage 从最新 checkpoint 恢复，
   并按 checkpoint 里的 `data_batches` **精确跳过已消费的 micro-batch**（同一卡数下数据顺序

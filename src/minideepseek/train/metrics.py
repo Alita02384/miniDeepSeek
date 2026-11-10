@@ -118,17 +118,33 @@ def format_metrics(step: int, record: dict[str, Any]) -> str:
 
 @dataclass
 class MetricsLogger:
+    """Append-only JSONL logger for one launch.
+
+    ``run_dir`` is the per-launch directory (``<out_dir>/runs/<run_id>/``) that
+    :mod:`minideepseek.runs` allocates.  Without it the logger falls back to a
+    flat ``<out_dir>/metrics.jsonl``, which is what older stages and tests use.
+    """
+
     out_dir: str | Path
     filename: str = "metrics.jsonl"
+    run_id: str | None = None
+    run_dir: str | Path | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
-        self.path = self.out_dir / self.filename
+        self.session_dir = Path(self.run_dir) if self.run_dir is not None else self.out_dir
+        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.path = self.session_dir / self.filename
 
     def log(self, step: int, metrics: dict[str, Any], *, echo: bool = True) -> None:
         record = {"step": int(step), **{k: _to_float(v) for k, v in metrics.items()}}
+        if self.run_id:
+            # Kept inside the record as well: it survives anyone concatenating
+            # metrics files by hand, which is exactly how the step ranges got
+            # mixed up before run directories existed.
+            record["run_id"] = self.run_id
         self.history.append(record)
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
