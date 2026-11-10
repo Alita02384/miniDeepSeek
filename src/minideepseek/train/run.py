@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -335,7 +336,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = load_config(TrainConfig, args.config, model_file=args.model_config)
     report = run(config, args.mode)
-    print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
+    # Only rank 0 prints: with N ranks the report would appear N times.
+    if int(os.environ.get("RANK", "0")) == 0:
+        print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0
 
 

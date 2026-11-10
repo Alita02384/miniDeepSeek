@@ -41,14 +41,19 @@ STAMP="${STAMP##*_}"
 APPENDING=no
 [ -s "$LOG" ] && APPENDING=yes
 
-printf 'run id  : %s\nconfig  : %s\ngpus    : %s\nlog     : %s\nappending: %s\n\n' \
-  "$STAMP" "$CONFIG" "$GPUS" "$LOG" "$APPENDING"
+ERR="${LOG%.log}.err"
+
+printf 'run id  : %s\nconfig  : %s\ngpus    : %s\nlog     : %s\nstderr  : %s\nappending: %s\n\n' \
+  "$STAMP" "$CONFIG" "$GPUS" "$LOG" "$ERR" "$APPENDING"
 
 export MINIDEEPSEEK_RUN_ID="$STAMP"
 export NPROC_PER_NODE="$GPUS"
-# From here on stdout/stderr go to the campaign log; the banner above stays on
-# the terminal (and in nohup.out if the caller redirects).
-exec >>"$LOG" 2>&1
+# Only the training lines go to $LOG.  Everything the stack writes to stderr
+# (torchrun's OMP banner, NCCL hints, warnings, the elastic-agent traceback when
+# a SIGTERM tears the run down) lands in the sidecar $ERR instead, so the log
+# stays a clean step-by-step record.  Errors are not lost -- check $ERR.
+export TORCH_CPP_LOG_LEVEL="${TORCH_CPP_LOG_LEVEL:-ERROR}"
+exec >>"$LOG" 2>>"$ERR"
 echo "== start $(date -u +%FT%TZ)  config=$CONFIG  gpus=$GPUS  run_id=$STAMP  appending=$APPENDING"
 if [ "$GPUS" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   exec .venv/bin/python -m torch.distributed.run --standalone --nproc_per_node="$GPUS" \

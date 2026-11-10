@@ -831,6 +831,11 @@ class Trainer:
         return record
 
     # -- run identity ---------------------------------------------------------
+    def _say(self, message: str) -> None:
+        """Print from rank 0 only; every rank logging doubles every line."""
+        if self.dist.is_main:
+            print(message, flush=True)
+
     def _start_run(self) -> None:
         """Pick this launch's ``runs/<run_id>/`` and record its provenance.
 
@@ -863,10 +868,9 @@ class Trainer:
                 self.config,
                 self.run_dir / f"config_{runs.utc_stamp()}.yaml",
             )
-            print(
+            self._say(
                 f"[trainer] continuing run {self.run_id} -> {self.run_dir} "
-                "(metrics appended)",
-                flush=True,
+                "(metrics appended)"
             )
             return
         self.run_id = runs.make_run_id(flavor, total_params, world)
@@ -913,7 +917,7 @@ class Trainer:
             flavor=flavor,
             total_params=total_params,
         )
-        print(f"[trainer] run {self.run_id} -> {self.run_dir}", flush=True)
+        self._say(f"[trainer] run {self.run_id} -> {self.run_dir}")
 
     def request_stop(self, signum: int | None = None, frame: Any = None) -> None:
         """Ask the loop to checkpoint and exit after the current step."""
@@ -922,10 +926,9 @@ class Trainer:
             raise KeyboardInterrupt
         self._stop_requested = True
         name = signal.Signals(signum).name if signum is not None else "stop"
-        print(
+        self._say(
             f"[trainer] {name} received: finishing step {self.step} and saving a "
-            "checkpoint; send the signal again to abort immediately",
-            flush=True,
+            "checkpoint; send the signal again to abort immediately"
         )
 
     # -- public loop ----------------------------------------------------------
@@ -1237,6 +1240,11 @@ class Trainer:
             "index_topk": self.model.current_index_topk(),
             "data_batches": self._batches_consumed,
             "data_tokens": self._data_tokens_global,
+            # Carried across restarts so a resumed run keeps one loss curve:
+            # the EMA and the cumulative token counter would otherwise restart
+            # from the first post-resume step and put a knee in every plot.
+            "loss_ema": self._loss_ema,
+            "tokens_seen": self._tokens_seen,
             "best_val_loss": (
                 self.best_val_loss if math.isfinite(self.best_val_loss) else None
             ),
@@ -1350,6 +1358,11 @@ class Trainer:
                 resumed_at_step=self.step,
             )
         saved_extra = meta.get("extra", {}) or {}
+        if self.config.train.resume_optimizer:
+            if saved_extra.get("loss_ema") is not None:
+                self._loss_ema = float(saved_extra["loss_ema"])
+            if saved_extra.get("tokens_seen") is not None:
+                self._tokens_seen = int(saved_extra["tokens_seen"])
         best_val = saved_extra.get("best_val_loss")
         if best_val is not None:
             self.best_val_loss = float(best_val)
@@ -1405,7 +1418,7 @@ def build_trainer(
         found = latest_checkpoint(config.train.out_dir)
         if found is not None:
             resume_path = str(found)
-            print(f"[trainer] auto-resume from {resume_path}", flush=True)
+            trainer._say(f"[trainer] auto-resume from {resume_path}")
     if resume_path:
         trainer.resume(resume_path)
     return trainer, model

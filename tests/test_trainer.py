@@ -692,3 +692,20 @@ def test_restart_continues_the_same_run_directory(tmp_path):
     )
     assert second.run_dir == first.run_dir
     assert second.run_id == first.run_id
+
+
+def test_resume_keeps_the_loss_curve_continuous(tmp_path):
+    """EMA and cumulative tokens continue across a restart instead of resetting."""
+    batches = [from_sequences([[index + 1, index + 2]]) for index in range(8)]
+    config = _config(tmp_path, steps=2)
+    trainer, _model = build_trainer(config, batches, tokenizer_hash="stub")
+    trainer.train(2)
+    checkpoint = trainer.save("step_000002")
+    assert trainer._tokens_seen > 0
+
+    resumed, _model = build_trainer(
+        _config(tmp_path, steps=4), batches, tokenizer_hash="stub"
+    )
+    resumed.resume(checkpoint)
+    assert resumed._tokens_seen == trainer._tokens_seen
+    assert resumed._loss_ema == pytest.approx(trainer._loss_ema)

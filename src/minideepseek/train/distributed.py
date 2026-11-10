@@ -132,6 +132,11 @@ def init_distributed(settings: DistributedSettings, requested_device: str = "aut
         world_size=world_size,
         rank=rank,
         timeout=timedelta(minutes=30),
+        # Without this torch warns twice per launch ("guessing device ID",
+        # "barrier(): using the device under current context") and the
+        # NCCL/CUDA device binding is inferred from global rank instead of the
+        # rank's own LOCAL_RANK.
+        device_id=device if use_cuda else None,
     )
     mesh = torch.distributed.device_mesh.init_device_mesh(
         device.type if use_cuda else "cpu", (world_size,), mesh_dim_names=("dp",)
