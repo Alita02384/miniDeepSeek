@@ -44,3 +44,12 @@ def test_group_metrics_entropy_is_bounded():
     nats = values[4]
     assert 0.0 <= normalized <= 1.0
     assert nats == pytest.approx(1.2912, abs=1e-3)
+
+
+def test_domain_keys_are_not_cross_rank_reduced():
+    """Per-domain diagnostics stay local: ranks can hold different key sets."""
+    from minideepseek.train.trainer import _is_reducible
+
+    assert _is_reducible("router_learned_expert_load_max_over_mean", 1.4)
+    assert not _is_reducible("router_domain_code_js_vs_pooled", 0.3)
+    assert not _is_reducible("router_domain_general_share_max", 0.4)

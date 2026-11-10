@@ -245,9 +245,17 @@ _STAT_PREFIXES = ("router_", "swiglu_")
 _MEMORY_KEYS = ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb")
 
 
+#: Per-domain routing diagnostics are computed from this rank's own window; a
+#: rank whose window happens to miss a domain would not even have the key, and
+#: the all-reduce contract needs the same key set on every rank.
+_LOCAL_PREFIXES = ("router_domain_",)
+
+
 def _is_reducible(key: str, value: Any) -> bool:
     """True for a per-rank scalar that should become a whole-job mean."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    if key.startswith(_LOCAL_PREFIXES):
         return False
     return key in _TOKEN_WEIGHTED_KEYS or key.startswith(_STAT_PREFIXES)
 
@@ -671,6 +679,8 @@ class Trainer:
         if not routing:
             return
         bucket = self._domain_routing.setdefault(str(domain), {})
+        bucket.setdefault("__batches__", torch.zeros((), device=self.device))
+        bucket["__batches__"] = bucket["__batches__"] + 1
         for name, layer in routing.layers.items():
             if layer.is_hash:
                 continue  # hash layers cannot specialise by construction
@@ -679,7 +689,13 @@ class Trainer:
 
     def _domain_specialization(self) -> dict[str, float]:
         """Per-domain expert concentration, then start a new window."""
-        metrics = domain_expert_specialization(self._domain_routing)
+        metrics = domain_expert_specialization(
+            {name: layers for name, layers in self._domain_routing.items()}
+        )
+        for name, layers in self._domain_routing.items():
+            batches = layers.get("__batches__")
+            if batches is not None:
+                metrics[f"router_domain_{name}_batches"] = float(batches)
         self._domain_routing = {}
         return metrics
 
@@ -838,11 +854,12 @@ class Trainer:
             return record
         record["tokens"] = int(round(tokens * world))
         record["tokens_seen"] = int(round(float(record.get("tokens_seen") or 0.0) * world))
-        weighted = [
-            key
-            for key, value in record.items()
-            if _is_reducible(key, value)
-        ]
+        # Sorted: dict order is insertion order, which differs between ranks
+        # (whichever domain showed up first), and an all-reduce over
+        # differently-ordered vectors mixes unrelated values.
+        weighted = sorted(
+            key for key, value in record.items() if _is_reducible(key, value)
+        )
         if weighted and tokens > 0:
             values = torch.tensor(
                 [float(record[key]) * tokens for key in weighted] + [float(tokens)],

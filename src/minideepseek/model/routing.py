@@ -328,6 +328,8 @@ def domain_expert_specialization(
     pooled: dict[str, Tensor] = {}
     for layers in counts_by_domain.values():
         for name, counts in layers.items():
+            if name.startswith("__"):
+                continue
             pooled[name] = counts if name not in pooled else pooled[name] + counts
     output: dict[str, float] = {}
     for domain, layers in counts_by_domain.items():
@@ -335,6 +337,8 @@ def domain_expert_specialization(
         minima: list[float] = []
         divergences: list[float] = []
         for name, counts in layers.items():
+            if name.startswith("__"):
+                continue
             total = counts.sum().clamp_min(1.0)
             share = counts / total
             maxima.append(float(share.max()))
