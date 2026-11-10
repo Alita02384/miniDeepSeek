@@ -305,6 +305,62 @@ def test_resume_skips_consumed_batches(tmp_path):
     assert next(resumed._batch_iter).input_ids.tolist() == [3, 4]
 
 
+def test_resume_replays_data_by_token_offset(tmp_path):
+    """The replay offset is measured in tokens, not micro-batches.
+
+    The loader shuffles one global pack order and slices it per rank, so the
+    token stream is the same for any GPU count while the micro-batch count is
+    not: a 1-GPU run consumes twice as many micro-batches for the same data as
+    a 2-GPU run.  A batch counter would skip twice the tokens after moving.
+    """
+    two = [from_sequences([[index + 1, index + 2]]) for index in range(6)]
+    config = _config(tmp_path, steps=1, grad_accum=2)
+    trainer, _model = build_trainer(config, two, tokenizer_hash="stub")
+    trainer.train(1)
+    checkpoint = trainer.save("final")
+    assert trainer._data_tokens_global == 4
+
+    # Same 4 tokens per micro-batch as a 2x world size would give.
+    four = [
+        from_sequences([[index + 1, index + 2, index + 3, index + 4]])
+        for index in range(6)
+    ]
+    resumed, _model = build_trainer(
+        _config(tmp_path, steps=4), four, tokenizer_hash="stub"
+    )
+    resumed.resume(checkpoint)
+    assert resumed._data_tokens_global == 4
+    assert resumed._batches_consumed == 1
+    assert next(resumed._batch_iter).input_ids.tolist() == [2, 3, 4, 5]
+
+
+def test_resume_legacy_checkpoint_uses_saved_global_batch_tokens(tmp_path):
+    """Checkpoints from before ``data_tokens`` fall back to
+    ``data_batches * config.data.batch_tokens``, the saved *global* budget."""
+    two = [from_sequences([[index + 1, index + 2]]) for index in range(4)]
+    config = _config(tmp_path, steps=1, grad_accum=2)
+    config.data.batch_tokens = 2
+    trainer, _model = build_trainer(config, two, tokenizer_hash="stub")
+    trainer.train(1)
+    checkpoint = trainer.save("final")
+
+    meta_path = checkpoint / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    assert meta["extra"].pop("data_tokens") == 4
+    meta_path.write_text(json.dumps(meta))
+
+    four = [
+        from_sequences([[index + 1, index + 2, index + 3, index + 4]])
+        for index in range(4)
+    ]
+    resumed, _model = build_trainer(
+        _config(tmp_path, steps=4), four, tokenizer_hash="stub"
+    )
+    resumed.resume(checkpoint)
+    assert resumed._data_tokens_global == 4
+    assert resumed._batches_consumed == 1
+
+
 def test_resume_rejects_tokenizer_hash_mismatch(tmp_path):
     batches = [from_sequences([[1, 2, 3]])]
     config = _config(tmp_path, steps=1)

@@ -290,6 +290,11 @@ class Trainer:
         self._batch_iter: Iterator[PackedBatch] = iter(self._batch_factory())
         self._batches_consumed = 0
         self._tokens_seen = 0
+        # Global (all-rank) tokens pulled from the loader, padding included.
+        # This is the data position a resume has to restore: unlike
+        # ``_batches_consumed`` it does not change meaning when the GPU count
+        # changes (see Trainer._consumed_data_tokens).
+        self._data_tokens_global = 0
         self._val_factory: Callable[[], Iterable[PackedBatch]] | None = (
             val_batches
             if callable(val_batches)
@@ -342,6 +347,8 @@ class Trainer:
     def _next_batch(self) -> PackedBatch:
         batch = self._pull_batch()
         self._batches_consumed += 1
+        world = int(self.dist.world_size) if self.dist.enabled else 1
+        self._data_tokens_global += int(batch.input_ids.numel()) * world
         return batch
 
     # -- distributed ----------------------------------------------------------
@@ -1117,6 +1124,7 @@ class Trainer:
             "flavor": self.config.model.flavor,
             "index_topk": self.model.current_index_topk(),
             "data_batches": self._batches_consumed,
+            "data_tokens": self._data_tokens_global,
             "best_val_loss": (
                 self.best_val_loss if math.isfinite(self.best_val_loss) else None
             ),
@@ -1153,6 +1161,39 @@ class Trainer:
                 extra=payload,
             )
         return path
+
+    def _consumed_data_tokens(
+        self, saved_extra: dict[str, Any], meta: dict[str, Any]
+    ) -> int:
+        """Data offset (in global tokens) a resumed run has to skip.
+
+        The pretrain loader shuffles one *global* pack order and then slices it
+        ``indices[rank::world_size]``, so the concatenated pack stream is the
+        same for any world size -- only how many packs share a micro-batch
+        changes.  A per-rank micro-batch counter therefore means something
+        different on 2 GPUs than on 1: replaying 30880 micro-batches of a 2-GPU
+        run skips 506M tokens where the single-GPU run had consumed 253M, i.e.
+        more than the whole 2K stage.
+
+        Current checkpoints record ``data_tokens`` (global).  For older ones,
+        recover the offset from the micro-batch counter and the saved config's
+        *global* micro-batch budget; that is exact unless batch-token warmup
+        was active (the warmup ratio is 0 in the shipped configs).
+        """
+        recorded = saved_extra.get("data_tokens")
+        if recorded is not None:
+            return int(recorded)
+        batches = int(saved_extra.get("data_batches", 0) or 0)
+        if batches <= 0:
+            return 0
+        saved_data = (meta.get("config") or {}).get("data") or {}
+        per_micro = int(saved_data.get("batch_tokens") or 0)
+        if per_micro <= 0:
+            raise ValueError(
+                "checkpoint has data_batches but neither data_tokens nor "
+                "config.data.batch_tokens; cannot recover the data position"
+            )
+        return batches * per_micro
 
     def resume(self, directory: str | Path) -> dict[str, Any]:
         if self.dist.enabled:
@@ -1201,15 +1242,14 @@ class Trainer:
         if best_val is not None:
             self.best_val_loss = float(best_val)
             self._best_val_step = saved_extra.get("best_val_step")
-        # Recreate the deterministic order and skip already-consumed
-        # micro-batches; batch-token warmup then continues where it left off.
-        consumed = (
-            int(saved_extra.get("data_batches", 0))
-            if self.config.train.resume_data
-            else 0
-        )
-        while self._batches_consumed < consumed:
-            self._next_batch()
+        # Recreate the deterministic order and skip the already-consumed
+        # tokens; batch-token warmup then continues where it left off.  The
+        # loop overshoots by at most one micro-batch when the offsets do not
+        # line up exactly (batch-token warmup).
+        if self.config.train.resume_data:
+            consumed = self._consumed_data_tokens(saved_extra, meta)
+            while self._data_tokens_global < consumed:
+                self._next_batch()
         return meta
 
     def close(self) -> dict[str, Any]:
