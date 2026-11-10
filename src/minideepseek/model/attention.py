@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from ..paths import configure_compile_cache
 from .compressor import Compressor, Indexer, SparseIndexerLoss, compressed_cu_seqlens
 from .config import AttentionConfig
 from .nn import RMSNorm, init_linear
@@ -104,48 +105,27 @@ def _load_attn_gym():
     Returns ``(gather_attn, AuxRequest)`` or ``None``.  The package is an
     optional ``kernels`` extra; CPU-only installs and environments without it
     keep using the torch reference path.
+
+    Nothing here trims attn_gym's autotune candidates.  Doing so used to look
+    like a way to avoid the first-step compile, but the candidate it kept was a
+    Hopper/Blackwell tile that compiles pathologically on SM89 (over 40 minutes
+    without producing a binary).  The cold cost is paid once instead, through
+    ``scripts/prewarm_attn.py`` and the persistent cache configured by
+    :func:`minideepseek.paths.configure_compile_cache`.
     """
     global _ATTN_GYM_IMPL
     if _ATTN_GYM_IMPL is None:
         try:
+            # attn_gym imports Triton, which reads TRITON_CACHE_DIR at import
+            # time; keep the compiled kernels in the persistent repo cache so a
+            # restarted box does not recompile them.
+            configure_compile_cache()
             from attn_gym.sparse.gather_attn import AuxRequest, gather_attn
 
-            if os.environ.get("MINIDEEPSEEK_ATTN_AUTOTUNE", "1") == "0":
-                _limit_attn_gym_autotune()
             _ATTN_GYM_IMPL = (gather_attn, AuxRequest)
         except Exception:  # pragma: no cover - optional dependency
             _ATTN_GYM_IMPL = False
     return _ATTN_GYM_IMPL or None
-
-
-def _limit_attn_gym_autotune() -> None:
-    """Keep only the first autotune candidate per attn_gym Triton kernel.
-
-    Triton compiles every autotune candidate on first launch, which costs tens
-    of minutes for the gather-attention kernels on consumer GPUs.  The launch
-    shapes are fixed for a stage, so a single candidate is enough; enabling
-    ``MINIDEEPSEEK_ATTN_AUTOTUNE=0`` trades a few percent of kernel time for a
-    much shorter first step.  Invalid candidates raise at launch and the
-    dispatcher falls back to the torch reference.
-    """
-    try:
-        from attn_gym._backends.triton.tune import TritonTuner
-        from attn_gym.sparse.gather_attn.impl.triton import backward, forward
-
-        for module in (forward, backward):
-            for name in dir(module):
-                tuner = getattr(module, name)
-                if not isinstance(tuner, TritonTuner):
-                    continue
-                configs = list(getattr(tuner, "_configs", []))
-                if len(configs) <= 1:
-                    continue
-                tuner._configs = configs[:1]
-                tuner._candidates = {
-                    id(configs[0]): tuple(sorted(configs[0].all_kwargs().items()))
-                }
-    except Exception:  # pragma: no cover - keep upstream autotuning on failure
-        pass
 
 
 def _fused_gather_attention(
@@ -167,9 +147,10 @@ def _fused_gather_attention(
     # does not use tensor cores: the same kernel is ~50x slower than bf16 on a
     # 4090.  Cast at the kernel boundary and restore the caller's dtype; the
     # softmax/LSE stay fp32 inside the kernel, and the residual stream keeps
-    # its original precision.  Off by default: Triton's bf16 lowering for this
-    # kernel compiles for tens of minutes on a CPU-only bootstrap, so the cast
-    # is opt-in until the cache is pre-warmed (`MINIDEEPSEEK_ATTN_BF16=1`).
+    # its original precision.  Off by default because the bf16 lowering adds a
+    # second set of kernel variants to compile: turn it on together with
+    # ``MINIDEEPSEEK_ATTN_BF16=1 python scripts/prewarm_attn.py``, never on its
+    # own on a cold cache.
     kernel_dtype = query.dtype
     if query.dtype == torch.float32 and os.environ.get("MINIDEEPSEEK_ATTN_BF16", "0") == "1":
         kernel_dtype = torch.bfloat16

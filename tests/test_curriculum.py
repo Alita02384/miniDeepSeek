@@ -4,8 +4,10 @@ import pytest
 
 from minideepseek.config import TrainConfig
 from minideepseek.train.curriculum import (
+    CurriculumSettings,
     CurriculumStage,
     _stage_config,
+    stage_train_configs,
     validate_stages,
 )
 
@@ -18,6 +20,29 @@ def _config() -> TrainConfig:
             "train": {"steps": 10, "out_dir": "checkpoints/base"},
         }
     )
+
+
+def test_stage_train_configs_mirror_the_runner(tmp_path):
+    from minideepseek.config import dump_config
+
+    dump_config(_config(), tmp_path / "base.yaml")
+    settings = CurriculumSettings(
+        base_config=str(tmp_path / "base.yaml"),
+        stages=[
+            CurriculumStage(seq_len=2048, tokenized_path="a.npz", until_step=10),
+            CurriculumStage(seq_len=4096, tokenized_path="b.npz", until_step=20),
+        ],
+        out_dir=str(tmp_path / "out"),
+    )
+
+    configs = stage_train_configs(settings)
+
+    assert [config.model.seq_len for config in configs] == [2048, 4096]
+    assert [config.train.steps for config in configs] == [10, 20]
+    assert all(config.train.schedule_steps == 20 for config in configs)
+    assert all(config.train.resume is None for config in configs)
+    assert configs[0].train.out_dir.endswith("stage_00_seq2048")
+    assert configs[1].train.out_dir.endswith("stage_01_seq4096")
 
 
 def test_curriculum_stage_validation():

@@ -960,3 +960,24 @@
   最快路径。
 - **mHC `torch.compile` 默认关闭**：单模块 2.17x，但整步只有 +0.6%，还要付首次
   编译和 recompile 风险，训练时用 `MINIDEEPSEEK_COMPILE_MHC=0`。
+
+### D73. 冷编译不再是"启动的一部分"：持久缓存 + 显式 prewarm
+
+- **问题**：`MINIDEEPSEEK_ATTN_AUTOTUNE=0` 用 `configs[:1]` 砍掉 autotune，
+  但砍剩下的第一个 tile 是给 Hopper/Blackwell 调的（`GENERIC_FORWARD_TILES` 的
+  `shared_rows=256, num_stages=3`），在 4090/SM89 上是病态编译：>40 分钟不产出。
+  同时 Triton 和 attn_gym 的缓存都在 `$HOME`，换实例就整段丢掉。
+- **决定 1：删掉这个开关，不砍候选**。上游 `attn_gym` 的 `TritonTuner` 本来就有
+  prune + 落盘 winner 缓存（`<cache>/winners`），砍候选是在跟上游的设计对抗。
+- **决定 2：缓存进仓库**。`paths.configure_compile_cache()` 把 `TRITON_CACHE_DIR`
+  / `TORCHINDUCTOR_CACHE_DIR` / `ATTN_GYM_CUTE_CACHE_DIR` 指到 `PROJECT_ROOT/.cache/`
+  （已 gitignore），显式环境变量仍然优先。`train_curriculum.sh` / `train_pretrain.sh`
+  也导出同一组变量，`-m minideepseek.train.run` 这条路径同样命中；
+  `_load_attn_gym()` 在 import attn_gym 前再兜一次（Triton 在 import 时读该变量）。
+- **决定 3：编译变成一次性、可见的阶段**。`scripts/prewarm_attn.py` 按 curriculum
+  每个 stage 的真实 shape（`seq_len` × `index_topk` × dtype）跑一步 `fwd+bwd`，
+  逐变体打印 `compiling ... / compiled in Ns`，并把 `--warn-seconds` 的超时变体
+  单独标出来。它强制 `MINIDEEPSEEK_ATTN_BACKEND=attn_gym`：编不过就当场失败，
+  而不是悄悄退到慢 8x 的 reference。
+- **代价**：第一次仍要付 20–40 分钟，但只有一次，且不再藏在 step 0 里；换 stage
+  只补新 `index_topk` 的那几个变体。

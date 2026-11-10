@@ -122,21 +122,43 @@ NPROC_PER_NODE=1 bash scripts/train_curriculum.sh \
   configs/pretrain/generated/curriculum_145m_g1.yaml
 ```
 
-## 7. 2026-11-10 夜间状态与 morning checklist
+## 7. 冷编译：一次性，且不再藏在 step 0 里
 
-- **不要设 `MINIDEEPSEEK_ATTN_AUTOTUNE=0`**：它保留的是未经 prune 的第一号 tile
-  config，该 config 在本机的 Triton 编译是病理性的（>40 分钟无产出）。走完整
-  autotune 时，隔离脚本（`/tmp/one_micro2.py`，4K/2doc、fp32 fused）冷缓存
-  **86 秒**编译完成，稳态 **12,637 tok/s**。
-- `MINIDEEPSEEK_ATTN_BACKEND=torch` 在训练真实 batch 下只有 **~870 tok/s**
-  （203–235 s/step），比 fused 慢 8.4x，**不能当兜底**。
-- 当前进程仍在 tmux `train`，卡在某个训练变体的编译上（cache 19 MB 不再增长）。
-- 早上按顺序处理：
-  1. `tail -f logs/curriculum_145m.log`；若 step 0 已出，等 step 10 看 `tok/s`，
-     正常应在 8–12k；
-  2. 若 >60 分钟仍无 step 0：kill 后先跑
-     `.venv/bin/python /tmp/one_micro2.py`（autotune 预热 4K/2doc 缓存），
-     再启动训练；
-  3. 若启动后 `tok/s < 2k`：确认没有误设 `MINIDEEPSEEK_ATTN_AUTOTUNE=0`
-     或 `MINIDEEPSEEK_ATTN_BACKEND=torch`；
-  4. 4080/4090 上不要用 reference 兜底。
+夜里的"卡住"已经定位：不是死锁，是 Triton 在编 attn_gym 的 autotune 候选。
+fwd 6 个 + bwd 12 个候选，每个一次独立编译，SM89 上单个 1–2 分钟；再乘上每个
+stage 的 `index_topk`（2048/1024/512 各是一个新 specialization）与 dtype。
+冷启动 20–40 分钟、期间零输出，看起来和挂死一样，且中途 kill 就全部丢掉。
+
+**做过但已撤销**：`MINIDEEPSEEK_ATTN_AUTOTUNE=0`（只留 `configs[:1]`）。它保留的
+恰恰是给 Hopper/Blackwell 调的 tile（`shared_rows=256 × num_stages=3`），在 SM89
+上是病态编译——>40 分钟不产出，比完整 autotune 还慢。该开关和相关代码已删除。
+
+**现在的做法**（`doc/decisions.md` D73）：
+
+1. 缓存进仓库：`TRITON_CACHE_DIR` / `TORCHINDUCTOR_CACHE_DIR` /
+   `ATTN_GYM_CUTE_CACHE_DIR` → `PROJECT_ROOT/.cache/`，训练脚本和 Python 入口
+   都会设置，换实例时随 checkpoint 一起迁（`scripts/migrate_box.sh`）。
+2. 编译是一个显式阶段：`scripts/prewarm_attn.py` 按 stage 的真实 shape 跑
+   fwd+bwd，逐变体打印 `compiling ...` / `compiled in Ns`，超时变体单独告警。
+3. 它强制 `MINIDEEPSEEK_ATTN_BACKEND=attn_gym`：编不过当场失败，不会悄悄退到
+   慢 8.4x 的 reference。
+
+开训流程：
+
+```bash
+# 1) 一次性：每个 stage 一个 seq_len（编译 20–40 分钟，之后永远 0）
+.venv/bin/python scripts/prewarm_attn.py \
+  --curriculum configs/pretrain/generated/curriculum_145m_g1.yaml
+
+# 2) 训练（缓存已热，step 0 立刻出）
+NPROC_PER_NODE=1 bash scripts/train_curriculum.sh \
+  configs/pretrain/generated/curriculum_145m_g1.yaml
+```
+
+排查用：
+
+- `--dry-run` 只打印每个 stage 的 plan（seq_len/`index_topk`/fused 层号），不碰 GPU；
+- 想开 bf16 fused：`MINIDEEPSEEK_ATTN_BF16=1` **和** prewarm 一起用，否则那份
+  bf16 变体会在训练中途才开始编译；
+- `tok/s < 2k` 说明退到了 reference：查 `MINIDEEPSEEK_ATTN_BACKEND`，以及 prewarm
+  是否真的编过（`--json-out` 里有逐变体耗时）。

@@ -17,6 +17,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+# Before torch: the Triton/inductor caches must point at the repo-local,
+# persistent directory or every restarted box recompiles the attention kernels.
+from minideepseek.paths import configure_compile_cache  # noqa: E402
+
+configure_compile_cache()
+
 from minideepseek.config import load_config  # noqa: E402
 from minideepseek.train.curriculum import CurriculumSettings, run_curriculum  # noqa: E402
 

@@ -28,10 +28,15 @@ import os
 import sys
 from pathlib import Path
 
-import torch
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+# Before torch: Triton reads its cache directory when it is imported.
+from minideepseek.paths import configure_compile_cache  # noqa: E402
+
+configure_compile_cache()
+
+import torch  # noqa: E402
 
 from minideepseek.config import (  # noqa: E402
     DistributedSettings,
@@ -40,8 +45,12 @@ from minideepseek.config import (  # noqa: E402
     load_config,
     resolve_device,
 )
-from minideepseek.model import build_model, from_sequences  # noqa: E402
-from minideepseek.train.benchmark import BenchmarkResult, run_benchmark  # noqa: E402
+from minideepseek.model import build_model  # noqa: E402
+from minideepseek.train.benchmark import (  # noqa: E402
+    BenchmarkResult,
+    run_benchmark,
+    synthetic_batch_factory,
+)
 from minideepseek.train.distributed import (  # noqa: E402
     apply_parallelism,
     init_distributed,
@@ -64,20 +73,6 @@ def _load_train_config(args: argparse.Namespace) -> TrainConfig:
     if not path.exists():
         raise SystemExit(f"unknown flavor {flavor!r}; expected {path}")
     return TrainConfig(model=load_config(ModelSettings, path))
-
-
-def _batch_factory(settings: ModelSettings, batch_size: int, seq_len: int, device: torch.device):
-    generator = torch.Generator().manual_seed(0)
-    vocab = max(int(settings.vocab_size), 8)
-
-    def factory():
-        sequences = [
-            torch.randint(3, vocab, (seq_len,), generator=generator).tolist()
-            for _ in range(batch_size)
-        ]
-        return from_sequences(sequences, device=device)
-
-    return factory
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     result: BenchmarkResult = run_benchmark(
         model,
         optimizer,
-        _batch_factory(config.model, args.batch_size, seq_len, device),
+        synthetic_batch_factory(config.model.vocab_size, args.batch_size, seq_len, device),
         steps=args.steps,
         warmup=args.warmup,
         device=device,

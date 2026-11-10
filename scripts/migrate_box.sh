@@ -71,13 +71,13 @@ else
   echo "   no checkpoints/ yet"
 fi
 
-if [ "$WITH_CACHE" = 1 ] && [ -d "$HOME/.triton/cache" ]; then
-  echo "== 4/4 triton cache ($(du -sh "$HOME/.triton/cache" | cut -f1))"
-  echo "   only reused when GPU arch and Triton version match; a miss just recompiles"
+if [ "$WITH_CACHE" = 1 ] && [ -d "$ROOT/.cache" ]; then
+  echo "== 4/4 kernel cache ($(du -sh "$ROOT/.cache" | cut -f1))"
+  echo "   only reused when GPU arch and torch/Triton versions match; a miss just recompiles"
   rsync -a --partial --progress -e "$SSH_CMD" \
-    "$HOME/.triton/cache/" "root@${NEW_HOST}:/root/.triton/cache/"
+    "$ROOT/.cache/" "root@${NEW_HOST}:/root/rivermind-data/miniDeepSeek/.cache/"
 else
-  echo "== 4/4 triton cache skipped"
+  echo "== 4/4 kernel cache skipped"
 fi
 
 cat <<EOF
@@ -88,7 +88,10 @@ done. On the new box:
   bash scripts/setup_env_gpu.sh
   GPUS=\$(.venv/bin/python -c 'import torch; print(torch.cuda.device_count())')
   .venv/bin/python scripts/autoconfig_145m.py --gpus "\$GPUS"
-  export NCCL_P2P_DISABLE=1 MINIDEEPSEEK_ATTN_BACKEND=auto MINIDEEPSEEK_ATTN_AUTOTUNE=0
+  export NCCL_P2P_DISABLE=1 MINIDEEPSEEK_ATTN_BACKEND=auto
+  # Compile once, visibly, into .cache/ ; then every start is instant.
+  .venv/bin/python scripts/prewarm_attn.py \
+    --curriculum "configs/pretrain/generated/curriculum_145m_g\${GPUS}.yaml"
   NPROC_PER_NODE="\$GPUS" bash scripts/train_curriculum.sh \\
     "configs/pretrain/generated/curriculum_145m_g\${GPUS}.yaml"
 EOF

@@ -382,13 +382,19 @@ export NCCL_P2P_DISABLE=1
 > backward + 优化器状态还要再加约 1–2 GiB。8K 那行 `cuda_peak_reserved_mib`
 > > 20 GiB 就先按 §9 把 8K 阶段的 `index_topk` 降到 1024，再开长跑。
 
-### 8.4 开训
+### 8.4 开训（先 prewarm，再训练）
 
 ```bash
 cd /root/rivermind-data/miniDeepSeek
 GPUS=$(.venv/bin/python -c "import torch; print(torch.cuda.device_count())")
 .venv/bin/python scripts/autoconfig_145m.py --gpus "$GPUS"
 export NCCL_P2P_DISABLE=1
+
+# 一次性把三个 stage 的 attention kernel 编进 .cache/（20–40 分钟，逐变体有输出）。
+# 不做这步，同样的时间会花在 step 0 上且没有任何日志。
+.venv/bin/python scripts/prewarm_attn.py \
+  --curriculum "configs/pretrain/generated/curriculum_145m_g${GPUS}.yaml" \
+  --json-out logs/prewarm.json
 
 nohup env NPROC_PER_NODE=$GPUS bash scripts/train_curriculum.sh \
   "configs/pretrain/generated/curriculum_145m_g${GPUS}.yaml" \

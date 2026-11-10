@@ -24,6 +24,7 @@ __all__ = [
     "CurriculumStage",
     "latest_stage_checkpoint",
     "run_curriculum",
+    "stage_train_configs",
     "validate_stages",
 ]
 
@@ -179,6 +180,36 @@ def _stage_config(
     # the wrong tokens.
     config.train.resume_data = bool(resume_data)
     return config
+
+
+def stage_train_configs(settings: CurriculumSettings) -> list[TrainConfig]:
+    """Per-stage training configs, built without datasets or checkpoints.
+
+    Uses the same construction as :func:`run_curriculum` (base config plus the
+    stage overrides, cumulative ``until_step`` schedule) so a dry run or a
+    kernel warm-up sees the exact per-stage sequence lengths, ``index_topk``
+    values and batch budgets the trainer will use.
+    """
+    validate_stages(settings.stages)
+    base = load_config(TrainConfig, settings.base_config)
+    out_dir = Path(settings.out_dir)
+    total_steps = int(settings.stages[-1].until_step)
+    configs: list[TrainConfig] = []
+    previous_step = 0
+    for index, stage in enumerate(settings.stages):
+        configs.append(
+            _stage_config(
+                base,
+                stage,
+                out_dir=out_dir,
+                index=index,
+                resume=None,
+                schedule_steps=total_steps,
+                previous_step=previous_step,
+            )
+        )
+        previous_step = int(stage.until_step)
+    return configs
 
 
 def latest_stage_checkpoint(stage_dir: str | Path) -> Path | None:

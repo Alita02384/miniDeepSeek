@@ -103,6 +103,36 @@ def _one_step(
     return int(output.main_token_count)
 
 
+def synthetic_batch_factory(
+    vocab_size: int,
+    documents: int,
+    seq_len: int,
+    device: torch.device,
+    *,
+    seed: int = 0,
+) -> Callable[[], Any]:
+    """Random-token packs shaped like a real run (uniform document length).
+
+    Shared by ``scripts/benchmark.py`` and ``scripts/prewarm_attn.py`` so a
+    warm-up launches exactly the kernel shapes the trainer will: the packed
+    layout, document count and sequence length all feed the launch arguments.
+    Tokens stay in ``[3, vocab)`` to avoid the reserved special-token ids.
+    """
+    from ..model import from_sequences  # local: keeps this module torch-light
+
+    generator = torch.Generator().manual_seed(seed)
+    vocab = max(int(vocab_size), 8)
+
+    def factory():
+        sequences = [
+            torch.randint(3, vocab, (seq_len,), generator=generator).tolist()
+            for _ in range(documents)
+        ]
+        return from_sequences(sequences, device=device)
+
+    return factory
+
+
 def run_benchmark(
     model: nn.Module,
     optimizer,

@@ -4,6 +4,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 CONFIG="${1:-configs/pretrain/length_curriculum.yaml}"
+
+# Kernel caches live inside the repo (git-ignored).  A cold Triton cache costs
+# 20-40 minutes of gather-attention compilation on step 0; `scripts/prewarm_attn.py`
+# fills it once and every later start reuses it (see minideepseek.paths.CACHE_DIR).
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-$ROOT/.cache/triton}"
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$ROOT/.cache/inductor}"
+export ATTN_GYM_CUTE_CACHE_DIR="${ATTN_GYM_CUTE_CACHE_DIR:-$ROOT/.cache/attn_gym}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if [ "$NPROC_PER_NODE" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   # ``python -m`` instead of ``.venv/bin/torchrun``: the runbook's venv
