@@ -15,6 +15,11 @@ export ATTN_GYM_CUTE_CACHE_DIR="${ATTN_GYM_CUTE_CACHE_DIR:-$ROOT/.cache/attn_gym
 # the GPU instead of copying them to the host removes 21 blocking D2H syncs per
 # micro-batch (672 per optimizer step at grad_accum=32).  See decisions.md D72.
 export MINIDEEPSEEK_ROUTING_GPU="${MINIDEEPSEEK_ROUTING_GPU:-1}"
+# Attention runs fp32 unless the kernel casts at its boundary, and attn_gym's
+# fp32 path does not use tensor cores: 443 ms -> 17 ms per micro-batch on a
+# 4090 (2K stage, K=64).  The bf16 variants must be prewarmed first
+# (`prewarm_attn.py`, one window per stage); 8K's K=256 is the slow one.
+export MINIDEEPSEEK_ATTN_BF16="${MINIDEEPSEEK_ATTN_BF16:-1}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 if [ "$NPROC_PER_NODE" -gt 1 ] || [ -n "${WORLD_SIZE:-}" ]; then
   # ``python -m`` instead of ``.venv/bin/torchrun``: the runbook's venv
