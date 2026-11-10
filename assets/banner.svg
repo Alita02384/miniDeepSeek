@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="480" viewBox="0 0 1600 480" fill="none" role="img" aria-labelledby="btitle bdesc">
+  <title id="btitle">miniDeepSeek — a 60M-class, DeepSeek-V4-isomorphic research stack</title>
+  <desc id="bdesc">Dark banner with the miniDeepSeek logo, wordmark and a routed-attention orbit diagram.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#060C1C"/>
+      <stop offset="0.5" stop-color="#081329"/>
+      <stop offset="1" stop-color="#0B1836"/>
+    </linearGradient>
+    <linearGradient id="word" x1="300" y1="190" x2="1000" y2="250" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F2F7FF"/>
+      <stop offset="0.6" stop-color="#D7E5FF"/>
+      <stop offset="1" stop-color="#8AB4FF"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="96" y1="160" x2="236" y2="310" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A9C6FF"/>
+      <stop offset="0.5" stop-color="#5B8CFF"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1600" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE" stop-opacity="0"/>
+      <stop offset="0.18" stop-color="#5B8CFF" stop-opacity="0.9"/>
+      <stop offset="0.5" stop-color="#22D3EE" stop-opacity="0.5"/>
+      <stop offset="0.82" stop-color="#5B8CFF" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="glowL" cx="0" cy="0" r="1" gradientTransform="translate(300 240) rotate(90) scale(420 520)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2F5BFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#2F5BFF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowR" cx="0" cy="0" r="1" gradientTransform="translate(1350 220) rotate(90) scale(300)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="8"/></filter>
+    <filter id="blur2" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="16"/></filter>
+    <pattern id="grid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.5" fill="#9DB8F5" fill-opacity="0.12"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="480" fill="url(#bg)"/>
+  <rect width="1600" height="480" fill="url(#grid)"/>
+  <rect width="1600" height="480" fill="url(#glowL)"/>
+  <rect width="1600" height="480" fill="url(#glowR)"/>
+  <path d="M0 430c180-40 300 30 470 0s300-60 470-20 300 40 660-10" stroke="#3B5BA8" stroke-opacity="0.22" stroke-width="2"/>
+  <path d="M0 462c220-36 360 26 560 0s340-44 540-10 260 22 500-16" stroke="#22D3EE" stroke-opacity="0.1" stroke-width="2"/>
+
+  <g transform="translate(92 156)">
+    <rect width="168" height="168" rx="38" fill="#0A1530"/>
+    <rect x="0.75" y="0.75" width="166.5" height="166.5" rx="37.25" stroke="#3B5BA8" stroke-opacity="0.6" stroke-width="1.5"/>
+    <rect x="7" y="7" width="154" height="154" rx="32" fill="url(#grid)" opacity="0.5"/>
+    <circle cx="84" cy="78" r="78" fill="#2F5BFF" fill-opacity="0.12"/>
+    <path d="M42 122V88c0-15 10-25 23-25 11 0 18 7 18 18v41m0-41c0-11 7-18 18-18 13 0 23 10 23 25v34"
+          stroke="url(#mark)" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M42 52v18M83 46v20M124 52v18" stroke="#8AB4FF" stroke-opacity="0.7" stroke-width="1.4" stroke-dasharray="1.6 5"/>
+    <circle cx="42" cy="46" r="4.6" fill="#DCE8FF"/>
+    <circle cx="83" cy="40" r="5.6" fill="#34D399"/>
+    <circle cx="124" cy="46" r="4.6" fill="#CFFAFE"/>
+    <path d="M45 137c10-6 17-6 27 0s17 6 27 0 17-6 24 0" stroke="#8AB4FF" stroke-opacity="0.6" stroke-width="1.8" stroke-linecap="round"/>
+    <path d="M133 82l2.8 6.4 6.4 2.8-6.4 2.8-2.8 6.4-2.8-6.4-6.4-2.8 6.4-2.8 2.8-6.4z" fill="#EAF3FF" fill-opacity="0.9"/>
+  </g>
+
+  <g font-family="Inter, 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif">
+    <text x="304" y="232" font-size="86" font-weight="750" letter-spacing="-3.4" fill="url(#word)">miniDeepSeek</text>
+    <text x="308" y="288" font-size="27" font-weight="450" fill="#A8BEE9">DeepSeek-V4, rebuilt small — from pretraining to OPD.</text>
+    <g font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas, monospace" font-size="17" fill="#7E98CC">
+      <text x="309" y="342" letter-spacing="0.2">MoE top-2  ·  mHC  ·  CSA / HCA  ·  MTP  ·  Muon</text>
+    </g>
+    <g font-size="15" fill="#6F87B8">
+      <rect x="304" y="368" width="176" height="34" rx="17" fill="#122248" stroke="#2B4786"/>
+      <text x="392" y="390" text-anchor="middle" fill="#B9CDF3">60M – 220M params</text>
+      <rect x="492" y="368" width="152" height="34" rx="17" fill="#0E2A2F" stroke="#1E5E66"/>
+      <text x="568" y="390" text-anchor="middle" fill="#8FE7E0">CUDA + CPU debug</text>
+      <rect x="656" y="368" width="142" height="34" rx="17" fill="#172140" stroke="#2B4786"/>
+      <text x="727" y="390" text-anchor="middle" fill="#B9CDF3">MIT licensed</text>
+    </g>
+  </g>
+
+  <g opacity="0.95">
+    <circle cx="1352" cy="238" r="188" stroke="#3B5BA8" stroke-opacity="0.4" stroke-dasharray="4 12"/>
+    <circle cx="1352" cy="238" r="138" stroke="#5B8CFF" stroke-opacity="0.28"/>
+    <circle cx="1352" cy="238" r="88" stroke="#22D3EE" stroke-opacity="0.22"/>
+    <ellipse cx="1352" cy="238" rx="200" ry="112" transform="rotate(-18 1352 238)" stroke="#8AB4FF" stroke-opacity="0.16"/>
+    <g fill="#9DB8F5">
+      <circle cx="1164" cy="238" r="3.2"/><circle cx="1210" cy="184" r="2.4"/><circle cx="1290" cy="106" r="2.8"/>
+      <circle cx="1352" cy="50" r="2.2"/><circle cx="1436" cy="140" r="3"/><circle cx="1508" cy="238" r="2.4"/>
+      <circle cx="1470" cy="334" r="2.8"/><circle cx="1372" cy="404" r="2.2"/><circle cx="1250" cy="360" r="3"/>
+      <circle cx="1178" cy="300" r="2.4"/>
+    </g>
+    <g stroke="#5B8CFF" stroke-opacity="0.45">
+      <path d="M1164 238h376M1352 50v376M1210 184l284 108M1436 140 1268 336"/>
+    </g>
+    <g>
+      <circle cx="1352" cy="238" r="46" fill="#2F5BFF" fill-opacity="0.2" filter="url(#blur2)"/>
+      <circle cx="1352" cy="238" r="16" fill="#34D399"/>
+      <path d="M1352 176v30M1352 270v30M1290 238h30M1384 238h30" stroke="#8AB4FF" stroke-opacity="0.7" stroke-width="2"/>
+      <g>
+        <circle cx="1214" cy="152" r="22" fill="#0D1B38" stroke="#5B8CFF" stroke-opacity="0.7"/>
+        <circle cx="1214" cy="152" r="7" fill="#8AB4FF"/>
+        <circle cx="1488" cy="318" r="22" fill="#0D1B38" stroke="#22D3EE" stroke-opacity="0.7"/>
+        <circle cx="1488" cy="318" r="7" fill="#22D3EE"/>
+        <circle cx="1450" cy="112" r="16" fill="#0D1B38" stroke="#8AB4FF" stroke-opacity="0.45"/>
+        <circle cx="1450" cy="112" r="5" fill="#C7D8FF"/>
+      </g>
+    </g>
+    <text x="1352" y="462" text-anchor="middle" font-family="'JetBrains Mono', Menlo, monospace" font-size="13" fill="#5872A6" letter-spacing="2.4">SPARSE ATTENTION · ROUTED EXPERTS · MTP</text>
+  </g>
+
+  <rect x="0" y="478" width="1600" height="2" fill="url(#rule)"/>
+</svg>

@@ -1,0 +1,161 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="720" viewBox="0 0 1600 720" fill="none" role="img" aria-labelledby="atitle adesc">
+  <title id="atitle">miniDeepSeek architecture</title>
+  <desc id="adesc">A 7-layer DeepSeek-V4-isomorphic model: hybrid SWA/CSA/HCA attention, mHC, top-2 MoE, and an MTP head.</desc>
+  <defs>
+    <linearGradient id="abg" x1="0" y1="0" x2="1600" y2="720" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#070E20"/>
+      <stop offset="0.55" stop-color="#09142C"/>
+      <stop offset="1" stop-color="#0B1836"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="540" y1="180" x2="1260" y2="570" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5B8CFF"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+    <linearGradient id="pill" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#162A57"/>
+      <stop offset="1" stop-color="#122248"/>
+    </linearGradient>
+    <radialGradient id="aglow" cx="0" cy="0" r="1" gradientTransform="translate(800 360) rotate(90) scale(420 700)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2F5BFF" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#2F5BFF" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="agrid" width="36" height="36" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.4" fill="#9DB8F5" fill-opacity="0.1"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M1 1l9 5-9 5V1z" fill="#5B8CFF" fill-opacity="0.8"/>
+    </marker>
+    <filter id="ab" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="10"/></filter>
+  </defs>
+
+  <rect width="1600" height="720" rx="36" fill="url(#abg)"/>
+  <rect x="0.75" y="0.75" width="1598.5" height="718.5" rx="35.25" stroke="#2B4786" stroke-opacity="0.55" stroke-width="1.5"/>
+  <rect width="1600" height="720" rx="36" fill="url(#agrid)"/>
+  <rect width="1600" height="720" rx="36" fill="url(#aglow)"/>
+
+  <g font-family="Inter, 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif">
+    <text x="64" y="76" font-size="40" font-weight="700" fill="#EDF3FF" letter-spacing="-1.2">DeepSeek-V4, at mini scale</text>
+    <text x="64" y="112" font-size="19" font-weight="400" fill="#8FA6D8">Same layer types, same math, 60M–220M parameters.</text>
+    <g font-family="'JetBrains Mono', 'SFMono-Regular', Menlo, monospace" font-size="14" fill="#9DB8F5">
+      <rect x="1178" y="52" width="118" height="34" rx="17" fill="#101F42" stroke="#2B4786"/>
+      <text x="1237" y="74" text-anchor="middle">7 layers</text>
+      <rect x="1306" y="52" width="126" height="34" rx="17" fill="#101F42" stroke="#2B4786"/>
+      <text x="1369" y="74" text-anchor="middle">6,400 vocab</text>
+      <rect x="1442" y="52" width="94" height="34" rx="17" fill="#0E2A2F" stroke="#1E5E66"/>
+      <text x="1489" y="74" text-anchor="middle" fill="#8FE7E0">8K ctx</text>
+    </g>
+  </g>
+
+  <path d="M0 138h1600" stroke="#2B4786" stroke-opacity="0.4"/>
+
+  <g font-family="Inter, 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif">
+    <g>
+      <rect x="64" y="236" width="198" height="138" rx="16" fill="#0C1934" stroke="#2B4786"/>
+      <text x="88" y="274" font-size="19" font-weight="650" fill="#DCE8FF">Input tokens</text>
+      <text x="88" y="303" font-size="14" fill="#7E98CC">batch × sequence</text>
+      <g font-family="'JetBrains Mono', Menlo, monospace" font-size="13" fill="#9DB8F5">
+        <rect x="88" y="320" width="44" height="28" rx="7" fill="#162A57"/><text x="110" y="339" text-anchor="middle">tok</text>
+        <rect x="140" y="320" width="44" height="28" rx="7" fill="#162A57"/><text x="162" y="339" text-anchor="middle">tok</text>
+        <rect x="192" y="320" width="44" height="28" rx="7" fill="#162A57"/><text x="214" y="339" text-anchor="middle">tok</text>
+      </g>
+    </g>
+
+    <g>
+      <rect x="302" y="236" width="190" height="138" rx="16" fill="#0C1934" stroke="#2B4786"/>
+      <text x="326" y="274" font-size="19" font-weight="650" fill="#DCE8FF">Embedding</text>
+      <text x="326" y="303" font-size="14" fill="#7E98CC">6,400 × 768</text>
+      <text x="326" y="326" font-size="14" fill="#7E98CC">tied LM head</text>
+      <text x="326" y="352" font-size="13" fill="#5872A6" font-family="'JetBrains Mono', Menlo, monospace">vocab from MiniMind</text>
+    </g>
+
+    <g>
+      <rect x="532" y="178" width="732" height="414" rx="20" fill="#0A1733" stroke="url(#accent)" stroke-opacity="0.65" stroke-width="1.5"/>
+      <rect x="532" y="178" width="732" height="48" rx="20" fill="#10224A" fill-opacity="0.65"/>
+      <text x="560" y="209" font-size="20" font-weight="650" fill="#EDF3FF">Transformer block</text>
+      <text x="760" y="209" font-size="15" fill="#7E98CC">pre-norm · RMSNorm · RoPE</text>
+      <rect x="1150" y="190" width="88" height="26" rx="13" fill="#172B58" stroke="#3B5BA8"/>
+      <text x="1194" y="208" text-anchor="middle" font-size="13" fill="#C7D8FF" font-family="'JetBrains Mono', Menlo, monospace">× 7</text>
+
+      <g>
+        <rect x="560" y="246" width="676" height="94" rx="13" fill="#0E1D3E" stroke="#2B4786"/>
+        <text x="582" y="275" font-size="17" font-weight="650" fill="#DCE8FF">Hybrid attention</text>
+        <text x="744" y="275" font-size="13" fill="#6F87B8">three layer types, one block</text>
+        <g font-family="'JetBrains Mono', Menlo, monospace" font-size="13">
+          <rect x="582" y="292" width="112" height="30" rx="8" fill="url(#pill)" stroke="#3B5BA8"/>
+          <text x="638" y="312" text-anchor="middle" fill="#C7D8FF">SWA · 128</text>
+          <rect x="704" y="292" width="118" height="30" rx="8" fill="#0E2A3A" stroke="#256B7A"/>
+          <text x="763" y="312" text-anchor="middle" fill="#8FE7E0">CSA · ×4</text>
+          <rect x="832" y="292" width="118" height="30" rx="8" fill="#0E2A2F" stroke="#1E5E66"/>
+          <text x="891" y="312" text-anchor="middle" fill="#8FE7E0">HCA · ×32</text>
+          <text x="968" y="312" fill="#5872A6">compressed KV + index top-k</text>
+        </g>
+      </g>
+
+      <path d="M898 342v16" stroke="#5B8CFF" stroke-opacity="0.7" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <g>
+        <rect x="560" y="362" width="676" height="82" rx="13" fill="#0E1D3E" stroke="#2B4786"/>
+        <text x="582" y="390" font-size="17" font-weight="650" fill="#DCE8FF">mHC</text>
+        <text x="636" y="390" font-size="13" fill="#6F87B8">manifold-constrained hyper-connections</text>
+        <g font-family="'JetBrains Mono', Menlo, monospace" font-size="13" fill="#9DB8F5">
+          <rect x="582" y="402" width="74" height="26" rx="7" fill="#162A57"/><text x="619" y="420" text-anchor="middle">4 streams</text>
+          <rect x="664" y="402" width="112" height="26" rx="7" fill="#162A57"/><text x="720" y="420" text-anchor="middle">Sinkhorn ×20</text>
+          <rect x="784" y="402" width="120" height="26" rx="7" fill="#162A57"/><text x="844" y="420" text-anchor="middle">residual mix</text>
+        </g>
+      </g>
+
+      <path d="M898 448v16" stroke="#5B8CFF" stroke-opacity="0.7" stroke-width="2" marker-end="url(#arrow)"/>
+
+      <g>
+        <rect x="560" y="468" width="676" height="98" rx="13" fill="#0E1D3E" stroke="#2B4786"/>
+        <text x="582" y="496" font-size="17" font-weight="650" fill="#DCE8FF">DeepSeekMoE</text>
+        <text x="716" y="496" font-size="13" fill="#6F87B8">8 routed experts · top-2 · first 2 layers hash</text>
+        <g>
+          <circle cx="592" cy="526" r="7" fill="#34D399"/><circle cx="616" cy="526" r="7" fill="#34D399"/>
+          <circle cx="640" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+          <circle cx="664" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+          <circle cx="688" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+          <circle cx="712" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+          <circle cx="736" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+          <circle cx="760" cy="526" r="7" fill="#0B1836" stroke="#5B8CFF" stroke-opacity="0.8"/>
+        </g>
+        <text x="790" y="530" font-size="13" fill="#8FA6D8">learned router</text>
+        <text x="790" y="550" font-size="13" fill="#5872A6" font-family="'JetBrains Mono', Menlo, monospace">route_norm · scale 1.5 · SwiGLU clamp 10</text>
+      </g>
+    </g>
+
+    <g>
+      <rect x="1304" y="214" width="232" height="120" rx="16" fill="#0C1934" stroke="#2B4786"/>
+      <text x="1328" y="250" font-size="19" font-weight="650" fill="#DCE8FF">MTP head</text>
+      <text x="1328" y="278" font-size="14" fill="#7E98CC">depth 1 · predicts t+1</text>
+      <text x="1328" y="304" font-size="13" fill="#5872A6" font-family="'JetBrains Mono', Menlo, monospace">auxiliary LM loss</text>
+    </g>
+    <g>
+      <rect x="1304" y="356" width="232" height="120" rx="16" fill="#0C1934" stroke="#2B4786"/>
+      <text x="1328" y="392" font-size="19" font-weight="650" fill="#DCE8FF">LM head</text>
+      <text x="1328" y="420" font-size="14" fill="#7E98CC">tied to embedding</text>
+      <text x="1328" y="446" font-size="13" fill="#5872A6" font-family="'JetBrains Mono', Menlo, monospace">next-token logits</text>
+    </g>
+    <path d="M1536 274h22v252h-22" stroke="#5B8CFF" stroke-opacity="0.7" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+    <path d="M1536 416h22" stroke="#5B8CFF" stroke-opacity="0.7" stroke-width="2"/>
+    <circle cx="1558" cy="416" r="2.6" fill="#8AB4FF"/>
+    <rect x="1304" y="500" width="232" height="72" rx="16" fill="#0E2A2F" stroke="#1E5E66"/>
+    <text x="1420" y="530" text-anchor="middle" font-size="16" font-weight="650" fill="#8FE7E0">logits · loss</text>
+    <text x="1420" y="554" text-anchor="middle" font-size="12" fill="#5FA9A4" font-family="'JetBrains Mono', Menlo, monospace">main + MTP, weighted 0.3 → 0.1</text>
+  </g>
+
+  <g stroke="#5B8CFF" stroke-opacity="0.75" stroke-width="2.2" marker-end="url(#arrow)">
+    <path d="M262 305h32"/>
+    <path d="M492 305h32"/>
+    <path d="M1264 305h32"/>
+  </g>
+
+  <g font-family="Inter, 'SF Pro Display', -apple-system, 'Segoe UI', sans-serif" font-size="14" fill="#6F87B8">
+    <text x="64" y="650">Optimizer: Muon (8+2 hybrid NS, γ 0.18) + AdamW (eps 1e-20)</text>
+    <text x="64" y="676">Verification: reference parity · router replay · logprob / routing / checkpoint gates</text>
+    <g font-family="'JetBrains Mono', Menlo, monospace" font-size="12" fill="#5872A6">
+      <text x="1536" y="650" text-anchor="end">MINIDEEPSEEK · V4 STACK</text>
+      <text x="1536" y="676" text-anchor="end">7 layers · 60M–220M · bf16</text>
+    </g>
+  </g>
+</svg>

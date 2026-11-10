@@ -1,255 +1,357 @@
-# miniDeepSeek
+<div align="center">
+  <img src="assets/banner.svg" alt="miniDeepSeek — DeepSeek-V4, rebuilt small" width="100%">
+</div>
 
-用 DeepSeek-V4 的结构与训练方法，做一组**同构的研究模型**：
-**默认 `mini_220m_a80m`**（216.65M 总参 / 82.17M 激活），另有
-`mini_145m_a60m`（145.84M / 60.91M）和 `mini_60m_dense_d768`（60.88M / 60.88M）。
-本仓库是**自包含**的代码根：模型、tokenizer、数据、预训练/SFT、GRPO、
-多教师 OPD、一致性检查与评估全部在这里；不 import 任何同级参考仓库。
+<p align="center">
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
+  <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.9%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" alt="PyTorch 2.9+"></a>
+  <a href="#快速开始"><img src="https://img.shields.io/badge/tests-305%20passed-2EA44F?style=flat-square&logo=pytest&logoColor=white" alt="305 tests passed"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License"></a>
+  <a href="#当前进展"><img src="https://img.shields.io/badge/status-research%20preview-8B5CF6?style=flat-square" alt="Research preview"></a>
+</p>
 
-> **当前阶段**：按项目要求，只实现并验证**代码逻辑**，用自带的
-> `debugmodel`（与 V4 debug 配置同构）跑测试；**不真实训练这三个模型**。
-> 代码按**多卡 CUDA** 的目标环境编写，CPU/MPS 只用于逻辑验证。
+<h3 align="center">用 DeepSeek-V4 的架构与训练方法，从零复刻 60M–220M 级研究模型</h3>
 
-> **2026-11-07 路线更新**：三个 specialist 改为 **general / tool-use / code**。
-> 当前可训练 general 与 tool-use；code 的数据与 GRPO reward 暂缺。OPD 先跑
-> 2-teacher（general + tool），code 补齐后切 3-teacher。world/medical 不再作为
-> specialist。数据平铺在 `data/*.jsonl`，tokenization 在 `data/tokenization/`。
-> 详见 [doc/data_pipeline.md](doc/data_pipeline.md)。
+<p align="center">
+  <b>自包含</b> · <b>CPU 可验证</b> · <b>单机 4090 可跑</b> · <b>预训练 → OPD 全流程</b>
+</p>
 
----
+`miniDeepSeek` 是一个**研究方法复现**项目：把 DeepSeek-V4 的模型结构、训练阶段和数值门禁，
+缩到一张 24 GB 显卡能跑通的规模。模型、tokenizer、数据管线、预训练 / SFT / GRPO /
+多教师 OPD、一致性检查与评估全部在本仓库内，运行时不 import 任何同级参考仓库。
 
-## 1. 已完成的能力
+> [!NOTE]
+> **这不是产品，也不追榜单。** 当前目标是把 V4 的 layer 类型、训练流程和数值正确性
+> 在 60M–220M 规模上跑通、跑对，并把每个数字与取舍记录在 [`doc/`](doc/) 里。
+> 目前主跑的是 **145M MoE**；220M / 60M 用于结构对照与 1-step 验证。
 
-| 路线 | 代码 | 验证方式 |
-|---|---|---|
-| 自包含 V4 模型（SWA/CSA/HCA、mHC、MTP、MoE） | `src/minideepseek/model/` | 与参考实现逐层数值对齐；debug forward/backward |
-| 模型配置加载 | `model/config.py`, `configs/model/` | `mini_220m_a80m` 216.65M / 82.17M 激活、`mini_145m_a60m` 145.84M / 60.91M、`mini_60m_dense_d768` 60.88M（均含 MTP depth 1、tied embeddings） |
-| MoE：8 routed/top-2（220m）、6 routed/top-2（145m）、1 dense expert（60m） | `model/moe.py` | 路由录制/回放、专家负载、路由熵 |
-| CSA(4) + HCA(32) + SWA | `model/attention.py`, `model/compressor.py` | 三种层型覆盖；indexer top-k 与参考一致 |
-| mHC / Sinkhorn / MTP depth 1 | `model/mhc.py`, `model/model.py` | MTP logits/loss/backward |
-| SwiGLU clamp + 监控 | `model/nn.py`, `train/metrics.py` | clamp 计数、clamp 率 |
-| CSA indexer 蒸馏 loss | `model/compressor.py` | loss 有限、indexer 有梯度、eval 关闭 |
-| Muon + AdamW 混合优化器 | `train/optimizer.py` | 官方 8+2 hybrid NS、gamma=0.18、AdamW eps=1e-20、单步更新 |
-| loss-free bias + sequence balance loss | `train/losses.py` | bias 更新、balance loss 有限值 |
-| Anticipatory Routing | `model/anticipatory.py`, `train/trainer.py` | 一步预取队列 + cache → replay；默认关 |
-| 预训练 / SFT | `train/trainer.py`, `train/run.py` | 2 步 smoke、checkpoint 重载 logits 一致；batch-token warmup；flat→cosine LR；val_path；2K→4K→8K 分阶段 runner |
-| GRPO / 多教师 OPD | `rl/` | rollout↔actor logprob、1 step、full-vocab reverse KL；FSDP2 多卡路径 |
-| general specialist RLAIF | `rl/reward_model.py`, `configs/grpo/general.yaml` | `internlm2-1_8b-reward` + 长度/思考/重复 shaping |
-| tool-use specialist | `rl/agent_rollout.py`, `rl/tools.py`, `configs/grpo/tool.yaml` | 多轮工具执行、observation mask、tool reward |
-| code specialist 槽位 | `configs/{sft,grpo,eval}/code.yaml` | 单测 reward 权重可配；数据待补，3-teacher pipeline 已预留 |
-| 一键流水线 | `pipeline.py`, `configs/pipeline/` | tokenize→pretrain→SFT→GRPO→OPD→eval→export；按实际 token 自动算 step |
-| router replay + 三道一致性门禁 | `model/routing.py`, `consistency/checks.py` | logprob Δ < 1e-3、routing 100%、ckpt 0 |
-| 域条件路由指标 | `model/routing.py` | 按 domain 的专家负载/熵，GRPO 可开 |
-| 权重版本 + logprob 门禁 | `rl/rollout.py` | vLLM 版本计数与 actor/rollout 对比 |
-| 数据管线 | `data/` | 打包、mask、MinHash+段落去重、13-gram、fertility、manifest、license、加权混料、语言/vendored/math 过滤 |
-| 训练监控与可视化 | `train/metrics.py`, `viz/` | tok/s、峰值显存、ETA、路由/负载/SwiGLU 指标；`report.html` 内联 SVG 图表 |
-| 吞吐 / 显存基准 | `scripts/benchmark.py`, `train/benchmark.py` | 单卡与 FSDP2 的 step 时间、tok/s、峰值显存 |
-| Scaling law | `scripts/scaling_law.py`, `train/scaling.py` | val loss 幂律拟合 α/R² + Chinchilla 参考线 |
-| 评估 | `eval/` | math / code / world rubric 报告；可选 lm-eval general 基准 |
-| world judge | `rl/judge.py` | 启发式默认；`world_judge: http` 走 OpenAI-compatible API |
-
-测试：`213 passed`（CPU，debug model，约 40 秒；基础安装不含 `transformers` 时 HF 的 6 个测试自动跳过）。
-
-### 模型自包含说明
-
-`src/minideepseek/model/` 是参考实现（torchtitan `models/deepseek_v4`）的
-**重构副本**：去掉了 torchtitan 的 config/parallel/sharding 框架，保留
-V4 的数学与参数布局。state dict 的 key 与形状和参考实现一致，可直接对照。
-来源、commit 与改动见 [doc/sources.md](doc/sources.md)。
+**快速跳转**：[快速开始](#快速开始) · [模型矩阵](#模型矩阵) · [架构](#架构与-v4-同构) · [训练流水线](#训练流水线) · [当前进展](#当前进展) · [文档地图](#文档地图)
 
 ---
 
-## 2. 快速开始
+## 一眼看懂
 
-环境：Python 3.11+；CPU 即可跑通 debug 模型，CUDA 上走 bf16。
+| 维度 | 内容 |
+|---|---|
+| 🧠 **模型** | 60M dense / 145M MoE / 220M MoE；7 层、6,400 词表、8K 上下文、MTP depth 1 |
+| 🧬 **V4 同构** | SWA + CSA + HCA 混合注意力、mHC、DeepSeekMoE、SwiGLU clamp、Muon + AdamW |
+| 🔁 **全流程** | 3B token 2K → 4K → 8K 课程预训练 → SFT → GRPO → 2/3-teacher OPD → eval → HF export |
+| 🧪 **可验证** | 305 个 CPU 测试；router replay、logprob / routing / checkpoint 一致性门禁 |
+| ⚡ **实测** | 2×4090D 预训练 **29.6k tok/s**；单卡 4090 SFT **6–7k tok/s**；GRPO **18.6 s/step** |
+
+**为什么值得看：**
+
+- **同构，不是“小号 Transformer”。** 三种注意力层型、mHC 的 Sinkhorn 混合、MoE 的
+  hash routing / loss-free bias、MTP、Muon 优化器都按 V4 的数学实现，而不是只改小 `hidden_size`。
+- **全流程，不是单点 demo。** 从平铺 JSONL 到 tokenize / pack、课程训练、三个 specialist
+  的 SFT + GRPO、多教师 OPD、评估和 HF 导出，每一段都有可执行入口。
+- **数字有出处。** 测试、吞吐、显存、loss 都对应仓库里的命令与 `doc/PROCESS.md` 记录；
+  没跑过的项标为未验证，不填假数。
+
+---
+
+## 快速开始
+
+**环境**：Python 3.11+（安装脚本默认 3.12）。CPU 可跑通全部测试；训练建议 24 GB 显存，
+145M 的 3B 课程正在 2×4090D 上跑。
+
+### 1. 两分钟验证代码（CPU）
 
 ```bash
-# 1) 本地：环境 + debug 数据 + 门禁
-./scripts/setup_env.sh
+git clone https://github.com/Alita02384/miniDeepSeek.git
+cd miniDeepSeek
+
+# 安装，二选一
+./scripts/setup_env.sh                 # 需要 uv；默认找 $HOME/.local/bin/uv
+# 或者
+python3.12 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+
+# 2-step 训练 smoke → 一致性门禁 → 全量 CPU 测试
 ./scripts/debug_smoke.sh
-
-# 2) 本地：从 minimind 生成平铺 JSONL（不修改 minimind/dataset）
-bash scripts/build_data.sh
-
-# 3) 本地：打包上传（只含 JSONL + manifests，不含 tokenization）
-bash scripts/package_dataset.sh dist/minideepseek-data
 ```
 
-服务器：
+最后看到 `305 passed, 2 skipped` 就说明环境、模型前向/反向、checkpoint、路由和测试都正常。
+`setup_env.sh` 的 `uv` 不在默认路径时，用 `UV=/path/to/uv ./scripts/setup_env.sh`。
+
+### 2. 准备数据
+
+数据、tokenization 和 checkpoint 都不进 git（数据与 tokenization 合计约 38 GB）。`data/manifests/`
+只保留来源、license 与统计信息。
 
 ```bash
-git clone <repo> miniDeepSeek && cd miniDeepSeek
-DATA_REPO_URL=https://www.modelscope.cn/datasets/<ns>/<name>.git \
-  bash scripts/server_setup.sh
+# A. 最小可跑数据：从 MiniMind 公开数据生成平铺 JSONL
+#    适合跑通 general/tool 的 SFT + GRPO 流程
+git clone https://github.com/jingyaogong/minimind.git ../minimind
+MINIMIND_ROOT=../minimind/dataset bash scripts/build_data.sh
 
-# 先 dry-run 看完整命令与 token 预算
-NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
-  configs/pipeline/minimind_145m.yaml --dry-run
-
-# 一键训练：tokenize → 2K/4K/8K pretrain → SFT general/tool
-# → GRPO general/tool → 2-teacher OPD → eval → HF export
-NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
-  configs/pipeline/minimind_145m.yaml
+# B. 复现 3B 语料：按 doc/data_plan_145m.md 准备
+#    data/pretrain_general.jsonl / pretrain_code.jsonl / pretrain_tool.jsonl，
+#    再在训练机打包 2K/4K/8K 的 train/val packs（压缩后约 3.4 GB）
+bash scripts/build_pretrain_packs.sh
 ```
 
-单独运行：
+完整的 3B 数据来源、去重、配比与 license 见
+[`doc/data_plan_145m.md`](doc/data_plan_145m.md) 和 [`doc/external_data.md`](doc/external_data.md)。
+
+### 3. 训练 145M
 
 ```bash
-.venv/bin/python -m pytest -q
-.venv/bin/python -m minideepseek.data.tokenize --smoke --seq-lens 2048 \
-  --out-dir data/tokenization
-.venv/bin/python -m minideepseek.train.smoke --flavor debugmodel --steps 2
-.venv/bin/python -m minideepseek.consistency.check --flavor debugmodel --demo
+# 按当前机器的卡数生成配置：micro-batch / grad_accum 自动拆，262k token/step 不变
+.venv/bin/python scripts/autoconfig_145m.py --gpus 2
+
+# 2K → 4K → 8K，3B token
+NPROC_PER_NODE=2 bash scripts/train_curriculum.sh \
+  configs/pretrain/generated/curriculum_145m_g2.yaml
 ```
 
-数据流：`data/*.jsonl` 是上传/下载的唯一数据源；`data/tokenization/` 在服务器
-生成，是中间产物，不打包。
-
-## 3. 配置与入口
-
-```text
-configs/
-├── model/{debugmodel,mini_220m_a80m,mini_145m_a60m,mini_60m_dense_d768}.yaml
-├── pretrain/{debug_smoke,pilot_0.6b,full_6b,pretrain_145m,curriculum_145m_4x4090}.yaml
-├── sft/{debug_smoke,general,tool,code}.yaml
-├── grpo/{debug_math,general,tool,code}.yaml
-├── opd/{debug_three_teacher,two_teacher_general_tool,three_teacher}.yaml
-├── eval/{debug_math,general,tool,code}.yaml
-└── pipeline/minimind_145m.yaml
-```
-
-`configs/model/*.yaml` 是完整的架构文件；训练配置用 `model_file` 选择它，
-`model:` 下的字段只覆盖本次运行（上下文长度、MTP、精度等）。CLI 也可以直接覆盖：
+后训练之前，把 `configs/sft/*.yaml` 里的 `train.resume` 指向你自己的预训练
+checkpoint（默认值对应仓库开发时的运行目录）：
 
 ```bash
-# 临时换模型架构，不复制 training config
-.venv/bin/python -m minideepseek.train.run \
-  --config configs/pretrain/full_6b.yaml \
-  --model-config configs/model/mini_145m_a60m.yaml
+for spec in general code tool; do
+  bash scripts/train_sft.sh  configs/sft/$spec.yaml
+  bash scripts/train_grpo.sh configs/grpo/$spec.yaml
+done
+
+# general + tool + code 三个 teacher
+bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 ```
 
-单机 4×4090/3090（24 GB）跑 145M + 2K→4K→8K 的完整流程见
-[doc/server_runbook.md](doc/server_runbook.md)；显存/时长预算见
-[doc/hardware_budget.md](doc/hardware_budget.md)。
+逐步的显存预算、迁移步骤和已知坑见
+[`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md) 与
+[`doc/posttraining_plan.md`](doc/posttraining_plan.md)。
+
+### 4. 监控、评估与导出
 
 ```bash
-# 数据（平铺 JSONL；manifest 见 data/manifests/specialists.yaml）
-.venv/bin/python -m minideepseek.data.prepare pretrain --input ... --output ...
-.venv/bin/python -m minideepseek.data.prepare sft      --input ... --output ...
-.venv/bin/python -m minideepseek.data.prepare grpo     --input ... --output ...
-.venv/bin/python -m minideepseek.data.prepare opd      --input ... --output ...
-.venv/bin/python -m minideepseek.data.prepare fertility --input ...
-.venv/bin/python -m minideepseek.data.prepare contamination --train ... --eval ...
-.venv/bin/python -m minideepseek.data.prepare manifest --manifest data/manifests/pretrain_6b.yaml
-.venv/bin/python -m minideepseek.data.prepare curriculum --input ... --out-dir data/tokenization
+# 离线训练报告（训练中由 train.report_every 自动刷新）
+.venv/bin/python scripts/plot_training.py \
+  checkpoints/curriculum_145m_3b/stage_00_seq2048 \
+  --out checkpoints/report.html --meta model=mini_145m_a60m
 
-# 训练 / RL
-./scripts/train_pretrain.sh configs/pretrain/full_6b.yaml
-./scripts/train_sft.sh      configs/sft/general.yaml
-./scripts/train_grpo.sh     configs/grpo/general.yaml
-./scripts/train_opd.sh      configs/opd/two_teacher_general_tool.yaml
+# 评估
+bash scripts/eval.sh configs/eval/general.yaml
 
-# 一致性与评估
-.venv/bin/python -m minideepseek.consistency.check \
-  --flavor mini_220m_a80m --seq-len 4096 --checkpoint checkpoints/curriculum_145m/stage_02_seq8192/final \
-  --prompts data/eval/prompts.jsonl
-.venv/bin/python -m minideepseek.eval.run --config configs/eval/general.yaml
-
-# 训练监控：自动刷新 report.html（YAML 里设 train.report_every: 50），或手动生成
-.venv/bin/python scripts/plot_training.py checkpoints/pretrain_full/metrics.jsonl \
-  --out checkpoints/pretrain_full/report.html --meta model=mini_220m_a80m
-
-# 吞吐 / 显存基准（单卡；多卡见 doc/run_plan.md）
-.venv/bin/python scripts/benchmark.py --config configs/pretrain/full_6b.yaml \
-  --seq-len 4096 --batch-size 1 --steps 10 --json-out bench.json
-
-# Scaling law 拟合（需要 ≥3 个 val 点）
-.venv/bin/python scripts/scaling_law.py checkpoints/pretrain_full/metrics.jsonl \
-  --params-m 216.65 --out checkpoints/pretrain_full/scaling_law.html
-
-# HF 导出（可选 extra: `pip install -e '.[hf]'`）
+# HF 格式导出（可选 extra：pip install -e '.[hf]'）
 .venv/bin/python scripts/export_hf.py \
-  --checkpoint checkpoints/curriculum_145m/stage_02_seq8192/final --out hf/mini_220m_a80m \
-  --flavor mini_220m_a80m --seq-len 4096 --max-context 8192
-
-# verl 数据 + 配置导出（可选 CUDA extra: `pip install -e '.[verl]'`）
-.venv/bin/python scripts/export_verl.py \
-  --hf-model hf/mini_220m_a80m --train data/grpo/math.jsonl --out-dir runs/verl_math --rollout hf
+  --checkpoint checkpoints/opd_three_teacher_145m/final \
+  --out hf/mini_145m_three_teacher --flavor mini_145m_a60m \
+  --seq-len 4096 --max-context 8192
 ```
 
-vLLM rollout 在 CUDA 上启用：`configs/grpo/*.yaml` 设置
-
-```yaml
-rl:
-  rollout_backend: vllm
-  vllm_tensor_parallel_size: 1
-  vllm_gpu_memory_utilization: 0.4
-```
-
-> vLLM 需要能通过 `auto_map` 加载 `MiniDeepSeekForCausalLM`。当前代码只做
-> HF 导出、采样和保守的权重重建；没有为自定义稀疏注意力写 paged-attention
-> kernel。若目标 vLLM 版本不支持该架构，用 `rollout_backend: torch` 或
-> verl 的 HF rollout。
+> 远端机器训练时，`scripts/live_dashboard.py` 可以通过一条 SSH 连接增量读取
+> `metrics.jsonl`，在本地浏览器看实时曲线；不需要在训练机上开端口。
 
 ---
 
-## 4. 目录
+## 模型矩阵
+
+| 模型 | 总参 / 激活 | 层 | FFN | 专家路由 | 用途 |
+|---|---:|---:|---|---|---|
+| `mini_60m_dense_d768` | 60.88M / 60.88M | 7 | 1 dense expert | — | dense 对照 |
+| `mini_145m_a60m` | 145.84M / 60.91M | 7 | 6 routed experts | top-2 | **当前主跑** |
+| `mini_220m_a80m` | 216.65M / 82.17M | 7 | 8 routed experts | top-2 | 默认构建 / 最大档 |
+| `debugmodel` | 12.98M（含 MTP） | 4 | 4 routed experts | top-3 | CPU 测试 / 参考对齐 |
+
+三档目标模型共享：`SWA + CSA(×4) + HCA(×32)` 混合注意力、mHC、MTP depth 1、
+tied embeddings、6,400 词表、`max_context=8192`。模型结构文件在
+[`configs/model/`](configs/model/)，参数量与配置依据见
+[`doc/Parameter_Setting.md`](doc/Parameter_Setting.md)。
+
+```bash
+# 打印任意一档的参数量 / 激活参数量
+.venv/bin/python - <<'PY'
+from minideepseek.model import build_model
+for flavor in ["mini_60m_dense_d768", "mini_145m_a60m", "mini_220m_a80m"]:
+    model = build_model(flavor, seq_len=4096, n_mtp_layers=1, device="cpu")
+    total = sum(p.numel() for p in model.parameters())
+    print(flavor, f"{total/1e6:.2f}M total")
+PY
+```
+
+---
+
+## 架构与 V4 同构
+
+<div align="center">
+  <img src="assets/architecture.svg" alt="miniDeepSeek V4-isomorphic architecture" width="100%">
+</div>
+
+核心不是“层数一样”，而是每个组件的**计算方式**与 V4 对齐：
+
+| V4 组件 | 本项目实现 | 怎么验证 |
+|---|---|---|
+| 混合注意力 | SWA（window 128）+ CSA（压缩率 4）+ HCA（压缩率 32），三种层型交替 | 与参考实现逐层数值对齐；indexer top-k 边界测试 |
+| mHC | 4 条流、Sinkhorn ×20、残差混合 | forward / backward / MTP 梯度 |
+| DeepSeekMoE | routed experts + top-k、前 2 层 hash routing、`route_norm` / `route_scale` | router 录制/回放、专家负载、路由熵 |
+| MTP | depth 1 的辅助 LM head，loss 权重 0.3 → 0.1 | logits / loss / backward |
+| SwiGLU clamp | `swiglu_limit=10.0` 常开 | gate/up clamp 计数与比例 |
+| 优化器 | Muon（8+2 hybrid NS，γ=0.18）+ AdamW（eps=1e-20） | 单步更新数值测试 |
+| CSA indexer 蒸馏 | indexer 辅助 KL loss，eval 时关闭 | loss 有限、indexer 有梯度 |
+| Anticipatory Routing | 一步预取队列 + 当前 gate 缓存 routing | 已实现，默认关闭 |
+
+实现按职责拆在 [`src/minideepseek/model/`](src/minideepseek/model/)，来源、commit
+与改动记录在 [`doc/sources.md`](doc/sources.md)。state dict 的 key 和形状与参考实现一致，
+可以直接对照加载。
+
+---
+
+## 训练流水线
+
+```mermaid
+flowchart LR
+    subgraph DATA["数据"]
+        direction TB
+        A["JSONL<br/>general · code · tool"] --> B["tokenize + pack<br/>2K / 4K / 8K"]
+    end
+    subgraph PRE["预训练"]
+        direction TB
+        C["145M 3B curriculum<br/>2K → 4K → 8K"] --> K["base checkpoint"]
+    end
+    subgraph POST["后训练"]
+        direction TB
+        S1["SFT general"] --> G1["GRPO general"]
+        S2["SFT code"] --> G2["GRPO code"]
+        S3["SFT tool"] --> G3["GRPO tool"]
+        G1 --> O["OPD<br/>2–3 teachers"]
+        G2 --> O
+        G3 --> O
+    end
+    B --> C
+    K --> S1
+    K --> S2
+    K --> S3
+    O --> E["eval"]
+    E --> H["HF export"]
+```
+
+| 阶段 | 做什么 | 入口 | 产物 |
+|---|---|---|---|
+| 数据 | 清洗、去重、配比、2K/4K/8K 打包 | `scripts/build_pretrain_packs.sh` | `data/tokenization/*.npz` |
+| 预训练 | 3B token 长度课程，262,144 token/step | `scripts/train_curriculum.sh` | `checkpoints/curriculum_145m_3b/` |
+| SFT | general / code / tool 三个 specialist | `scripts/train_sft.sh` | `checkpoints/sft_*_145m/final` |
+| GRPO | 可验证 reward / 1.8B reward model / tool reward | `scripts/train_grpo.sh` | `checkpoints/grpo_*_145m/final` |
+| OPD | student 采样，多 teacher full-vocab reverse KL | `scripts/train_opd.sh` | `checkpoints/opd_three_teacher_145m/final` |
+| 评估/导出 | 领域 rubric、可选 lm-eval、HF 格式 | `scripts/eval.sh` / `scripts/export_hf.py` | 报告 / `hf/` |
+
+每一步的配置都在 [`configs/`](configs/)；`configs/pipeline/` 下的薄编排器会按实际
+token 数计算 step，并跳过已经产出 `final/` 的 stage。当前 3B 分域 pack 流程以
+`train_curriculum.sh` + 单阶段脚本为准，具体的 stage 参数在
+[`configs/pretrain/curriculum_145m_4x4090.yaml`](configs/pretrain/curriculum_145m_4x4090.yaml)。
+
+---
+
+## 当前进展
+
+> 截止 **2026-11-11**。这里只写实际跑过的；未验证的项在下一节明确标出。
+
+| 阶段 | 状态 | 关键结果 |
+|---|---|---|
+| 代码 / 测试 | ✅ | `305 passed, 2 skipped`（CPU，debugmodel，约 72 s） |
+| 145M 预训练 | 🔄 进行中 | 2K 阶段 step 1200 / 1717；val loss **2.456** / ppl **6.3** @ step 1199 |
+| SFT general | ✅ | 120 step，main loss 5.5 → 2.7，6–7k tok/s，12.7 GiB |
+| GRPO general | ✅ | 50 step，18.6 s/step，9.0 GiB，reward −1.8 ~ −2.2 |
+| SFT code / tool | 🔄 | code 90 step / tool 80 step，顺序运行中 |
+| GRPO code / tool | ⏳ | 依赖 code / tool SFT 完成 |
+| 2-teacher OPD | ✅ smoke | 同权重 KL=0；不同权重 KL=0.315、grad=13.2，KL 路径已验证 |
+| 3-teacher OPD | ⏳ | 依赖三个 teacher 的 final checkpoint |
+| 220M / 60M 实跑 | ⏳ | 当前只做构建、参数量统计与 1-step 验证；主跑是 145M |
+
+**实测数字（不是目标值）：**
+
+| 项目 | 数值 | 条件 |
+|---|---:|---|
+| 预训练吞吐 | **29,580 tok/s** / 8.86 s/step | 2×4090D，DDP，2K stage，bf16，12.8 GiB / 卡 |
+| SFT 吞吐 | 6.1–7.0k tok/s | 1×4090，4K，micro 8192，grad_accum 16，12.7 GiB |
+| GRPO step | 18.6 s | 1×4090，16 prompt × group 6 × 512 token，9.0 GiB |
+| KV-cache decode | 5.4 ms/step ≈ 12k tok/s | 1×4090，batch 64，CUDA graph |
+| 一致性门禁 | logprob / routing / checkpoint 三类 | CPU debugmodel + 2 进程 DDP |
+
+逐项审计与未完成项见 [`doc/roadmap_audit.md`](doc/roadmap_audit.md)；性能优化的
+A/B 记录见 [`doc/optimization_2026-11-10.md`](doc/optimization_2026-11-10.md)。
+
+---
+
+## 目录结构
 
 ```text
-src/minideepseek/
-├── model/        # 自包含 V4 模型、架构配置加载、PackedBatch、wrapper、路由、checkpoint
-├── tokenizer/    # MiniMind 6,400 tokenizer + chat template + response mask
-├── data/         # pretrain/SFT/GRPO/OPD 数据、去重、污染、fertility、manifest
-├── train/        # Muon+AdamW、scheduler、metrics、losses、trainer、CLI
-├── rl/           # torch rollout、reward、GRPO、多教师 OPD
-├── consistency/  # logprob / routing / checkpoint 一致性门禁
-└── eval/         # math / code / world 评估与报告
-tests/            # 165 个 CPU 测试，全部使用 debug model
-doc/              # decisions / sources / PROCESS / testing
-scripts/          # 环境、数据、训练、评估脚本
+miniDeepSeek/
+├── src/minideepseek/
+│   ├── model/        # V4 同构模型、attention/compressor、mHC、MoE、MTP、KV cache、routing
+│   ├── data/         # 平铺 JSONL、tokenize/pack、去重、污染检查、manifest、混料
+│   ├── train/        # Muon+AdamW、curriculum、scheduler、metrics、trainer
+│   ├── rl/           # rollout、GRPO、多教师 OPD、reward model、tool / agent rollout
+│   ├── consistency/  # logprob / routing / checkpoint 一致性门禁
+│   ├── eval/         # general / code / tool / math 评估
+│   └── viz/          # 自包含 report.html（内联 SVG 图表）
+├── configs/          # model / pretrain / sft / grpo / opd / eval
+├── scripts/          # 环境、数据、训练、监控、benchmark、导出
+├── tests/            # 305 个 CPU 测试，全部使用 debugmodel
+├── tokenizer/        # MiniMind 6,400 tokenizer + chat template
+├── doc/              # 设计决策、代码来源、开发日志、复现 runbook
+├── assets/           # README 的 logo / banner / 架构图
+├── data/             # 本地数据（git 忽略，仅 manifests 入库）
+└── checkpoints/      # 训练产物（git 忽略）
 ```
 
 ---
 
-## 5. 关键设计决定
+## 边界与未完成
 
-- **只验证逻辑，不训练**：所有测试固定使用 `debugmodel`；三个目标模型只构建、统计参数量并做 CPU 1-step/forward-backward。
-- **默认模型 `mini_220m_a80m`**：216.65M 总参 / 82.17M 激活（MTP depth 1、tied embeddings）。
-- **8 routed + 0 shared，top-2，前 2 层 hash**；`route_norm=True`，`route_scale=1.5`。
-- **`mini_60m_dense_d768` 的单一 expert 权重固定为 1.0**，等价于 dense FFN；无 hash / 无负载均衡。
-- **`mini_145m_a60m`**：6 routed / top-2，active FFN 宽度与 dense 控制组对齐。
-- **CSA(4) + HCA(32) + SWA**；`seq_len=4096`，`max_context=8192`；index top-k 由模型文件派生（4K→1024、8K→2048）。
-- **SwiGLU clamp 10.0 常开**；**Anticipatory Routing 实现但默认关闭**。
-- **4K dense-over-compressed → 8K sparse 的 index top-k 调度**：`IndexTopKSchedule`。
-- **GRPO/OPD 从 checkpoint 初始化**：`train.resume` 分别加载 SFT specialist 与 base student。
-- **checkpoint 主链**：torch state dict → safetensors → DCP；三者均已验证可回读。
-- **bf16**：CUDA 上 wrapper 统一 autocast；权重保持 fp32 master。
-- **长度课程**：`train/curriculum.py` 分阶段 2K→4K→8K，累计 step + resume；不是单次动态改 seq_len。
-- **数据混料**：`data.sources` 权重混料；manifest 继续负责 license/epoch 校验。
-- **AR**：预取下一 optimizer step 的 batch 并用当前 gate 缓存 routing；无异步 overlap。
+- **预训练尚未跑完 3B。** 145M 当前在 2K 阶段 step 1200 / 1717；4K / 8K 阶段和完整
+  3B token 仍在计划中。上面所有数字都标了对应 stage，不把计划值当结果。
+- **220M / 60M 还没有真实训练。** 它们目前用于结构、参数量的对照和 1-step 验证。
+- **没有 EP（专家并行）。** 145M 用 DDP；FSDP2 路径存在，但在 145M 上比 DDP 慢
+  （见 D81）。EP 的 all-to-all dispatch 未实现。
+- **vLLM 不能直接服务这个模型。** 4090 是 SM89、模型 `head_dim=64`，不满足 vLLM 的
+  FlashMLA / FlashInfer 后端要求；rollout 走项目内自研 KV-cache + CUDA graph 引擎。
+  prefill 仍是 torch reference，尚未做 chunked prefill。
+- **tool 多轮 rollout 还未接 cached continuation**，每次 observation 后回退全量重算；
+  FSDP2 + cached 也还没接。
+- **长上下文不在当前范围。** `max_context=8192`，没有 1M context、FP8/FP4、
+  DSpark / 推测解码。
+- **Anticipatory Routing 默认关闭**；已实现预取队列，但 probe 仍是同步执行。
+- **数据规模到 6B 时需要分布式去重**；当前去重 / 污染检查是单进程实现。
 
 ---
 
-## 6. 未完成 / 明确不在当前阶段
+## 文档地图
 
-- 没有真实训练 `mini_220m_a80m` / `mini_145m_a60m` / `mini_60m_dense_d768`，也没有 0.6B/6B 数据产出；数据只用了 MiniMind 小样本。
-- 没有多卡 CUDA 实机：FSDP2/DDP 的 2 进程正确性已在 CPU/Gloo 验证，
-  NCCL、真实 bf16 吞吐、8 卡扩展性未验证。
-- EP（专家并行）未实现：FSDP2 下 routed experts 是复制分片，尚未做
-  all-to-all expert dispatch。
-- vLLM 自定义模型/paged-attention kernel 未实现；verl 的 HF rollout 路径
-  未在 GPU 上实跑。vLLM/verl 都只是可选集成。
-- rollout 默认仍是 full-recompute torch（无 KV cache），适合一致性验证，不适合吞吐。
-- world 的默认 judge 仍是启发式占位；HTTP judge 代码已接，但需要 API 与环境变量，
-  未在 CI 中真实调用。
-- 没有跑 lm-evaluation-harness（`eval/lm_eval.py` 适配已写，需可选 extra 与 GPU 实跑）。
-- 没有 DSpark / 推测解码（第一版明确跳过）。
-- Anticipatory Routing 有一步预取队列，但 probe 仍同步执行、没有异步 overlap；默认关闭。
-- 去重、污染检查是单进程实现，6B 规模需要换成分布式版本。
-- 分布式 GRPO/OPD 已有 FSDP2 路径（2 进程 CPU 验证）；vLLM/verl GPU 路径未验证。
-- FIM/token-splitting、长文档/多语言数据、teacher hidden-state cache 未做。
+| 想了解 | 读这个 |
+|---|---|
+| 为什么这么设计、哪里偏离了原计划 | [`doc/decisions.md`](doc/decisions.md) |
+| 哪些代码来自上游、改了什么 | [`doc/sources.md`](doc/sources.md) |
+| 每个阶段的开发日志与验证命令 | [`doc/PROCESS.md`](doc/PROCESS.md) |
+| 测试策略与一致性门禁 | [`doc/testing.md`](doc/testing.md) |
+| 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
+| 145M 上线、迁移、packs 传输 | [`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md)、[`doc/server_runbook.md`](doc/server_runbook.md) |
+| SFT / GRPO / OPD 的后训练细节 | [`doc/posttraining_plan.md`](doc/posttraining_plan.md) |
+| 显存、吞吐、batching 预算 | [`doc/hardware_budget.md`](doc/hardware_budget.md)、[`doc/batching.md`](doc/batching.md) |
+| 实现审计：哪些只是代码落地 | [`doc/roadmap_audit.md`](doc/roadmap_audit.md) |
 
-逐项实现审计（哪些只是代码落地、哪些还没做）见
-[doc/roadmap_audit.md](doc/roadmap_audit.md)。更多细节见
-[doc/decisions.md](doc/decisions.md)、[doc/testing.md](doc/testing.md)、
-[doc/PROCESS.md](doc/PROCESS.md)。
+---
+
+## 致谢
+
+模型结构与训练方法来自 **DeepSeek-V4** 技术报告；参考实现与工程经验来自
+[torchtitan](https://github.com/pytorch/torchtitan)、
+[verl](https://github.com/volcengine/verl) 和
+[MiniMind](https://github.com/jingyaogong/minimind)。
+本项目把需要的部分**复制并重构**进自己的模块，保留版权头并在
+[`doc/sources.md`](doc/sources.md) 记录来源；运行时**不依赖**这些仓库。
+
+Tokenizer 与基础数据来自 MiniMind；外部语料各自带有 license，见
+[`doc/external_data.md`](doc/external_data.md)。
+
+## License
+
+代码以 [MIT License](LICENSE) 发布。数据、tokenizer 与第三方模型的 license 独立于代码，
+使用前请阅读对应的 manifest 与数据说明。
+
+---
+
+<div align="center">
+  <sub>如果这个项目对你有帮助，欢迎 Star ⭐ / 提 Issue / 发 PR。</sub><br>
+  <sub>在提交 PR 前，请先跑一遍 <code>./scripts/debug_smoke.sh</code>。</sub>
+</div>
