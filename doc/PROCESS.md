@@ -1119,3 +1119,37 @@
   bf16 cast 开关、mHC compile 开关；见 `doc/decisions.md` D72。
 - 当前训练进程仍在跑（tmux `train`），处于编译阶段；日志
   `logs/curriculum_145m.log`。morning checklist 见 `doc/optimization_2026-11-10.md` §7。
+
+## 2026-11-10（下午：冷编译收口）
+
+- commit: 103a096 fix: 冷编译改为一次性 prewarm + 仓库内持久缓存
+- 做了什么: 把"第一次启动要编 20-40 分钟、看起来像挂死"这件事从训练路径里
+  移出去，并撤掉夜里那个反而更慢的开关。
+  - 删除 `MINIDEEPSEEK_ATTN_AUTOTUNE=0` 与 `_limit_attn_gym_autotune`；
+  - `paths.configure_compile_cache()`：三个 kernel 缓存指向 `PROJECT_ROOT/.cache`，
+    显式环境变量优先，`train_curriculum.sh` / `train_pretrain.sh` 同步导出，
+    `_load_attn_gym()` 在 import attn_gym 前兜底；
+  - 新增 `scripts/prewarm_attn.py`（逐变体打印编译耗时，强制 attn_gym 后端，
+    `--dry-run` 可在无卡机跑）；
+  - `train.benchmark` 拆出 `synthetic_batch_factory`，benchmark / prewarm 共用；
+  - `curriculum.stage_train_configs()`：不碰数据集也能拿到每个 stage 的真实
+    `seq_len` / `index_topk` / `batch_tokens`。
+- 实现了什么:
+  - 训练启动不再含编译：prewarm 一次写缓存，之后每个 stage、每次重启都是 0；
+  - prewarm 的 batch 形状与训练一致：2K→2 doc、4K→2 doc、8K→1 doc，
+    `index_topk` 512/1024/2048 三个 specialization 都会被覆盖；
+  - 超时变体会被单独标出（夜里那个 >40 分钟的病态 tile 不会再无声消失）。
+- 验证:
+  - 本地 `pytest tests/ -q` → **267 passed, 2 skipped**；`ruff check` 全绿；
+  - 服务器（无卡）`pytest tests/test_prewarm.py tests/test_paths.py tests/test_curriculum.py`
+    → **18 passed**；
+  - 服务器用真实 `configs/pretrain/generated/curriculum_145m_g1.yaml` 跑
+    `prewarm_attn.py --dry-run` → 三阶段 plan 正确（含 8K 的 docs=1、topk=2048）；
+  - 服务器工作区已 reset 到该 commit（仅 `.venv` 与 `mini_145m_a60m_topk64.yaml`
+    是 untracked）。
+- 未完成 / 风险:
+  - **CUDA 上的真实编译与缓存命中没验证**：本机和服务器当前都是无卡模式，
+    `nvidia-smi` 无输出、`/dev/nvidia*` 不存在；
+  - prewarm 的 8K 阶段按 `train.activation_checkpointing` 建模型以对齐显存，
+    但 24 GB 上 8K×1 的真实峰值仍未实测；
+  - bf16 fused 仍默认关闭，需要 `MINIDEEPSEEK_ATTN_BF16=1` + 单独 prewarm 一次。
