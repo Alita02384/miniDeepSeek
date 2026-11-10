@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...model.wrapper import MiniDeepSeekModel
+from ..cached_rollout import CachedRolloutEngine
 from ..rollout import TorchRolloutEngine
 from .vllm import VLLMGenerator
 
@@ -25,6 +26,13 @@ def build_rollout_engine(
     del sample_kwargs
     if config.rl.rollout_backend == "torch":
         return TorchRolloutEngine(model, tokenizer, thinking_ratio=config.rl.thinking_ratio)
+    if config.rl.rollout_backend in {"cached", "kv"}:
+        return CachedRolloutEngine(
+            model,
+            tokenizer,
+            thinking_ratio=config.rl.thinking_ratio,
+            max_context=int(config.model.seq_len),
+        )
     if config.rl.rollout_backend != "vllm":
         raise ValueError(f"unknown rollout backend {config.rl.rollout_backend!r}")
 

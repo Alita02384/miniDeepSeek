@@ -498,7 +498,9 @@ class RLSettings(BaseConfig):
     thinking_ratio: float = 0.1
     max_tool_calls: int = 4
     teacher_weights: dict[str, float] = field(default_factory=dict)
-    # "torch" is the correctness-first path; "vllm" is CUDA-only and optional.
+    # "torch" recomputes the full sequence (correctness reference);
+    # "cached" is the batched KV-cache engine (production); "vllm" is kept for
+    # environments whose vLLM build supports the model.
     rollout_backend: str = "torch"
     vllm_model_path: str | None = None
     vllm_tensor_parallel_size: int = 1

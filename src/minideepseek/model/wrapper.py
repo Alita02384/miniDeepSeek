@@ -280,6 +280,61 @@ class MiniDeepSeekModel:
         logits = self.forward(batch, use_mtp=False)[0]
         return logits if temperature == 1.0 else logits / temperature
 
+    # -- incremental prefill/decode (rollout) --------------------------------
+    @torch.no_grad()
+    def prefill(
+        self,
+        prompt_ids: list[int] | torch.Tensor,
+        cache,
+        slot: int,
+    ) -> torch.Tensor:
+        """Run one prompt through the model, populate ``cache[slot]``.
+
+        Returns the main-depth logits ``[T, vocab]``; the caller only needs the
+        last position but keeping the whole tensor costs little for prompts.
+        """
+        from .attention import PackedAttentionMetadata
+
+        self.eval()
+        if isinstance(prompt_ids, torch.Tensor):
+            tokens = prompt_ids.to(self.device, dtype=torch.long)
+        else:
+            tokens = torch.tensor(prompt_ids, dtype=torch.long, device=self.device)
+        length = int(tokens.numel())
+        if length <= 0:
+            raise ValueError("prompt must contain at least one token")
+        if length > self.max_context_length:
+            raise ValueError(
+                f"prompt length {length} exceeds context {self.max_context_length}"
+            )
+        positions = torch.arange(length, dtype=torch.long, device=self.device)
+        metadata = PackedAttentionMetadata(
+            cu_seqlens=torch.tensor([0, length], dtype=torch.int32, device=self.device),
+            max_seqlen=length,
+        )
+        with _autocast(self.device, self.autocast_dtype):
+            logits = self.model(
+                tokens,
+                positions,
+                metadata,
+                cache=cache,
+                slot=slot,
+                use_mtp=False,
+            )
+        return logits
+
+    @torch.no_grad()
+    def decode_step(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        cache,
+        slots: torch.Tensor,
+    ) -> torch.Tensor:
+        """One token per slot; returns ``[B, vocab]`` main-depth logits."""
+        with _autocast(self.device, self.autocast_dtype):
+            return self.model.decode(input_ids, positions, cache, slots)
+
     # -- generation -----------------------------------------------------------
     @torch.no_grad()
     def generate(

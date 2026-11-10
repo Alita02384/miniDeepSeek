@@ -396,6 +396,8 @@ class DeepSeekV4Attention(nn.Module):
         *,
         padding_mask: torch.Tensor | None = None,
         aux_loss_denominator: torch.Tensor | None = None,
+        cache=None,
+        slot: int | None = None,
     ):
         del input_ids, padding_mask, aux_loss_denominator
         tokens = x.shape[0]
@@ -415,6 +417,7 @@ class DeepSeekV4Attention(nn.Module):
         compressor = getattr(self, "compressor", None) or getattr(self, "compressor_128", None)
         if compressor is not None:
             cmp_k = compressor(x, positions, cu)
+        idx_k = None
         if self.indexer is not None and cmp_k is not None:
             idx_q, idx_k, idx_w = self.indexer(
                 x.detach(), qr.detach(), positions=positions, cu_seqlens=cu
@@ -475,4 +478,158 @@ class DeepSeekV4Attention(nn.Module):
         o_rope = self.rope(o_rope, positions=positions, inverse=True)
         out = torch.cat([o_nope, o_rope], dim=-1)
         out = self.wo_b(self.wo_a(out))
+        if cache is not None:
+            if slot is None:
+                raise ValueError("prefill cache requires a slot id")
+            comp_state = None
+            idx_state = None
+            compressor = getattr(self, "compressor", None) or getattr(
+                self, "compressor_128", None
+            )
+            if compressor is not None:
+                comp_state = compressor.capture_state(x)
+            if self.indexer is not None:
+                idx_state = self.indexer.compressor.capture_state(x)
+            cache.store_prefill(
+                self.layer_id,
+                int(slot),
+                kv=kv,
+                cmp_kv=cmp_k.detach() if cmp_k is not None else None,
+                idx_kv=idx_k.detach() if idx_k is not None else None,
+                comp_state=comp_state,
+                idx_state=idx_state,
+                num_tokens=tokens,
+            )
         return out
+
+    # -- incremental decode ---------------------------------------------------
+    def _select_sparse(
+        self,
+        layer,
+        slots: torch.Tensor,
+        positions: torch.Tensor,
+        idx_q: torch.Tensor | None,
+        idx_w: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return ``[B, K]`` local compressed indices and a validity mask.
+
+        Indices are local to ``layer.cmp`` (not the packed prefill space); ``-1``
+        marks padding and is masked out by the caller.
+        """
+        if layer.cmp is None:
+            device = positions.device
+            return torch.empty(
+                (positions.shape[0], 0), dtype=torch.long, device=device
+            ), torch.zeros(
+                (positions.shape[0], 0), dtype=torch.bool, device=device
+            )
+        n_comp = layer.n_comp[slots]
+        device = positions.device
+        if n_comp.numel() == 0:
+            return torch.full((0, 0), -1, dtype=torch.long, device=device), torch.zeros(
+                (0, 0), dtype=torch.bool, device=device
+            )
+        n_max = int(n_comp.max().item())
+        if n_max == 0:
+            return torch.empty(
+                (positions.shape[0], 0), dtype=torch.long, device=device
+            ), torch.zeros(
+                (positions.shape[0], 0), dtype=torch.bool, device=device
+            )
+        if idx_q is not None:
+            k = min(int(self.index_topk), max(n_max, 1))
+            keys = layer.idx[slots[:, None], torch.arange(n_max, device=device)[None, :]]
+            dots = torch.einsum("bhd,bkd->bhk", idx_q.float(), keys.float())
+            scores = (torch.relu(dots) * idx_w.float().unsqueeze(-1)).sum(dim=1)
+            scores = scores * (idx_q.shape[1] * idx_q.shape[2]) ** -0.5
+            scores = scores.masked_fill(
+                torch.arange(n_max, device=device)[None, :] >= n_comp[:, None],
+                float("-inf"),
+            )
+            selected = scores.topk(k, dim=-1).indices
+            valid = selected < n_comp[:, None]
+            return torch.where(valid, selected, -1).long(), valid
+        # HCA: every compressed entry up to the current position is visible.
+        k = min(int(layer.max_comp), int(getattr(self, "hca_topk_max", None) or layer.max_comp))
+        selected = torch.arange(k, device=device)[None, :].expand(n_comp.shape[0], k)
+        valid = selected < n_comp[:, None]
+        return torch.where(valid, selected, -1).long(), valid
+
+    @torch.no_grad()
+    def decode(
+        self,
+        x: torch.Tensor,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        cache,
+        slots: torch.Tensor,
+    ) -> torch.Tensor:
+        """One-token decode step for a batch of slots (in-place cache update)."""
+        del input_ids
+        tokens = x.shape[0]
+        device = x.device
+        layer = cache.layers[self.layer_id]
+        qr = self.q_norm(self.wq_a(x))
+        q = self.wq_b(qr).view(tokens, self.n_heads, self.head_dim)
+        q = q * torch.rsqrt(q.square().mean(-1, keepdim=True) + self.norm_eps)
+        q_nope, q_rope = torch.split(q, [self.nope_dim, self.rope_head_dim], dim=-1)
+        kv = self.kv_norm(self.wkv(x))
+        kv_nope, kv_rope = torch.split(kv, [self.nope_dim, self.rope_head_dim], dim=-1)
+        q_rope, kv_rope = self.rope(q_rope, kv_rope.unsqueeze(1), positions)
+        q = torch.cat([q_nope, q_rope], dim=-1)
+        kv = torch.cat([kv_nope, kv_rope.squeeze(1)], dim=-1)
+        cache.append_kv(self.layer_id, slots, positions, kv)
+
+        idx_q = None
+        idx_w = None
+        compressor = getattr(self, "compressor", None) or getattr(
+            self, "compressor_128", None
+        )
+        if compressor is not None:
+            state_kv = layer.comp_state_kv[slots]
+            state_score = layer.comp_state_score[slots]
+            compressed, completed = compressor.decode_step(
+                x, positions, state_kv, state_score
+            )
+            layer.comp_state_kv[slots] = state_kv
+            layer.comp_state_score[slots] = state_score
+            done = completed.nonzero(as_tuple=False).flatten()
+            if done.numel():
+                done_slots = slots[done]
+                cache.write_comp(self.layer_id, done_slots, compressed[done])
+                if self.indexer is not None:
+                    idx_state_kv = layer.idx_state_kv[done_slots]
+                    idx_state_score = layer.idx_state_score[done_slots]
+                    idx_compressed, idx_completed = self.indexer.compress_decode(
+                        x[done], positions[done], idx_state_kv, idx_state_score
+                    )
+                    layer.idx_state_kv[done_slots] = idx_state_kv
+                    layer.idx_state_score[done_slots] = idx_state_score
+                    # ``write_comp`` advanced n_comp for these slots already.
+                    cache.write_idx(self.layer_id, done_slots, idx_compressed)
+            if self.indexer is not None:
+                idx_q, idx_w = self.indexer.query(x, qr, positions)
+
+        sparse, sparse_valid = self._select_sparse(
+            layer, slots, positions, idx_q, idx_w
+        )
+        local, local_valid = cache.gather_local(self.layer_id, slots, positions)
+        sparse = sparse.to(device)
+        if layer.cmp is None:
+            sparse_keys = local.new_zeros(local.shape[0], 0, local.shape[-1])
+        else:
+            sparse_keys = layer.cmp[slots[:, None], sparse.clamp_min(0)]
+        keys = torch.cat([local, sparse_keys], dim=1)
+        valid = torch.cat([local_valid, sparse_valid], dim=1)
+        logits = torch.einsum("bhd,bkd->bhk", q.float(), keys.float())
+        logits = logits * self.softmax_scale
+        logits = logits.masked_fill(~valid[:, None, :], float("-inf"))
+        sink = self.attn_sink.weight.squeeze(-1).float()
+        sink_logits = sink.view(1, -1, 1).expand(tokens, -1, 1)
+        all_logits = torch.cat([logits, sink_logits], dim=-1)
+        probs = torch.softmax(all_logits, dim=-1)[..., :-1]
+        out = torch.einsum("bhk,bkd->bhd", probs, keys.float()).to(q.dtype)
+        o_nope, o_rope = torch.split(out, [self.nope_dim, self.rope_head_dim], dim=-1)
+        o_rope = self.rope(o_rope, positions=positions, inverse=True)
+        out = torch.cat([o_nope, o_rope], dim=-1)
+        return self.wo_b(self.wo_a(out))

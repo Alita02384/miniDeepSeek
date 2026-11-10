@@ -76,6 +76,111 @@ class Compressor(nn.Module):
             prev = prev.masked_fill(first[:, None, None], value)
         return torch.cat([prev, tensor[:, :, d:]], dim=1)
 
+    # -- incremental decoding helpers -------------------------------------
+    # The training forward compresses a whole sequence at once.  Rollout needs
+    # the same arithmetic one token (or one prefill chunk) at a time: store the
+    # per-token projections of the unfinished block, and pool when it closes.
+    # The state layout follows the official inference implementation
+    # (DeepSeek-V4-Flash/inference/model.py: Compressor.kv_state/score_state).
+    def project_tokens(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Per-token ``wkv``/``wgate`` projections in fp32 (no pooling)."""
+        with torch.autocast(
+            device_type="cuda", dtype=torch.float32, enabled=x.device.type == "cuda"
+        ):
+            kv = self.wkv(x)
+            score = self.wgate(x)
+        return kv.float(), score.float()
+
+    def _finalize(self, pooled: torch.Tensor, block_positions: torch.Tensor, dtype) -> torch.Tensor:
+        """Norm + RoPE the pooled block K/V, matching ``forward``."""
+        kv = self.norm(pooled.to(dtype))
+        rd = self.rope_head_dim
+        nope, rope = torch.split(kv, [self.head_dim - rd, rd], dim=-1)
+        rope = self.rope(rope.unsqueeze(1), positions=block_positions).squeeze(1)
+        return torch.cat([nope, rope], dim=-1)
+
+    @torch.no_grad()
+    def capture_state(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """State left after a single-document prefill of ``x``.
+
+        ``forward`` only emits whole blocks; the tail tokens (and, for the
+        overlapping ratio-4 compressor, the previous block's first half) are
+        kept here so the next decode step can finish the block.
+        """
+        seqlen = int(x.shape[0])
+        ratio = self.compress_ratio
+        kv, score = self.project_tokens(x)
+        state_len = 2 * ratio if self.overlap else ratio
+        proj_dim = kv.shape[-1]
+        state_kv = torch.zeros(state_len, proj_dim, dtype=torch.float32, device=x.device)
+        state_score = torch.full(
+            (state_len, proj_dim), float("-inf"), dtype=torch.float32, device=x.device
+        )
+        cutoff = (seqlen // ratio) * ratio
+        remainder = seqlen - cutoff
+        if self.overlap:
+            if cutoff >= ratio:
+                state_kv[:ratio] = kv[cutoff - ratio : cutoff]
+                state_score[:ratio] = score[cutoff - ratio : cutoff] + self.ape
+            if remainder > 0:
+                state_kv[ratio : ratio + remainder] = kv[cutoff:]
+                state_score[ratio : ratio + remainder] = score[cutoff:] + self.ape[:remainder]
+        elif remainder > 0:
+            state_kv[:remainder] = kv[cutoff:]
+            state_score[:remainder] = score[cutoff:] + self.ape[:remainder]
+        return state_kv, state_score
+
+    @torch.no_grad()
+    def decode_step(
+        self,
+        x: torch.Tensor,
+        positions: torch.Tensor,
+        state_kv: torch.Tensor,
+        state_score: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Accumulate one token per slot and pool the block it completes.
+
+        Args:
+            x: ``[B, dim]`` current-token attention input.
+            positions: ``[B]`` absolute positions (0-based, within the document).
+            state_kv/state_score: ``[B, state_len, proj_dim]`` partial blocks,
+                updated in place.
+
+        Returns:
+            ``(compressed [B, head_dim], completed [B] bool)``.  ``compressed``
+            is only meaningful where ``completed`` is true; non-completing rows
+            contain garbage and must be masked by the caller.
+        """
+        ratio = self.compress_ratio
+        kv, score = self.project_tokens(x)
+        pos = positions.long()
+        offset = pos % ratio
+        rows = torch.arange(x.shape[0], device=x.device)
+        index = ratio + offset if self.overlap else offset
+        state_kv[rows, index] = kv
+        state_score[rows, index] = score + self.ape[offset]
+        completed = (pos + 1) % ratio == 0
+        if self.overlap:
+            d = self.head_dim
+            block_kv = torch.cat(
+                [state_kv[:, :ratio, :d], state_kv[:, ratio:, d:]], dim=1
+            )
+            block_score = torch.cat(
+                [state_score[:, :ratio, :d], state_score[:, ratio:, d:]], dim=1
+            )
+        else:
+            block_kv = state_kv[:, :ratio]
+            block_score = state_score[:, :ratio]
+        pooled = (block_kv * block_score.softmax(dim=1)).sum(dim=1)
+        block_positions = pos + 1 - ratio
+        compressed = self._finalize(pooled, block_positions, x.dtype)
+        if self.overlap:
+            done = completed.nonzero(as_tuple=False).flatten()
+            if done.numel():
+                state_kv[done, :ratio] = state_kv[done, ratio:]
+                state_score[done, :ratio] = state_score[done, ratio:]
+        return compressed, completed
+
     def forward(self, x: torch.Tensor, positions: torch.Tensor, cu_seqlens: torch.Tensor):
         seqlen = x.shape[0]
         ratio = self.compress_ratio
@@ -176,6 +281,35 @@ class Indexer(nn.Module):
         )
         w = self.weights_proj(x) * (self.softmax_scale * self.num_heads**-0.5)
         return q, k, w
+
+    # -- incremental query/key helpers ------------------------------------
+    def query(
+        self,
+        x: torch.Tensor,
+        qr: torch.Tensor,
+        positions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Indexer query ``[B, heads, head_dim]`` and per-head weight ``[B, heads]``."""
+        q = self.wq_b(qr).view(x.shape[0], self.num_heads, self.head_dim)
+        nope, rope = torch.split(
+            q, [self.head_dim - self.rope_head_dim, self.rope_head_dim], dim=-1
+        )
+        rope = self.rope(rope, positions=positions)
+        q = self._rotate_activation(torch.cat([nope, rope], dim=-1))
+        w = self.weights_proj(x) * (self.softmax_scale * self.num_heads**-0.5)
+        return q, w
+
+    def compress_decode(
+        self,
+        x: torch.Tensor,
+        positions: torch.Tensor,
+        state_kv: torch.Tensor,
+        state_score: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        compressed, completed = self.compressor.decode_step(
+            x, positions, state_kv, state_score
+        )
+        return self._rotate_activation(compressed), completed
 
     @staticmethod
     def select(

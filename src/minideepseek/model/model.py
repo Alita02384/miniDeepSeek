@@ -74,11 +74,43 @@ class DeepSeekV4TransformerBlock(nn.Module):
         input_ids: torch.Tensor,
         metadata: PackedAttentionMetadata,
         positions: torch.Tensor,
+        *,
+        cache=None,
+        slot: int | None = None,
     ) -> torch.Tensor:
         residual = x
         x, post, comb = self.hc_attn_pre(x)
         x = self.attention(
-            self.attention_norm(x), input_ids, positions, metadata
+            self.attention_norm(x),
+            input_ids,
+            positions,
+            metadata,
+            cache=cache,
+            slot=slot,
+        )
+        x = self.hc_post(x, residual, post, comb)
+        residual = x
+        x, post, comb = self.hc_ffn_pre(x)
+        if getattr(self.feed_forward, "router", None) is not None and self.feed_forward.router.hash:
+            x = self.feed_forward(self.ffn_norm(x), input_ids=input_ids)
+        else:
+            x = self.feed_forward(self.ffn_norm(x))
+        x = self.hc_post(x, residual, post, comb)
+        return x
+
+    def decode(
+        self,
+        x: torch.Tensor,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        cache,
+        slots: torch.Tensor,
+    ) -> torch.Tensor:
+        """One-token incremental step (no metadata / no MTP)."""
+        residual = x
+        x, post, comb = self.hc_attn_pre(x)
+        x = self.attention.decode(
+            self.attention_norm(x), input_ids, positions, cache, slots
         )
         x = self.hc_post(x, residual, post, comb)
         residual = x
@@ -161,15 +193,15 @@ class DeepSeekV4Model(nn.Module):
         # the training config (``train.activation_checkpointing``).
         self.grad_checkpointing = False
 
-    def _run_block(self, block: nn.Module, *args):
+    def _run_block(self, block: nn.Module, *args, **kwargs):
         """Call one transformer block, recomputing it in backward if enabled.
 
         Non-reentrant checkpointing keeps ``no_grad``/autocast behaviour intact
         and works with FSDP2 (the recompute re-issues the all-gather).
         """
         if self.grad_checkpointing and self.training and torch.is_grad_enabled():
-            return _checkpoint(block, *args, use_reentrant=False)
-        return block(*args)
+            return _checkpoint(block, *args, use_reentrant=False, **kwargs)
+        return block(*args, **kwargs)
 
 
     def collect_indexer_loss(self) -> torch.Tensor | None:
@@ -253,6 +285,10 @@ class DeepSeekV4Model(nn.Module):
         attention_metadata: PackedAttentionMetadata | None = None,
         padding_mask: torch.Tensor | None = None,
         aux_loss_denominators: torch.Tensor | None = None,
+        *,
+        cache=None,
+        slot: int | None = None,
+        use_mtp: bool = True,
     ):
         del padding_mask, aux_loss_denominators
         if positions is None:
@@ -262,11 +298,37 @@ class DeepSeekV4Model(nn.Module):
         h = self.tok_embeddings(tokens)
         h = h.unsqueeze(1).repeat(1, self.hc_mult, 1)
         for layer in self.layers.values():
-            h = self._run_block(layer, h, tokens, attention_metadata, positions)
+            h = self._run_block(
+                layer,
+                h,
+                tokens,
+                attention_metadata,
+                positions,
+                cache=cache,
+                slot=slot,
+            )
         prev_hc = h
         hidden = self.hc_head(h)
         hidden = self.norm(hidden)
-        if not self.mtp_layers:
-            return self.lm_head(hidden) if self.lm_head is not None else hidden
+        main = self.lm_head(hidden) if self.lm_head is not None else hidden
+        if not self.mtp_layers or not use_mtp:
+            return main
         outputs = [hidden] + self.mtp_forward(prev_hc, tokens, attention_metadata, positions)
         return tuple(self.lm_head(item) for item in outputs)
+
+    @torch.no_grad()
+    def decode(
+        self,
+        tokens: torch.Tensor,
+        positions: torch.Tensor,
+        cache,
+        slots: torch.Tensor,
+    ) -> torch.Tensor:
+        """One token per slot: return ``[B, vocab]`` main-depth logits."""
+        h = self.tok_embeddings(tokens)
+        h = h.unsqueeze(1).repeat(1, self.hc_mult, 1)
+        for layer in self.layers.values():
+            h = layer.decode(h, tokens, positions, cache, slots)
+        hidden = self.norm(self.hc_head(h))
+        cache.advance(slots)
+        return self.lm_head(hidden)
