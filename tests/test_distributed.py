@@ -20,6 +20,7 @@ from minideepseek.train.distributed import (
     apply_parallelism,
     gather_model_state_dict,
     init_distributed,
+    load_optimizer_state_dict,
 )
 from minideepseek.train.optimizer import build_optimizer
 from minideepseek.train.spike import restore, snapshot
@@ -151,3 +152,23 @@ def test_distributed_snapshot_restore(distributed_context):
         if value.is_floating_point()
     }
     assert all(torch.equal(before[name], after[name]) for name in before)
+
+
+def test_load_optimizer_state_from_single_process_checkpoint():
+    """A run without a distributed context saves ``optimizer.state_dict()``,
+    which keys state by integer position instead of parameter name.  Loading
+    it under ``distributed`` (a 1-GPU run continued on 2 GPUs) must still find
+    every state tensor."""
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(4, 3), torch.nn.Linear(3, 2))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model(torch.randn(8, 4)).sum().backward()
+    optimizer.step()
+    plain = optimizer.state_dict()
+    assert plain["state"] and all(isinstance(key, int) for key in plain["state"])
+
+    restored = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    load_optimizer_state_dict(model, restored, plain)
+    assert len(restored.state) == len(optimizer.state)
+    for position, values in optimizer.state.items():
+        assert torch.equal(restored.state[position]["exp_avg"], values["exp_avg"])

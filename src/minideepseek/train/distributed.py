@@ -441,6 +441,42 @@ def gather_optimizer_state_dict(
     return get_optimizer_state_dict(model, optimizer, options=options)
 
 
+def _normalise_optimizer_state(
+    state: dict[str, Any], position_to_name: dict[int, str]
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Return optimizer state keyed by parameter name.
+
+    ``torch.optim.Optimizer.state_dict()`` -- what a single-process save writes
+    -- keys both ``state`` and each group's ``params`` by *integer position* in
+    the flattened ``param_groups`` order.  The distributed writer
+    (``get_optimizer_state_dict``) keys them by fully-qualified parameter name.
+    Resuming a single-GPU checkpoint on several GPUs would otherwise hand
+    integer keys to a name lookup: every entry is dropped, the rebuilt groups
+    end up empty, and ``load_state_dict`` rejects them because the sizes no
+    longer match (or, if they happen to match, the momentum is silently lost).
+    """
+    raw_state = dict(state.get("state") or {})
+    raw_groups = [dict(group) for group in state.get("param_groups") or []]
+    if raw_state and all(isinstance(key, int) for key in raw_state):
+        raw_state = {
+            position_to_name[position]: values
+            for position, values in raw_state.items()
+            if position in position_to_name
+        }
+        raw_groups = [
+            {
+                **{key: value for key, value in group.items() if key != "params"},
+                "params": [
+                    position_to_name[position]
+                    for position in group.get("params", [])
+                    if position in position_to_name
+                ],
+            }
+            for group in raw_groups
+        ]
+    return raw_state, raw_groups
+
+
 def _load_single_optimizer(
     model: nn.Module, optimizer: torch.optim.Optimizer, state: dict[str, Any]
 ) -> None:
@@ -452,13 +488,15 @@ def _load_single_optimizer(
         for name, parameter in names.items()
         if id(parameter) in by_id
     }
+    position_to_name = {position: name for name, position in index.items()}
+    raw_state, raw_groups = _normalise_optimizer_state(state, position_to_name)
     new_groups = []
-    for group in state.get("param_groups", []):
+    for group in raw_groups:
         new_group = {key: value for key, value in group.items() if key != "params"}
         new_group["params"] = [index[name] for name in group.get("params", []) if name in index]
         new_groups.append(new_group)
     new_state: dict[int, dict[str, Any]] = {}
-    for name, values in state.get("state", {}).items():
+    for name, values in raw_state.items():
         if name not in index:
             continue
         parameter = ordered[index[name]]
