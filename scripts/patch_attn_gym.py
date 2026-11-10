@@ -34,8 +34,16 @@ import shutil
 import sys
 
 OLD = "for selected_slot in tl.static_range(0, TOPK):"
-NEW = "for selected_slot in tl.range(0, TOPK):  # patched: keep the slot loop rolled (TOPK=256)"
-ROLLED = "for selected_slot in tl.range(0, TOPK)"
+#: Partial unroll: measured on the 2K shape (T=8192, S=2048, K=64, bf16) at
+#: 0.566 ms/launch vs 1.061 ms fully unrolled -- a partially rolled loop is also
+#: *faster* here, because 64 copies of the body thrash registers/i-cache.  At
+#: K=256 it compiles in 5.8 s instead of never finishing.
+UNROLL = 16
+NEW = (
+    f"for selected_slot in tl.range(0, TOPK, loop_unroll_factor={UNROLL}):"
+    "  # patched: partial unroll (see scripts/patch_attn_gym.py)"
+)
+ROLLED = "for selected_slot in tl.range(0, TOPK"
 
 
 def _default_target() -> pathlib.Path:
@@ -67,8 +75,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if ROLLED in text:
-        print(f"{path}: already patched")
-        return 0 if args.check else 0
+        if NEW in text:
+            print(f"{path}: already patched (unroll={UNROLL})")
+            return 0
+        if args.check:
+            print(f"{path}: rolled loop with a different unroll factor -- re-run without --check")
+            return 1
+        # A different `tl.range` variant is in place; rewrite it to the measured one.
+        lines = [
+            line[: len(line) - len(line.lstrip())] + NEW
+            if line.strip().startswith(ROLLED)
+            else line
+            for line in text.splitlines()
+        ]
+        backup.write_text(text, encoding="utf-8")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"{path}: rewrote the rolled loop to unroll={UNROLL}")
+        return 0
 
     count = text.count(OLD)
     if count == 0:
