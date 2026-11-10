@@ -122,8 +122,8 @@ bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 - ✅ **代码 / 测试**：`305 passed, 2 skipped`（CPU，debugmodel，约 72 s）
 - 🔄 **145M 预训练**：2K 阶段 step 1200 / 1717；val loss 2.456 / ppl 6.3 @ step 1199
 - ✅ **general SFT + GRPO**：120 step / 50 step；单卡 4090 上 6–7k tok/s、18.6 s/step
-- 🔄 **code / tool SFT**：顺序运行中；GRPO 依赖 SFT 完成
-- ⏳ **3-teacher OPD**：2-teacher / smoke 已验证，三教师等 code / tool final
+- ✅ **code / tool SFT**：已产出 final；GRPO code / tool 只跑了 2-step smoke
+- ✅ **3-teacher OPD**：20 step 跑通并落盘，KL total mean 0.065（general 0.041 / code 0.052 / tool 0.100），约 17 s/step
 - ⏳ **220M / 60M 实跑**：当前只做结构、参数量与 1-step 验证；主跑是 145M
 
 详细数字见下面的[实测表](#实测数字)。
@@ -227,6 +227,7 @@ flowchart LR
 | SFT 吞吐 | 6.1–7.0k tok/s | 1×4090，4K，micro 8192，grad_accum 16，12.7 GiB |
 | GRPO step | 18.6 s | 1×4090，16 prompt × group 6 × 512 token，9.0 GiB |
 | KV-cache decode | 5.4 ms/step ≈ 12k tok/s | 1×4090，batch 64，CUDA graph |
+| 3-teacher OPD | KL total 0.065 / 20 step | 9,135 prompt pool，general/code/tool teacher，约 17 s/step |
 | 一致性门禁 | logprob / routing / checkpoint 三类 | CPU debugmodel + 2 进程 DDP |
 
 > 预训练当前还在 2K 阶段，4K / 8K 与完整 3B 尚未跑完；表里不混计划值。
@@ -269,8 +270,10 @@ miniDeepSeek/
 - **vLLM 不能直接服务这个模型。** 4090 是 SM89、模型 `head_dim=64`，不满足 vLLM 的
   FlashMLA / FlashInfer 后端要求；rollout 走项目内自研 KV-cache + CUDA graph 引擎。
   prefill 仍是 torch reference，尚未做 chunked prefill。
-- **tool 多轮 rollout 还未接 cached continuation**，每次 observation 后回退全量重算；
-  FSDP2 + cached 也还没接。
+- **3-teacher OPD 只跑了 20 step。** KL 在 0.055–0.085 间波动、没有单调下降，
+  lr / 步数还没扫；code / tool teacher 仍是 SFT，GRPO 只有 smoke，teacher 上限受限。
+- **tool 多轮 rollout 已接 cached continuation**，但 FSDP2 + cached 还没接；
+  prefill 仍是 torch reference，chunked prefill 未做。
 - **长上下文不在当前范围。** `max_context=8192`，没有 1M context、FP8/FP4、
   DSpark / 推测解码。
 - **Anticipatory Routing 默认关闭**；已实现预取队列，但 probe 仍是同步执行。
