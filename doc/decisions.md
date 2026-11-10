@@ -46,6 +46,7 @@
 - **依据**：官方 128 是为 1M 上下文调的；4K 下只剩 32 个全局表项，过粗。
 - **影响**：与官方不同构于“压缩率”一个数值；机制（compressor + indexer + top-k）一致。
   严格对齐官方可另建 `compress_ratios=(0,0)+(4,128)*k` 消融。
+- **2026-11-10 修订**：`index_topk` 的默认公式作废，见 D74（改为常量 64）。
 
 ### D4. tied embeddings 默认开启
 
@@ -981,3 +982,28 @@
   而不是悄悄退到慢 8x 的 reference。
 - **代价**：第一次仍要付 20–40 分钟，但只有一次，且不再藏在 step 0 里；换 stage
   只补新 `index_topk` 的那几个变体。
+
+### D74. index_topk 收到 64，shrink 计划量化到 2 的幂（2026-11-10，4090 实测）
+
+- **问题**：145M 跑不起来，不是环境问题，是 `index_topk` 和 attn_gym 的 kernel 设计
+  撞车。该 kernel 的稀疏选择是 `for slot in tl.static_range(0, TOPK)`，`TOPK` 是
+  constexpr → **选择循环按 top-k 全展开**。4090 实测：`K=64` forward 编译 89 s，
+  `K=128` 459 s，`K=512` >10 min（夜里那次 28 min）。
+- **第二个问题**：`min(2048, max(seq_len // 4, 64))` 在本规模上**恰好等于压缩后长度**
+  （2K→512/512、4K→1024/1024、8K→2048/2048）：CSA 100% 全选，退化成
+  dense-over-compressed，既没有稀疏性，又付了最大的编译代价。V4 的 512 是 1M
+  context 下 256K 压缩条目里的 0.2%，不是一回事。
+- **第三个问题（真凶）**：`IndexTopKSchedule` 线性插值**每步返回一个新整数**，而
+  top-k 是 kernel 的 constexpr → 训练窗口内**每一步重编译一次**。夜里卡在 step 0
+  不是"某个变体慢"，是这个。
+- **决定**：
+  1. `mini_145m_a60m` 的 `index_topk` 固定 64（2K/4K/8K 分别是 12.5% / 6% / 3%）；
+  2. `topk_at` 量化到 2 的幂，一条 schedule 最多 `log2(start/final)` 个 specialization，
+     可用 `prewarm_attn.py --index-topk` 提前暖；
+  3. 8K stage 的 2048 "dense 预热"删除（roadmap §3.5 的前提是 1M 规模）。
+- **保留**：HCA 的 top-k 仍由 `(local+1)//compress_ratio` 推导（2K→64、4K→128、
+  8K→256），即"覆盖当前文档全部压缩段"，这是 D3 的语义，没有改；代价是 8K 的
+  `K=256` 变体仍要单独编一次（本机 ~15–30 min，一次性，进缓存）。
+- **验证**：`tests/test_spike.py::test_index_topk_schedule_visits_a_bounded_ladder`
+  （2048→64 全程只出现 6 个值）；4090 上 `K=64` 冷编译 89.2 s，之后同 specialization
+  的调用 `compiled in 0.0s`。
