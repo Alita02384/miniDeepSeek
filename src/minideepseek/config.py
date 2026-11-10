@@ -326,6 +326,11 @@ class DataSettings(BaseConfig):
     #: one source per step, ``grad_accum`` consecutive micro-batches from it.
     #: ``False`` interleaves sources at micro-batch granularity instead.
     lockstep: bool = True
+    #: Re-cut the pack grid to ``seq_len`` tokens at load time.  The streaming
+    #: packer is next-fit, so a 2K pack is only ~76% full; this restores the
+    #: per-step token budget without touching the tokenised files.  Applied to
+    #: the training sources only, so validation stays document-aligned.
+    full_packs: bool = False
 
 
 @dataclass

@@ -26,9 +26,22 @@ DEFAULT_MIN_CHARS = 32
 
 @dataclass
 class PackedPretrainDataset:
-    """Memory-mapped, packed causal-LM dataset."""
+    """Memory-mapped, packed causal-LM dataset.
+
+    ``full_packs`` re-cuts the pack grid at load time instead of trusting the
+    offsets written by the packer.  The streaming packer is next-fit, so with a
+    mean document of ~1.5K tokens a 2048-token pack is only ~75% full and a
+    "262,144 tokens per step" budget silently turns into ~198K.  Re-cutting is
+    a view change, not a data change: the token stream is untouched, each pack
+    becomes exactly ``seq_len`` tokens (except the last), and a document that
+    straddles a cut is split there with its continuation restarting at position
+    0 -- the same convention ``tokenize_documents`` already uses for documents
+    longer than ``seq_len``.  No bytes on disk move.
+    """
 
     path: str | Path
+    #: Re-cut packs to ``seq_len`` tokens (see the class docstring).
+    full_packs: bool = False
 
     def __post_init__(self) -> None:
         self.path = Path(self.path)
@@ -39,8 +52,16 @@ class PackedPretrainDataset:
         meta_path = self.path.with_suffix(".json")
         if meta_path.exists():
             self.meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        self._seq_len = int(self.meta.get("seq_len") or 0)
+        if self.full_packs and self._seq_len <= 0:
+            raise ValueError(
+                f"{self.path}: full_packs needs the packer's seq_len in the dataset "
+                "metadata; re-run the packer or leave full_packs off"
+            )
 
     def __len__(self) -> int:
+        if self.full_packs:
+            return max(1, -(-self.num_tokens // self._seq_len))
         return int(len(self.offsets) - 1)
 
     @property
@@ -48,6 +69,8 @@ class PackedPretrainDataset:
         return int(len(self.input_ids))
 
     def __getitem__(self, index: int) -> PackedBatch:
+        if self.full_packs:
+            return self._full_pack(index)
         start, end = int(self.offsets[index]), int(self.offsets[index + 1])
         input_ids = torch.from_numpy(
             np.array(self.input_ids[start:end], dtype=np.int64, copy=True)
@@ -61,6 +84,31 @@ class PackedPretrainDataset:
         cu_seqlens = _cu_seqlens_from_positions(positions)
         return PackedBatch(
             input_ids=input_ids, positions=positions, target_mask=mask, cu_seqlens=cu_seqlens
+        )
+
+    def _full_pack(self, index: int) -> PackedBatch:
+        start = index * self._seq_len
+        end = min(start + self._seq_len, self.num_tokens)
+        input_ids = torch.from_numpy(
+            np.array(self.input_ids[start:end], dtype=np.int64, copy=True)
+        )
+        raw = np.asarray(self.positions[start:end])
+        # Segment map: an original document start, plus the cut itself.
+        token = np.arange(start, end, dtype=np.int64)
+        # Fill with ``start`` (not -1) so tokens before the first original
+        # document start still belong to the segment opened by the cut.
+        segment = np.maximum.accumulate(np.where(raw == 0, token, start))
+        positions_np = token - segment
+        # ``positions == 0`` is the document-start marker the model relies on.
+        cu_np = np.flatnonzero(positions_np == 0)
+        cu_seqlens = torch.from_numpy(
+            np.append(cu_np, positions_np.size).astype(np.int32)
+        )
+        return PackedBatch(
+            input_ids=input_ids,
+            positions=torch.from_numpy(positions_np),
+            target_mask=torch.from_numpy(positions_np != 0),
+            cu_seqlens=cu_seqlens,
         )
 
 

@@ -460,3 +460,45 @@ def test_reference_leak_does_not_reject_question_digits():
         verifier="math_exact_match",
     )
     validate_record(record, load_tokenizer())
+
+
+def test_full_packs_recut_without_moving_tokens(tmp_path):
+    """``full_packs`` re-cuts the grid; the token stream must be identical."""
+    source = tmp_path / "pretrain.jsonl"
+    docs = [
+        "Document number one is about deep learning and neural networks. " * 3,
+        "Document two is a short note about cooking, ingredients and recipes. " * 2,
+        "Document three covers tool use, function calling and JSON arguments. " * 4,
+        "Document four is short.",
+    ]
+    source.write_text("\n".join(json.dumps({"text": text}) for text in docs) + "\n")
+    output = tmp_path / "pretrain.npz"
+    seq_len = 64
+    build_pretrain_dataset([source], output, seq_len=seq_len, min_chars=8, quality_filter=False)
+
+    plain = PackedPretrainDataset(output)
+    packed = PackedPretrainDataset(output, full_packs=True)
+
+    # Same tokens, same order: the view change must not drop or reorder any id.
+    flat_plain = [int(t) for index in range(len(plain)) for t in plain[index].input_ids]
+    flat_packed = [int(t) for index in range(len(packed)) for t in packed[index].input_ids]
+    assert flat_plain == flat_packed
+    assert packed.num_tokens == plain.num_tokens
+
+    # Every pack but the last is exactly seq_len tokens.
+    assert len(packed) == -(-packed.num_tokens // seq_len)
+    for index in range(len(packed) - 1):
+        assert packed[index].num_tokens == seq_len
+
+    for index in range(len(packed)):
+        batch = packed[index]
+        positions = batch.positions.tolist()
+        # Positions restart at every document start *and* at every cut.
+        expected: list[int] = []
+        for value in positions:
+            expected.append(0 if value == 0 else expected[-1] + 1)
+        assert positions == expected
+        starts = [i for i, value in enumerate(positions) if value == 0]
+        assert starts[0] == 0
+        assert batch.cu_seqlens.tolist() == starts + [len(positions)]
+        assert batch.target_mask.tolist() == [value != 0 for value in positions]

@@ -23,8 +23,10 @@ from .distributed import init_distributed
 from .trainer import build_trainer
 
 
-def _load_single_dataset(mode: str, path: str):
-    return SFTDataset(path) if mode == "sft" else PackedPretrainDataset(path)
+def _load_single_dataset(mode: str, path: str, *, full_packs: bool = False):
+    if mode == "sft":
+        return SFTDataset(path)
+    return PackedPretrainDataset(path, full_packs=full_packs)
 
 
 @dataclass
@@ -119,6 +121,9 @@ def load_dataset(
     persistent_warmup: bool = True,
 ) -> tuple[object, Callable[[], Iterator[PackedBatch]]]:
     explicit_path = path
+    # Validation sets (an explicit path) keep the packer's document-aligned
+    # grid so val_loss stays comparable across a full_packs switch.
+    train_full_packs = bool(config.data.full_packs) and explicit_path is None
     path = path or config.data.tokenized_path
     if config.data.sources and explicit_path is None:
         from ..data.mix import BatchSource, WeightedBatchMixer
@@ -129,7 +134,7 @@ def load_dataset(
         child_datasets = []
         seen_names: dict[str, int] = {}
         for spec in config.data.sources:
-            dataset = _load_single_dataset(mode, spec.path)
+            dataset = _load_single_dataset(mode, spec.path, full_packs=train_full_packs)
             child_datasets.append(dataset)
             # Log by domain: ``trainer`` records ``domain_id`` from the active
             # source so per-step routing metrics are already per-domain.
@@ -179,7 +184,7 @@ def load_dataset(
             "data.tokenized_path or data.sources is required; "
             "run `python -m minideepseek.data.prepare` first"
         )
-    dataset = _load_single_dataset(mode, path)
+    dataset = _load_single_dataset(mode, path, full_packs=train_full_packs)
     factory = _batch_factory(
         config,
         mode,

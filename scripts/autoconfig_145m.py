@@ -116,6 +116,9 @@ def main() -> int:
 
     first = plans[0]
     base.setdefault("data", {})["batch_tokens"] = first["micro"]
+    # The next-fit packer leaves 2K packs ~76% full; re-cut at load time so a
+    # step really consumes ``batch_tokens`` tokens (see D78).
+    base["data"]["full_packs"] = True
     base["data"]["batch_tokens_final"] = first["micro"]
     base.setdefault("train", {})["grad_accum"] = first["grad_accum"]
     curriculum["base_config"] = str(out_base.relative_to(ROOT))

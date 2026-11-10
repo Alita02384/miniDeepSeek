@@ -1068,3 +1068,26 @@
   3. 加 `until_step`（×1.3）：零风险，+15% 墙钟。
 - **额外发现**：`pack_domain.py` 对 `len(ids) > seq_len` 的文档是**截断**而不是切块
   （`ids = ids[:seq_len]`），所以 2K/4K/8K 三份数据是同一语料的不同截断版本。
+
+### D78. pack 填充率：loader 侧按 seq_len 重切（2026-11-11）
+
+- **问题**（D77 的落地）：`pack_domain.py` 是 next-fit，2K 阶段平均文档 1,549 token，
+  于是 2048 的 pack 只有 75.7% 满；三阶段每 step 实际 198.3k / 213.1k / 249.8k token，
+  11444 步只有 2.54B，比计划的 3B 少 15.3%。
+- **决定**：在 `PackedPretrainDataset` 上加 `full_packs`，按 `index * seq_len` 切平坦
+  流、切点处让 positions 归零；`data.full_packs` 由配置打开，**只作用于训练集**，
+  验证集保留原来的文档对齐网格，这样 val_loss 跨这次切换仍然可比。
+- **不动数据文件**：token 流一个字节都不改，磁盘零开销（当时只剩 14 GB，放不下第二份
+  15 GB 的 4K 数据）。
+- **语义**：跨切点的文档在切点处被拆开，后半段 positions 从 0 重新开始——
+  和 `tokenize_documents` 对超过 `seq_len` 的文档的处理完全一致。顺带记下
+  `pack_domain.py` 对超长文档是**截断**而不是切块，这是另一个数据问题，本次没动。
+- **验证**：
+  - `tests/test_data.py::test_full_packs_recut_without_moving_tokens`：token 流逐 id
+    相同、除最后一个 pack 外都恰好 seq_len、每段 positions 从 0 递增、`cu_seqlens`
+    与段首一致、`target_mask` 与段首一致；
+  - 真实 2K general（369M token）：`len` 239,818 → **180,177**，抽样 572 个 pack
+    结构违规 **0**，token 流逐 id 相同，单条 128 µs（每 step 约 16 ms，可忽略）；
+  - 真实配置跑一步：**202,399 → 262,144 token**（正好等于预算）。
+- **代价**：resume 时按 micro-batch 数跳过数据位置，切到新网格后会落在数据流的
+  另一个位置（2K 阶段约 47% 而不是 36%）；不影响正确性。
