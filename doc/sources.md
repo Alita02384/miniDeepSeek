@@ -137,3 +137,16 @@ sft_t2t_mini.jsonl, sft_t2t.jsonl, pretrain_t2t.jsonl}`；许可见 MiniMind 数
 - 未引入 vLLM/verl 运行时依赖；`rollout_backend=vllm` 仍是可选路径（D82 说明当前模型不可用）。
 - 数值门禁：`tests/test_cache.py` 在 fp32 CPU 上逐 token 对齐全量前向
   （max|Δ|≈2e-6）；CUDA bf16 的 4e-2 差值按 D83 处理。
+
+## 9. TitanRL 参考（2026-11-11 review）
+
+| 项目 | 结论 |
+|---|---|
+| `torchtitan/rl/`（TitanRL，BSD-3） | 已读 README、`generator/vllm/model_wrapper.py`、`registry.py`、`batch_invariance.py`、`trainer/losses/dapo.py`、`rollout/advantage.py` |
+| V4 支持 | README 明写 **"DeepSeek V4: Support coming soon"**；其 vLLM 统一模型依赖 TorchTitan 的 `V4` attention/compressor adapter，尚未实现。不能作为 vLLM rollout 的捷径。 |
+| batch invariance | `force_logprobs_fn_for_batch_invariance` 替换的是 vLLM v2 sampler 的 fused logprob kernel；我们的 rollout 是自研引擎、old logprob 由 actor 重算（D83），不适用。 |
+| 可借鉴并已落地 | `DAPOLoss` 的 **log-ratio clamp（±10）** 与可选 **asymmetric clip（clip_low/clip_high）** 已移植到 `rl/grpo.py`（不是整文件复制，只保留两条数值保护）；`AdvantageEstimator` 的 std-normalized GRPO 语义与本项目 `group_advantages` 一致。 |
+| 未采用 | Monarch/TorchStore 异步 controller、vLLM generator 服务、TorchTitan FSDP 训练栈：与项目"自包含、不 import 上游、145M 单/多卡 DDP"的约束冲突，且 V4 未支持。 |
+
+- 如果后续要在 H100 多卡上走 TitanRL 的 vLLM 路线，需要先补 V4 attention/compressor 的
+  vLLM adapter；本项目的 `rollout_backend=vllm` seam 与 HF export 可以复用。

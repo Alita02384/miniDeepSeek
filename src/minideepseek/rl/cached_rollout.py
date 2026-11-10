@@ -168,6 +168,8 @@ class CachedRolloutEngine(TorchRolloutEngine):
         logprobs: list[list[float]] = [[] for _ in range(total)]
         finished = [False] * total
         prompt_lengths = [0] * total
+        # Per-slot generation budget: never run past the cache context.
+        limits = [0] * total
 
         was_training = self.model.training
         self.model.eval()
@@ -176,11 +178,20 @@ class CachedRolloutEngine(TorchRolloutEngine):
                 for index, prompt in enumerate(prompts):
                     base = index * group_size
                     prompt_lengths[base] = len(prompt)
+                    remaining = self.max_context - len(prompt)
+                    if remaining <= 0:
+                        raise ValueError(
+                            f"rollout prompt length {len(prompt)} leaves no room "
+                            f"in context {self.max_context}"
+                        )
+                    limit = min(int(max_new_tokens), remaining)
                     logits = self.model.prefill(prompt, cache, base)
                     last = logits[-1:].expand(group_size, -1)
+                    for offset in range(group_size):
+                        prompt_lengths[base + offset] = len(prompt)
+                        limits[base + offset] = limit
                     for offset in range(1, group_size):
                         cache.copy_slot(base, base + offset)
-                        prompt_lengths[base + offset] = len(prompt)
                     first_ids, first_logprobs = _sample_tokens(
                         last.float(),
                         temperature=float(temperature),
@@ -194,7 +205,7 @@ class CachedRolloutEngine(TorchRolloutEngine):
                         token = int(first_ids[offset].item())
                         responses[slot].append(token)
                         logprobs[slot].append(float(first_logprobs[offset].item()))
-                        if token in stop or max_new_tokens <= 1:
+                        if token in stop or limits[slot] <= 1:
                             finished[slot] = True
 
                 active = [slot for slot in range(total) if not finished[slot]]
@@ -227,7 +238,7 @@ class CachedRolloutEngine(TorchRolloutEngine):
                         token = int(next_ids[row].item())
                         responses[slot].append(token)
                         logprobs[slot].append(float(next_logprobs[row].item()))
-                        if token in stop or len(responses[slot]) >= max_new_tokens:
+                        if token in stop or len(responses[slot]) >= limits[slot]:
                             finished[slot] = True
                         else:
                             still_active.append(slot)

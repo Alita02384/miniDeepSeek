@@ -1207,3 +1207,22 @@
 - **影响**：
   - 一致性门禁不再用 sampling-vs-actor 的 1e-3 阈值卡 cached 引擎；
   - 若将来做多 epoch PPO，需要在第一个 epoch 保存 old，后续 epoch 复用。
+
+### D84. RL/OPD 全程强制 torch reference attention（2026-11-11）
+
+- **问题**：`CachedRolloutEngine` 只在 rollout 的 prefill 阶段把
+  `MINIDEEPSEEK_ATTN_BACKEND` 临时切到 `torch`；rollout 返回后环境恢复，
+  GRPO 的 actor forward / OPD 的 teacher forward 又走 attn_gym。attn_gym 的
+  Triton kernel 按 `(packed layout, topk)` 特化，RL 每个 step 的 response
+  长度不同 → 每步都可能重新编译；OPD 第一次 teacher forward 直接卡在
+  `py-spy` 里看到的 `attn_gym ... make_cubin`，数分钟不出一 step。
+- **改法**：`rl/run.py` 在导入后设置
+  `os.environ.setdefault("MINIDEEPSEEK_ATTN_BACKEND", "torch")`；
+  `train_grpo.sh` / `train_opd.sh` 也默认导出；SFT/预训练仍走 attn_gym。
+- **影响**：
+  - RL/OPD 的 actor/teacher forward 变慢（reference 是 fp32 gather），但
+    没有编译悬崖，step time 可预测；GRPO 实测 actor fwd+bwd 8.9 s
+    （49k token，含 mini-batch 16）。
+  - 数值上 reference 与 cache 解码的差异仍按 D83 处理（old logprob 重算）。
+  - 若将来 RL 要走 attn_gym，需要按固定长度分桶 + 预编译，而不是按实际
+    packed 长度。

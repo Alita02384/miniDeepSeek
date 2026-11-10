@@ -19,14 +19,16 @@ schedule:
   decay: constant
   min_lr_ratio: 1.0
 data:
-  path: data/opd_prompts_mixed.jsonl
+  # 9135 prompts: 6000 general/tool + 3135 code, built by
+  # `build_opd_pool([opd_prompts_mixed, grpo_code_train], ...)`
+  path: data/opd_prompts_three.jsonl
   domain: mixed
 train:
-  steps: 50
+  steps: 20
   grad_accum: 1
   activation_checkpointing: true
   log_every: 1
-  ckpt_every: 25
+  ckpt_every: 10
   resume: checkpoints/sft_general_145m/final
   resume_step: false
   out_dir: checkpoints/opd_three_teacher_145m

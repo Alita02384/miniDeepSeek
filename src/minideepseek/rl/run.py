@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+
+# RL batches have many distinct packed lengths; the fused attn_gym kernel
+# specializes on every layout and would recompile mid-step (OPD teacher
+# forwards hung for minutes on the first step).  The torch reference is exact
+# and has no compile cliff, so make it the RL default.  SFT/pretrain keep the
+# fused path via their own configs.
+os.environ.setdefault("MINIDEEPSEEK_ATTN_BACKEND", "torch")
 
 from ..config import RLConfig, load_config
 from ..data.grpo import load_records

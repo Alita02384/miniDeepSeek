@@ -238,8 +238,17 @@ class GRPOTrainer:
             dtype=torch.float32,
             device=self.model.device,
         )
-        ratio = torch.exp(actor_logprobs - old_logprobs)
+        # Clamp the log-ratio before exp (DAPO/TitanRL): with a separate
+        # generator a stale old logprob must not overflow the ratio to inf.
+        log_ratio = (actor_logprobs - old_logprobs).clamp(-10.0, 10.0)
+        ratio = torch.exp(log_ratio)
         clip = float(self.config.rl.clip)
+        clip_low = float(
+            self.config.rl.clip_low if self.config.rl.clip_low is not None else clip
+        )
+        clip_high = float(
+            self.config.rl.clip_high if self.config.rl.clip_high is not None else clip
+        )
         if self.config.rl.loss_type == "cispo":
             clamped_ratio = torch.clamp(
                 ratio, max=float(self.config.rl.epsilon_high)
@@ -249,11 +258,11 @@ class GRPOTrainer:
             ).sum() / max(total_tokens, 1)
         else:
             unclipped = ratio * advantage_tensor
-            clipped = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantage_tensor
+            clipped = torch.clamp(ratio, 1.0 - clip_low, 1.0 + clip_high) * advantage_tensor
             policy_loss = -torch.minimum(unclipped, clipped).sum() / max(total_tokens, 1)
         with torch.no_grad():
             clip_fraction = (
-                ((ratio < 1.0 - clip) | (ratio > 1.0 + clip)).float().mean()
+                ((ratio < 1.0 - clip_low) | (ratio > 1.0 + clip_high)).float().mean()
             )
             approx_kl = (old_logprobs - actor_logprobs).mean()
             ratio_mean = ratio.mean()

@@ -1427,3 +1427,47 @@
   - 训练状态数据来自 `doc/PROCESS.md` / `doc/posttraining_plan.md`（2026-11-11），
     后续 run 推进后需要同步更新；
   - logo/banner 的 PNG 是本地 Chrome 渲染产物，不参与运行时。
+
+## 2026-11-11（后训练实跑：三领域 SFT、general GRPO 50 步、三教师 OPD smoke）
+
+- **commit**: `e25cffe` fix: GRPO 全配置 OOM（indexer 分块 + actor mini-batch + checkpointing）
+- **commit**: `9696da4` feat: tool 多轮 rollout 接 KV-cache（observation 逐 token 追加）
+- **做了什么**:
+  - 完成 SFT general/code/tool 三个 specialist（120/90/80 step，单卡 4090）；
+  - GRPO general 全量 50 step（16 prompt × group 6 × 512 token，1.8B GRM）；
+  - GRPO code/tool 各 2 step smoke；tool 走新的 `CachedToolRolloutEngine`；
+  - 三教师 OPD 2 step smoke：general=GRPO final、code/tool=SFT final；
+  - 清理磁盘：删除 hn01 上 26 GB 的 pretrain tokenization、旧中间
+    checkpoint、/tmp 下的 pytest 临时目录（11 GB）与 smoke checkpoint。
+- **实现了什么**:
+  - SFT finals 落盘：`checkpoints/sft_{general,code,tool}_145m/final`；
+  - GRPO general final：`checkpoints/grpo_general_145m/final`，reward −1.8~−2.2，
+    grad ~0.6，49k response token/step；
+  - OPD 三 teacher KL 分量非零：general 0.063 / code 0.197 / tool 0.173，
+    total 0.144；student/teacher 不同权重时 KL 路径正确；
+  - disk：数据盘 98%→29%（35 GB free），系统盘 72%→10%（27 GB free）。
+- **验证**:
+  - `pytest -q` → **300 passed / 2 skipped**；
+  - 1-step 全配置 GRPO OOM 前 → 修复后 18.6 s/step、9.0 GB 峰值；
+  - `_feed` 追加路径 fp32 与全量前向对齐 <1e-4（tests/test_cached_tool.py）。
+- **未完成 / 风险**:
+  - 三教师 OPD 只跑了 2 step smoke，未做 50 step 收敛；
+  - code/tool GRPO 只跑 smoke（reward 方差/正确率还很低，需更长 SFT 或调 reward）；
+  - tool 多轮 continuation 只在 CPU 单测/2-step smoke 验证，未做长轨迹 A/B；
+  - prefill 仍是 torch reference，未做 chunked prefill；
+  - FSDP2 + cached 未接，多卡只支持 DDP。
+
+## 2026-11-11（TitanRL review + DAPO 数值保护）
+
+- **做了什么**: 阅读 `torchtitan/rl/`（TitanRL）的 vLLM model wrapper、batch invariance、
+  DAPO/GRPO loss、advantage estimator；确认其 V4 支持仍是 "Support coming soon"，
+  不能解决 mini-145M 的 vLLM 后端问题。
+- **实现了什么**:
+  - 从 `trainer/losses/dapo.py` 借鉴两条数值保护并落到 `rl/grpo.py`：
+    `log_ratio` clamp ±10、可选 asymmetric clip（`rl.clip_low/clip_high`，默认仍
+    对称 0.2）；没有复制整文件；
+  - `AdvantageEstimator` 的 std-normalized GRPO 与本项目 `group_advantages` 一致，
+    无需改动。
+- **验证**: `pytest tests/test_grpo.py` 17 passed；ruff 通过。
+- **未完成 / 风险**: 其异步 controller/Monarch/TorchStore 与 vLLM generator 未采用；
+  V4 的 vLLM adapter 仍需上游支持或自写。

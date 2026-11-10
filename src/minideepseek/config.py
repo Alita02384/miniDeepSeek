@@ -488,6 +488,10 @@ class RLSettings(BaseConfig):
     max_new_tokens: int = 64
     temperature: float = 1.0
     clip: float = 0.2
+    #: Asymmetric PPO bounds (DAPO "clip-higher").  ``None`` keeps the symmetric
+    #: ``clip``; set e.g. 0.2/0.28 only for a clip-higher ablation.
+    clip_low: float | None = None
+    clip_high: float | None = None
     #: MiniMind supports GRPO and CISPO; default stays GRPO for existing tests.
     loss_type: str = "grpo"  # grpo | cispo
     epsilon_high: float = 5.0

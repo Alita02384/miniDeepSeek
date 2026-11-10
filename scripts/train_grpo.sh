@@ -3,6 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+export MINIDEEPSEEK_ATTN_BACKEND="${MINIDEEPSEEK_ATTN_BACKEND:-torch}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 CONFIG="${1:-configs/grpo/general.yaml}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"

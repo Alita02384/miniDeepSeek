@@ -160,8 +160,9 @@ prompt 按 `records[rank::world]` 分片。
    （把 observation token 逐个 `decode_step` 追加，再继续采样）。
 2. **prefill 仍是 torch reference**（81 ms/561 token）；chunked prefill
    可以把 prefill 也走 cache 路径，预计降到 ~10 ms。
-3. **generic prefill 的 attn_gym 不能用**：RL 的标称长度多变，Triton 会按
-   布局重编译；运行时强制 `MINIDEEPSEEK_ATTN_BACKEND=torch`。
+3. **RL/OPD 全程用 torch reference attention（D84）**：attn_gym 按 packed
+   布局重编译，OPD teacher forward 会卡在 Triton 编译；`rl/run.py` 与
+   `train_grpo.sh`/`train_opd.sh` 已默认 `MINIDEEPSEEK_ATTN_BACKEND=torch`。
 4. **FSDP2 + cached 未接**：需要 gather 一份完整权重给 rollout；当前只支持
    DDP，多卡规模上限受 24 GB 单卡限制。
 5. **OPD 的 teacher forward 仍是全量前向**；teacher 很小（145M），可接受；
@@ -182,9 +183,10 @@ prompt 按 `records[rank::world]` 分片。
 | GRPO general | ✅ `checkpoints/grpo_general_145m/final` | 50 step，49k resp tok/step，reward −1.8~−2.2，grad 0.6，18.6 s/step，9.0 GiB |
 | OPD smoke（同 teacher） | ✅ | KL 0，grad 0（同权重应然） |
 | OPD smoke（pretrain teacher） | ✅ | KL 0.315，grad 13.2（不同权重，验证 KL 路径） |
-| SFT code / tool | 🔄 | code 90 step / tool 80 step，顺序跑 |
-| GRPO code / tool | ⏳ | 依赖 code/tool SFT |
-| 三教师 OPD | ⏳ | 依赖三个 teacher final |
+| SFT code / tool | ✅ `sft_code_145m/final`、`sft_tool_145m/final` | code 90 step / tool 80 step，顺序跑 |
+| GRPO code smoke | ✅ | 2 step，reward −0.08，grad 4.0/0 |
+| GRPO tool smoke | ✅ | 2 step，reward −2.09，grad 9.0（cached tool 引擎） |
+| 三教师 OPD | ✅ smoke（2 step） | KL：general 0.063 / code 0.197 / tool 0.173；total 0.144 |
 
 ### 7.1 已知现象
 
@@ -197,3 +199,15 @@ prompt 按 `records[rank::world]` 分片。
   8.9 / opt 0.4。rollout 已不是唯一瓶颈，actor 的 reference attention 仍是
   大头；进一步提速需要 chunked prefill + 更大 query chunk + 更快的
   gather attention（H100 上可用 attn_gym/FlashAttention）。
+- 三教师 OPD smoke 的 teacher 组合：general=GRPO final，code/tool=SFT final
+  （code/tool GRPO 尚未全量跑；roadmap 允许 tool teacher 只做 SFT）。
+  KL 不是 0 说明 student/teacher 分布确实不同；下一步用全量 OPD 50 step
+  看 KL 是否单调下降。
+
+### 7.2 磁盘
+
+后训练阶段只需要 `data/sft_*.jsonl` 与 `data/tokenization/sft_*`。
+hn01 上从旧机带过来的 `pretrain_*` tokenization（26 GB）已删除；预训练
+pack 仍在 hb01。中间 checkpoint 只保留 final/base：`keep_last_ckpt` 与
+手工清理后，数据盘 35 GB free、系统盘 27 GB free。`/tmp` 下的 smoke
+checkpoint 每次 ~1 GB，测完即删。
