@@ -48,6 +48,29 @@ echo "== installing project deps"
 PIP_INDEX_URL="$INDEX" PIP_NO_CACHE_DIR=1 "$VENV/bin/pip" install -U pip
 PIP_INDEX_URL="$INDEX" PIP_NO_CACHE_DIR=1 "$VENV/bin/pip" install -e '.[dev,hf]'
 
+# With --system-site-packages pip treats the image's protobuf as already
+# satisfying `protobuf>=4`, so it never installs one; sentencepiece then ships a
+# newer gencode than the runtime it finds at import time and the reward model's
+# tokenizer dies with "gencode 7.36.1 / runtime 7.35.1".  Force a venv-local
+# protobuf so the venv copy shadows site-packages.
+echo "== pinning a venv-local protobuf"
+PIP_INDEX_URL="$INDEX" PIP_NO_CACHE_DIR=1 "$VENV/bin/pip" install --ignore-installed 'protobuf>=5'
+
+echo "== hf check"
+"$VENV/bin/python" - <<'PY'
+import einops
+import google.protobuf
+import sentencepiece
+import transformers
+
+print(
+    "transformers", transformers.__version__,
+    "| sentencepiece", sentencepiece.__version__,
+    "| protobuf", google.protobuf.__version__,
+    "| einops", einops.__version__,
+)
+PY
+
 echo "== torch check"
 "$VENV/bin/python" - <<'PY'
 import torch

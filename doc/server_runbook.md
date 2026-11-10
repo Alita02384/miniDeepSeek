@@ -106,9 +106,65 @@ reward:
   reward_model_path: internlm2-1_8b-reward
 ```
 
-把 reward model 放在代码根目录下（`internlm2-1_8b-reward`）。没有它时
+把 reward model 放在代码根目录下（`internlm2-1_8b-reward`，约 3.2 GB）。没有它时
 general GRPO 只有 shaping、没有主信号；tool 分支仍可用工具+GT reward，但
 无工具分支会退化。下载与许可按 InternLM2 官方仓库执行。
+
+### 5.1 服务器上下载（HF 连不上）
+
+服务器连不上 `huggingface.co` 和 `github.com`；`hf-mirror.com` 的小文件能拿，
+大文件会 307 到 `api/resolve-cache` 之后卡死。实测可用的只有 ModelScope 的
+repo 文件 API：
+
+```bash
+DEST=/root/rivermind-data/miniDeepSeek/internlm2-1_8b-reward
+BASE='https://www.modelscope.cn/api/v1/models/Shanghai_AI_Laboratory/internlm2-1_8b-reward/repo?Revision=master&FilePath='
+mkdir -p "$DEST" && cd "$DEST"
+: > urls.txt
+for f in config.json configuration_internlm2.py modeling_internlm2.py \
+         model.safetensors.index.json special_tokens_map.json \
+         tokenization_internlm2.py tokenization_internlm2_fast.py \
+         tokenizer.model tokenizer_config.json \
+         model-00001-of-00002.safetensors model-00002-of-00002.safetensors; do
+  printf '%s%s\n\tout=%s\n' "$BASE" "$f" "$f" >> urls.txt
+done
+aria2c -i urls.txt -x8 -s8 -j2 -c --auto-file-renaming=false
+```
+
+3.4 GB，8 连接实测约 15 MB/s（2–3 分钟；单连接只有 7 MB/s）。
+`reward_bench_results/`、`README.md`、`.gitattributes`、`configuration.json`
+训练用不到，可不下。
+
+### 5.2 校验
+
+```bash
+cd /root/rivermind-data/miniDeepSeek/internlm2-1_8b-reward
+sha256sum model-00001-of-00002.safetensors model-00002-of-00002.safetensors config.json
+# b0cbcdad5899d93dd653a4bf7fdf65e1d9668aaf61c0d5d41be1529e96b902ea  model-00001 (1,981,392,544 B)
+# 6421a9ec59b5e7b127c1b99fb80b88e5e013a9f2769a2f3000b8c99c99ad4630  model-00002 (1,417,790,344 B)
+# a50c39e11d22fb4250c2fa82724dbd59c8b2b1885fa85ca4565b4f710dc0c957  config.json
+du -sh .
+```
+
+### 5.3 依赖（`[hf]` 不够用）
+
+只装 `pip install -e '.[hf]'` 会栽两次，都是 2026-11 在 gpuhome 上实测到的：
+
+- InternLM2 的 `trust_remote_code` modeling 文件 `import einops`，`[hf]` 里原来没有，
+  报 `ImportError: This modeling file requires ... einops`；
+- venv 是 `--system-site-packages`，pip 认为镜像自带的 protobuf 7.35.1 已满足
+  `protobuf>=4` 就不装，新 sentencepiece 的 gencode 7.36.1 比它新，报
+  `VersionError: ... gencode 7.36.1 runtime 7.35.1`。
+
+`scripts/setup_env_gpu.sh` 现在把两件事都处理了（`[hf]` 带 `einops>=0.8`，脚本结尾
+`pip install --ignore-installed 'protobuf>=5'` 并 import 自检）。手工装的话：
+
+```bash
+.venv/bin/pip install -e '.[dev,hf]'
+.venv/bin/pip install --ignore-installed 'protobuf>=5'
+```
+
+### 5.4 打分自检
 
 本地如果 `~/.cache` 不可写，运行前设：
 
@@ -116,6 +172,9 @@ general GRPO 只有 shaping、没有主信号；tool 分支仍可用工具+GT re
 export HF_HOME="$PWD/.cache/huggingface"
 .venv/bin/python scripts/check_reward_model.py --path internlm2-1_8b-reward
 ```
+
+期望输出形如 `.../internlm2-1_8b-reward reward=-0.812751`（CPU fp32；fp16 会差
+~0.002）。不带 GPU 的实例上约 5 s 加载、1–2 s 打分。
 
 ## 6. reward model 资源
 

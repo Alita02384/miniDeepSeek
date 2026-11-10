@@ -1157,3 +1157,31 @@
   在 24 GB 上 OOM）不会连带丢掉前面已预热的 2K/4K，失败原因进 summary 并以非零退出；
   另加 `--max-seq-len` 用来先跳过 8K、`--fail-fast` 用于 CI。已暖的 kernel 留在缓存里，
   重跑会从中断处继续。
+
+## 2026-11-10（晚间：reward model 上服务器）
+
+- commit: fix: 奖励模型依赖补 einops + 强制 venv 内 protobuf，runbook 记录下载与校验（本条即该 commit）
+- 做了什么:
+  - 把 `internlm2-1_8b-reward`（3.2 GB，12 个文件）下到
+    `/root/rivermind-data/miniDeepSeek/internlm2-1_8b-reward`（代码根，配置里的相对
+    路径就是这个），`.gitignore` 已排除；
+  - 服务器连不上 HF/github，hf-mirror 大文件 307 到 `api/resolve-cache` 后卡死，
+    改走 ModelScope 的 repo 文件 API + aria2c 8 连接（~15 MB/s，2–3 分钟）；
+  - 修两个装不上的坑：`[hf]` 缺 `einops`（InternLM2 remote code 直接 import）；
+    `--system-site-packages` 让 pip 复用镜像 protobuf 7.35.1，新 sentencepiece
+    的 gencode 7.36.1 报 `VersionError`。
+- 实现了什么:
+  - `pip install -e '.[dev,hf]'` 现在一次到位（einops 进 extra，脚本补
+    `pip install --ignore-installed 'protobuf>=5'` 并 import 自检）；
+  - runbook §5 记录了下载命令、两个权重的 sha256、依赖坑和打分自检。
+- 验证:
+  - 服务器 /tmp 隔离 venv 跑改后的 `setup_env_gpu.sh`：transformers 4.57.6、
+    sentencepiece 0.2.3、protobuf 7.36.2、einops 0.8.2，torch 2.12.1+cu130 可见 4090；
+  - `scripts/check_reward_model.py --path internlm2-1_8b-reward --dtype float32`
+    （CPU，`CUDA_VISIBLE_DEVICES=`）→ `reward=-0.812751`，与本机 fp16 的
+    `-0.814453` 一致（精度差）；11 个文件 sha256 与本地副本逐一相同；
+  - 本地 `pytest -q` → **271 passed, 2 skipped**。
+- 未完成 / 风险:
+  - 服务器 `/opt/mds-venv` 还没重装（当时有 `prewarm_attn.py` 在跑），所以 GRPO
+    general 在服务器上仍跑不了；需要时重跑一次 `bash scripts/setup_env_gpu.sh`；
+  - RM 的 CUDA 批量打分吞吐仍未测（只在 CPU 上验证过单条打分）。

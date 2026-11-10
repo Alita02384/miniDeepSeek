@@ -21,7 +21,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
 # HF format / verl / vLLM are optional; CPU tests only need the base install.
-hf = ["transformers>=4.46,<5", "sentencepiece>=0.2", "protobuf>=4"]
+# `einops` is not used by our code: it is imported by the `trust_remote_code`
+# modeling file shipped inside `internlm2-1_8b-reward` (the GRPO reward model).
+hf = ["transformers>=4.46,<5", "sentencepiece>=0.2", "protobuf>=4", "einops>=0.8"]
 # CUDA-only rollout and RL stack.  Install explicitly on the training cluster.
 vllm = ["vllm>=0.10"]
 verl = ["verl", "vllm>=0.10"]
