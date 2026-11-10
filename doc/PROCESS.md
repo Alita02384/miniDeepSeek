@@ -1417,7 +1417,7 @@
 
 - 验证:
   - `pytest -q` → **305 passed, 2 skipped**；
-  - README 中 47 个相对链接全部存在；
+  - README 的 28 个相对路径全部存在；锚点与外部链接另行检查；
   - Mermaid 流水线用 mermaid 11 在本地渲染通过；
   - 用 GitHub Markdown API 渲染预览，检查了 hero/表格/代码块/图片路径。
 
