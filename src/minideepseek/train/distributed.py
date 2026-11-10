@@ -43,6 +43,10 @@ class DistributedContext:
     backend: str | None = None
     mesh: Any | None = None
     mode: str = "none"
+    #: True only for the context that actually created the process group.  A
+    #: curriculum runs several stages in one process and reuses the group, so
+    #: only its owner may tear it down.
+    owns_group: bool = False
 
     @property
     def is_main(self) -> bool:
@@ -76,13 +80,33 @@ class DistributedContext:
         return objects[0]
 
     def shutdown(self) -> None:
+        global _CACHED
         if self.enabled and dist.is_initialized():
             dist.destroy_process_group()
+        if _CACHED is self:
+            _CACHED = None
 
 
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     return int(value) if value not in (None, "") else default
+
+
+#: One process group per process.  The curriculum calls ``run()`` once per
+#: stage; re-initialising between stages tries to re-create the rendezvous store
+#: while the previous one is still torn down and fails with
+#: ``ncclRemoteError: ... connect ... Connection refused`` (hit at the 2K -> 4K
+#: boundary, 2026-11-11).
+_CACHED: DistributedContext | None = None
+
+
+def cached_context() -> DistributedContext | None:
+    """The live process group's context, if this process already has one."""
+    if _CACHED is None:
+        return None
+    if not (dist.is_available() and dist.is_initialized()):
+        return None
+    return _CACHED
 
 
 def init_distributed(settings: DistributedSettings, requested_device: str = "auto") -> DistributedContext:
@@ -92,10 +116,14 @@ def init_distributed(settings: DistributedSettings, requested_device: str = "aut
     keeps the plain path.  Setting ``settings.enabled`` also forces init for
     tests that use ``torch.multiprocessing``.
     """
+    global _CACHED
     world_size = _env_int("WORLD_SIZE", 1)
     rank = _env_int("RANK", 0)
     local_rank = _env_int("LOCAL_RANK", 0)
     enabled = bool(settings.enabled or world_size > 1)
+    live = cached_context()
+    if enabled and live is not None and live.world_size == world_size and live.rank == rank:
+        return live
 
     if not enabled:
         from ..config import resolve_device
@@ -142,7 +170,7 @@ def init_distributed(settings: DistributedSettings, requested_device: str = "aut
         device.type if use_cuda else "cpu", (world_size,), mesh_dim_names=("dp",)
     )
     dist.barrier()
-    return DistributedContext(
+    context = DistributedContext(
         enabled=True,
         rank=rank,
         world_size=world_size,
@@ -151,7 +179,10 @@ def init_distributed(settings: DistributedSettings, requested_device: str = "aut
         backend=backend,
         mesh=mesh,
         mode=settings.mode,
+        owns_group=True,
     )
+    _CACHED = context
+    return context
 
 
 def apply_parallelism(

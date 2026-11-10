@@ -172,3 +172,24 @@ def test_load_optimizer_state_from_single_process_checkpoint():
     assert len(restored.state) == len(optimizer.state)
     for position, values in optimizer.state.items():
         assert torch.equal(restored.state[position]["exp_avg"], values["exp_avg"])
+
+
+def test_init_distributed_reuses_a_live_process_group(monkeypatch):
+    """A curriculum runs stage after stage in one process; re-initialising the
+    group between stages fails, so the live context is handed back instead."""
+    from minideepseek.train import distributed as D
+
+    cached = D.DistributedContext(enabled=True, rank=0, world_size=2, local_rank=0)
+    monkeypatch.setattr(D, "_CACHED", cached)
+    monkeypatch.setattr(D.dist, "is_available", lambda: True)
+    monkeypatch.setattr(D.dist, "is_initialized", lambda: True)
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+
+    def explode(*args, **kwargs):
+        raise AssertionError("init_process_group must not run twice")
+
+    monkeypatch.setattr(D.dist, "init_process_group", explode)
+    context = D.init_distributed(DistributedSettings(mode="ddp"), "cpu")
+    assert context is cached

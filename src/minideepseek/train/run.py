@@ -353,7 +353,11 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
             "world_size": context.world_size,
         },
     }
-    context.shutdown()
+    # The process group outlives this stage: a curriculum calls run() once per
+    # stage in the same process, and re-initialising between stages fails
+    # (2026-11-11).  ``init_distributed`` hands back the live context and the
+    # process owns its lifetime; call ``context.shutdown()`` yourself if you
+    # really need to tear it down.
     return report
 
 
