@@ -1471,3 +1471,26 @@
 - **验证**: `pytest tests/test_grpo.py` 17 passed；ruff 通过。
 - **未完成 / 风险**: 其异步 controller/Monarch/TorchStore 与 vLLM generator 未采用；
   V4 的 vLLM adapter 仍需上游支持或自写。
+
+## 2026-11-11（OPD 20-step 实跑 + tool/OPD 合并 prefill）
+
+- **commit**: `92cee73` perf: tool/OPD 混合 batch 的 rollout 合并 prefill
+- **做了什么**:
+  - OPD 20 step（9135 条三域 prompt pool：6000 general/tool + 3135 code；
+    student=sft_general final，teacher=GRPO general / SFT code / SFT tool）；
+  - 发现 OPD 混合 batch 里 `CachedToolRolloutEngine` 对每条 plain record
+    单独 `super().rollout`，每条都重置 cache + 重捕 CUDA graph，prefill
+    占 ~40 s；改成 plain/tool 各一次批量首轮，只有 observation continuation
+    按 slot 处理，step time 降到 ~17 s。
+- **实现了什么**:
+  - OPD 20 step final：KL total mean 0.065（first 0.066 / last 0.070，
+    min 0.055 / max 0.085），general 0.041 / code 0.052 / tool 0.100；
+    grad mean 1.16 / max 3.8；8192 response token/step；
+  - `checkpoints/opd_three_teacher_145m/final` 落盘；中间 step_10/20 已清理；
+  - 磁盘：数据盘 32 GB free、系统盘 27 GB free。
+- **验证**: `tests/test_cached_tool.py` + `tests/test_opd.py` 8 passed；
+  OPD 20 step 完整跑完并保存 final。
+- **未完成 / 风险**:
+  - 20 step 的 KL 没有单调下降，不能说明收敛；lr/步数需要扫；
+  - code/tool teacher 还是 SFT（GRPO 只有 smoke），上限受 teacher 限制；
+  - prefill 仍是 reference；下一步 chunked prefill。

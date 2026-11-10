@@ -186,7 +186,8 @@ prompt 按 `records[rank::world]` 分片。
 | SFT code / tool | ✅ `sft_code_145m/final`、`sft_tool_145m/final` | code 90 step / tool 80 step，顺序跑 |
 | GRPO code smoke | ✅ | 2 step，reward −0.08，grad 4.0/0 |
 | GRPO tool smoke | ✅ | 2 step，reward −2.09，grad 9.0（cached tool 引擎） |
-| 三教师 OPD | ✅ smoke（2 step） | KL：general 0.063 / code 0.197 / tool 0.173；total 0.144 |
+| 三教师 OPD smoke | ✅（2 step） | KL：general 0.063 / code 0.197 / tool 0.173；total 0.144 |
+| 三教师 OPD 20 step | ✅ `checkpoints/opd_three_teacher_145m/final` | 9135 prompt pool；KL total mean 0.065（first 0.066 / last 0.070）；general 0.041 / code 0.052 / tool 0.100；~17 s/step |
 
 ### 7.1 已知现象
 
@@ -199,15 +200,17 @@ prompt 按 `records[rank::world]` 分片。
   8.9 / opt 0.4。rollout 已不是唯一瓶颈，actor 的 reference attention 仍是
   大头；进一步提速需要 chunked prefill + 更大 query chunk + 更快的
   gather attention（H100 上可用 attn_gym/FlashAttention）。
-- 三教师 OPD smoke 的 teacher 组合：general=GRPO final，code/tool=SFT final
+- 三教师 OPD 的 teacher 组合：general=GRPO final，code/tool=SFT final
   （code/tool GRPO 尚未全量跑；roadmap 允许 tool teacher 只做 SFT）。
-  KL 不是 0 说明 student/teacher 分布确实不同；下一步用全量 OPD 50 step
-  看 KL 是否单调下降。
+  20 step 的 KL total 在 0.055–0.085 间波动，没有单调下降；lr 5e-6、20 step
+  远不足以判断收敛，需要 200+ step 或按 KL 调 lr。tool teacher 的 KL 最大
+  （0.10），说明 SFT tool 与 student 的分布差最大。
 
 ### 7.2 磁盘
 
 后训练阶段只需要 `data/sft_*.jsonl` 与 `data/tokenization/sft_*`。
 hn01 上从旧机带过来的 `pretrain_*` tokenization（26 GB）已删除；预训练
-pack 仍在 hb01。中间 checkpoint 只保留 final/base：`keep_last_ckpt` 与
-手工清理后，数据盘 35 GB free、系统盘 27 GB free。`/tmp` 下的 smoke
-checkpoint 每次 ~1 GB，测完即删。
+pack 仍在 hb01；需要时可从 JSONL 重新生成。中间 checkpoint 只保留
+final/base：清理后数据盘 **32 GB free**、系统盘 **27 GB free**。
+`/tmp` 下的 smoke checkpoint 每次 ~1 GB，测完即删；正式 run 的
+`keep_last_ckpt` 建议保持 2。
