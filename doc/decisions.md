@@ -1137,3 +1137,30 @@
   降级成「可有可无」。正在跑的进程不会被改动生效，必须在 8K 阶段（step 8011）前重启一次。
 - **待办**：这是对已安装依赖的补丁，不是 fork。换机器/升级 attn_gym 后要重跑一次
   `python scripts/patch_attn_gym.py`；上游把 forward 也改成 `tl.range` 之后可以删掉。
+
+### D81. 145M 的多卡并行用 ddp，不用 fsdp2（2026-11-11，2×4090D 实测）
+
+- **问题**：`pretrain_145m.yaml` 一直写 `distributed.mode: fsdp2`。在 2×4090D 上
+  续训时实测 **19.1 s/step、13.7k tok/s**，和单卡 4090 的 19.2 s/step、13.7k
+  **完全一样**——加了一张卡，吞吐零增长。
+- **原因**：fsdp2 + `reshard_after_forward: true` 在每个 micro-batch 的
+  forward/backward 前都要重新 all-gather 全部参数。145.8M 参数 bf16 约 292 MB，
+  每 micro-batch 14 次 gather（7 层 × fwd/bwd），grad_accum 16 → **每步 ~65 GB**
+  集合通信；`NCCL_P2P_DISABLE=1` 只能走主机内存、且两张卡跨 NUMA（`nvidia-smi
+  topo` 是 `SYS`），实测把省下的 9.6 s 算力全吃掉还多。
+- **改法**：145M 这种规模不需要参数分片，切 `mode: ddp`——每步只做一次
+  583 MB 的梯度 all-reduce（`all_reduce_gradients`），参数全量常驻每张卡。
+- **实测**（同配置、同数据、同 checkpoint 续训，2×4090D）：
+
+  | 指标 | fsdp2 | ddp |
+  |---|---:|---:|
+  | s/step（262,144 token） | 19.12 | **8.86** |
+  | 全局 tok/s | 13,708 | **29,580** |
+  | 峰值显存/卡 | 14.5 GiB | **12.8 GiB** |
+  | 3B tokens ETA | 2.5 d | **1.3 d** |
+
+  显存反而更低：fsdp2 的 gather buffer 比参数副本更占地方。
+- **适用边界**：ddp 把参数/梯度/优化器状态全量复制，145M 在 24 GB 卡上没问题；
+  220M（216.7M 参数）能不能同样切要按显存实测决定，`full_6b.yaml` 暂留 fsdp2。
+- **验证**：`pytest tests/` 292 passed / 2 skipped；线上从 step 1068 的 checkpoint
+  续训，loss 3.71 接得上，1,070/1,080 两步均 29.6k tok/s。

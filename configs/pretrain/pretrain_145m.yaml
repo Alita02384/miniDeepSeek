@@ -76,7 +76,12 @@ train:
   # of restarting; SIGTERM/SIGINT checkpoint after the current step and exit.
   auto_resume: true
 distributed:
-  mode: fsdp2
+  # 145M is far too small to shard: FSDP2 re-all-gathers every parameter for
+  # every micro-batch (7 layers x 2 x 16 micro-batches ~ 65 GB/step over PCIe),
+  # which measured 19.1 s/step on 2x4090D -- the same as one card.  DDP pays one
+  # 583 MB all-reduce per optimizer step instead and measured 8.9 s/step
+  # (29.6k tok/s, 2.16x).  See doc/decisions.md D81.
+  mode: ddp
   param_dtype: bfloat16
   reduce_dtype: float32
   reshard_after_forward: true
