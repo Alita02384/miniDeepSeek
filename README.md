@@ -1,10 +1,11 @@
 <div align="center">
-  <img src="assets/banner.svg" alt="miniDeepSeek — 蓝色 DeepSeek 鲸鱼叼着奶嘴，右侧是 miniDeepSeek 艺术字与口号 Train your own baby DeepSeek" width="100%">
+  <img src="assets/banner.svg" alt="miniDeepSeek — 蓝色 DeepSeek 鲸鱼，右侧是 miniDeepSeek 艺术字与口号 Train your own baby DeepSeek" width="100%">
 </div>
 
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.9%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" alt="PyTorch 2.9+"></a>
+  <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><img src="https://img.shields.io/badge/ModelScope-mini--deepseek-624AFF?style=flat-square" alt="ModelScope dataset"></a>
   <a href="#五分钟先跑起来"><img src="https://img.shields.io/badge/tests-305%20passed-2EA44F?style=flat-square&logo=pytest&logoColor=white" alt="305 tests passed"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License"></a>
   <a href="#现在跑到哪了"><img src="https://img.shields.io/badge/status-research%20preview-8B5CF6?style=flat-square" alt="Research preview"></a>
@@ -49,8 +50,23 @@ dense Transformer / GPT-2 式堆叠。
   一致性门禁；每个数字都对应仓库里的命令。
 - 🧰 **一份能拆改的代码**：模型、数据、训练、RL、评估按职责分模块；想研究 MoE 路由、
   CSA/HCA、mHC、KV-cache rollout，都能单独拎出来。
+- 📦 **开箱即用的数据**：3B 语料和预训练 tokenization 已发布在
+  [ModelScope](https://modelscope.cn/datasets/Alita0429/mini-deepseek)，不用先花几个小时重新打包。
 
 ---
+
+## 数据已发布
+
+3B 语料和预训练 tokenization 已经传到 ModelScope：
+**[Alita0429/mini-deepseek](https://modelscope.cn/datasets/Alita0429/mini-deepseek)**
+
+| 文件 | 内容 |
+|---|---|
+| `packs.tar.zst` | 2K / 4K / 8K 的预训练 tokenization（train + val），约 3.4 GB 压缩，解压即用 |
+| `*.jsonl` | pretrain / SFT / GRPO / OPD / eval 的平铺数据 |
+| `SHA256SUMS` | 下载后校验 |
+
+这是本仓库现在**最省事的数据入口**：不用自己跑 3B token 的 tokenize / pack，下载解压后直接进预训练。
 
 ## 五分钟先跑起来
 
@@ -79,17 +95,32 @@ python3.12 -m venv .venv
 
 ## 想训练自己的 baby DeepSeek？
 
-**数据**：仓库不附带数据（数据与 tokenization 合计约 38 GB）。最小可跑用 MiniMind 公开数据；
-复现 3B 课程按 [`doc/data_plan_145m.md`](doc/data_plan_145m.md) 准备三个 `pretrain_*.jsonl`。
+这是训练版的 quick start：数据直接用 ModelScope 上已打包好的 tokenization，不重新 tokenize。
+
+**数据（推荐直接用已打包好的）**：3B 语料与 tokenization 已发布在
+[ModelScope](https://modelscope.cn/datasets/Alita0429/mini-deepseek)。下载 `packs.tar.zst`
+并解压到仓库根目录即可：
 
 ```bash
-# A. 最小数据：MiniMind → 平铺 JSONL（适合跑通 general/tool 流程）
-git clone https://github.com/jingyaogong/minimind.git ../minimind
-MINIMIND_ROOT=../minimind/dataset bash scripts/build_data.sh
+# 预训练 tokenization（约 3.4 GB，支持断点续传）
+curl -L --fail -C - -o packs.tar.zst \
+  https://www.modelscope.cn/datasets/Alita0429/mini-deepseek/resolve/master/packs.tar.zst
 
-# B. 3B 复现：准备好 pretrain_{general,code,tool}.jsonl 后，打包 2K/4K/8K 的 train/val packs
-bash scripts/build_pretrain_packs.sh
+# 先确认路径：应看到 data/tokenization/pretrain_*.npz
+zstd -dc packs.tar.zst | tar -tf - | head -3
+
+# 解压；在仓库根目录执行
+zstd -dc packs.tar.zst | tar -xf -
+rm packs.tar.zst
 ```
+
+解压后 `data/tokenization/` 下是 `pretrain_{general,code,tool}_{2k,4k,8k}.npz` 和对应的
+`val_*`，正好是 `train_curriculum.sh` 读取的格式。SFT / GRPO / OPD 的 JSONL 也在同一个
+数据集仓库，按需下载到 `data/` 即可。
+
+> 需要 `zstd`：macOS `brew install zstd`，Ubuntu `sudo apt install zstd`。
+> 没有 ModelScope 网络时，仍可从 MiniMind 公开数据生成最小 JSONL
+> （`MINIMIND_ROOT=../minimind/dataset bash scripts/build_data.sh`）。
 
 **预训练**：按卡数自动拆 micro-batch / grad_accum，262k token/step 不变。
 
@@ -289,6 +320,7 @@ miniDeepSeek/
 | 哪些代码来自上游、改了什么 | [`doc/sources.md`](doc/sources.md) |
 | 每个阶段的开发日志与验证命令 | [`doc/PROCESS.md`](doc/PROCESS.md) |
 | 测试策略与一致性门禁 | [`doc/testing.md`](doc/testing.md) |
+| 下载数据 / 看文件清单 | [ModelScope 数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek) |
 | 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
 | 145M 上线、迁移、packs 传输 | [`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md)、[`doc/server_runbook.md`](doc/server_runbook.md) |
 | SFT / GRPO / OPD 的后训练细节 | [`doc/posttraining_plan.md`](doc/posttraining_plan.md) |
@@ -315,7 +347,7 @@ Tokenizer 与基础数据来自 MiniMind；外部语料各自带有 license，�
 代码以 [MIT License](LICENSE) 发布。数据、tokenizer 与第三方模型的 license 独立于代码，
 使用前请阅读对应的 manifest 与数据说明。
 
-> DeepSeek 名称与蓝鲸标识归 DeepSeek 所有。README 里的“奶嘴鲸鱼”是对其的非官方致敬，
+> DeepSeek 名称与蓝鲸标识归 DeepSeek 所有。README 里的蓝鲸标识是对其的非官方致敬，
 > 不代表 DeepSeek 官方；标识字体为 Fredoka / DM Serif Display（SIL OFL），已转为路径，
 > 详见 [`assets/README.md`](assets/README.md)。
 
