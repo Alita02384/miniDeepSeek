@@ -1091,3 +1091,25 @@
   - 真实配置跑一步：**202,399 → 262,144 token**（正好等于预算）。
 - **代价**：resume 时按 micro-batch 数跳过数据位置，切到新网格后会落在数据流的
   另一个位置（2K 阶段约 47% 而不是 36%）；不影响正确性。
+
+### D79. curriculum 的 validation 从来没跑过：`_val_factory` 只认 `val_path`
+
+- **现象**：三个 run 目录的 `metrics.jsonl` 里一条 `val_loss` 都没有。680 步、约 1.7 亿
+  token 的训练没有任何验证信号。
+- **根因**：`Trainer._val_factory` 只从 `val_batches` 构建，而 `run()` 只在
+  `train.val_path` 存在时才填 `val_batches`。curriculum 用的是 `train.val_sources`
+  （每域一个文件），于是 `_val_factory is None`，`train.val_every` 那个条件
+  （`... and self._val_factory is not None`）永远不成立，连后面的逐域 eval 也一起跳过。
+- **决定**：`run()` 在 `val_path` 缺省时用 `_interleave_sources(val_sources)` 造一个
+  聚合流。必须**轮转**而不是拼接：`evaluate` 只取 `val_steps` 个 batch，拼接的话 10 个
+  batch 全是第一个域。
+- **验证**：
+  - 新单测 `tests/test_val_plumbing.py`：轮转顺序/可重复性；只有 `val_sources` 时
+    `_val_factory` 非空、两步训练各写一条 `val_loss`、`val_tokens > 0`、eval 后
+    恢复 train 模式；
+  - 真实 curriculum 配置：三个 val 集各 100 万 token 都能加载，10 个 batch 轮转后
+    65,387 token（覆盖三个域）；
+  - `pytest tests/test_trainer.py tests/test_curriculum.py tests/test_data.py
+    tests/test_val_plumbing.py` → **61 passed**。
+- **代价**：每次验证多花约 265k token（聚合 65k + 三个域各 65k），约一个训练 step
+  的量，每 200 步一次（~1 小时），可以忽略。

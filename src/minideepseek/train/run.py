@@ -224,6 +224,31 @@ def _validate_dataset(dataset, tokenizer, config: TrainConfig, *, label: str) ->
         )
 
 
+def _interleave_sources(
+    sources: dict[str, Callable[[], Iterator[PackedBatch]]],
+) -> Callable[[], Iterator[PackedBatch]]:
+    """Round-robin the per-domain validation sets into one stream.
+
+    ``Trainer.evaluate`` stops after ``train.val_steps`` batches, so a plain
+    concatenation would only ever look at the first domain.  Each call rebuilds
+    the iterators, which keeps every evaluation on the same deterministic
+    prefix (the val factories use ``persistent_warmup=False``).
+    """
+    order = list(sources.values())
+
+    def factory() -> Iterator[PackedBatch]:
+        iterators = [iter(source()) for source in order]
+        live = list(range(len(iterators)))
+        while live:
+            for index in list(live):
+                try:
+                    yield next(iterators[index])
+                except StopIteration:
+                    live.remove(index)
+
+    return factory
+
+
 def run(config: TrainConfig, mode: str = "pretrain") -> dict:
     tokenizer = load_tokenizer(vocab_limit=config.model.vocab_limit)
     context = init_distributed(config.distributed, config.model.device)
@@ -259,6 +284,12 @@ def run(config: TrainConfig, mode: str = "pretrain") -> dict:
         )
         _validate_dataset(val_source, tokenizer, config, label=f"val[{spec.domain}]")
         val_sources[spec.domain] = val_factory
+    if val_batches is None and val_sources:
+        # ``train.val_path`` is the single-set form; a curriculum only declares
+        # ``train.val_sources``.  Without a fallback the trainer builds no
+        # ``_val_factory`` and ``train.val_every`` silently does nothing, so the
+        # whole run gets no validation signal.
+        val_batches = _interleave_sources(val_sources)
     trainer, model = build_trainer(
         config,
         batches,
