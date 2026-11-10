@@ -124,3 +124,16 @@ sft_t2t_mini.jsonl, sft_t2t.jsonl, pretrain_t2t.jsonl}`；许可见 MiniMind 数
 
 - `MINIDEEPSEEK_ATTN_BACKEND=auto|torch|attn_gym` 控制后端；`auto` 在 CUDA 且有 attn_gym 时启用 fused。
 - 未复制任何 attn_gym 源码；`pyproject.toml` 的 `kernels` extra 只是可选依赖。
+
+## 8. 增量 decode / compressor 状态机（2026-11-11）
+
+| 本项目 | 来源 | 改动 |
+|---|---|---|
+| `src/minideepseek/model/compressor.py::project_tokens/capture_state/decode_step` | `DeepSeek-V4-Flash/inference/model.py` 的 `Compressor.forward`/`kv_state`/`score_state`（MIT） | 只移植**状态布局与 overlap 语义**：`[2R, 2D]` 状态、完成 block 时 `cat([state[:R,:D], state[R:,D:]])` 加权、完成后左移。改成批处理接口（`[B, ...]`），并接到本项目的 `Compressor`/`Indexer` 参数命名。 |
+| `src/minideepseek/model/cache.py` | 本项目原创 | slot 寻址的 ring KV + compressed KV + indexer K；`copy_slot` 做 group 分叉。布局参考 official `inference/model.py` 的 `kv_cache`/`kv_state`，未复制代码。 |
+| `src/minideepseek/model/attention.py::DeepSeekV4Attention.decode`、`model.py::decode` | 本项目原创 | 与训练前向同一套投影/RoPE/mHC/MoE；attention 用 local window + top-k compressed + sink 的显式实现。 |
+| `src/minideepseek/rl/cached_rollout.py`、`graph_decode.py` | 本项目原创 | 批量 prefill、group 分叉、活跃 slot 压缩、CUDA graph 分桶。设计参考 verl 的 rollout/weight-sync 分层与 vLLM 的 paged decode 思路，但**不 import、不复制**二者代码。 |
+
+- 未引入 vLLM/verl 运行时依赖；`rollout_backend=vllm` 仍是可选路径（D82 说明当前模型不可用）。
+- 数值门禁：`tests/test_cache.py` 在 fp32 CPU 上逐 token 对齐全量前向
+  （max|Δ|≈2e-6）；CUDA bf16 的 4e-2 差值按 D83 处理。

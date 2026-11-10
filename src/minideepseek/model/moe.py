@@ -220,7 +220,6 @@ class RoutedExperts(nn.Module):
         evaluate every expert on every token and mask by membership: at most a
         few dozen tokens, so the extra FLOPs are cheaper than the sync.
         """
-        tokens = x.shape[0]
         hidden_dim = self.hidden_dim
         out = None
         for expert in range(self.num_experts):

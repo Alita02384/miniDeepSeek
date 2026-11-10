@@ -324,8 +324,15 @@ class Indexer(nn.Module):
         ratio: int,
         cu_seqlens: torch.Tensor,
         return_scores: bool,
+        query_chunk: int = 512,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Reference Lightning-Indexer selection (no fused kernel dependency)."""
+        """Reference Lightning-Indexer selection (no fused kernel dependency).
+
+        Queries are processed in chunks: the naive ``[T, H, S]`` score tensor
+        is 7 GB for a 30k-token RL mini-batch (S is the compressed length), and
+        it is the OOM that first showed up when GRPO moved to 16-sample actor
+        micro-batches.  Chunking keeps the same top-k per query.
+        """
         tokens = idx_q.shape[0]
         candidates = idx_k.shape[0]
         cu_k = compressed_cu_seqlens(cu_seqlens, ratio)
@@ -333,34 +340,49 @@ class Indexer(nn.Module):
         if candidates == 0 or k == 0:
             empty = torch.full((tokens, topk), -1, dtype=torch.int32, device=idx_q.device)
             return empty, None
-        # Packed causal bounds: a query sees ceil((local_pos + 1) / ratio) entries.
-        positions = torch.arange(tokens, device=idx_q.device, dtype=torch.int32)
-        doc = torch.searchsorted(cu_seqlens[1:], positions, right=True, out_int32=True)
-        starts = cu_k[doc]
-        local = positions - cu_seqlens[doc]
-        ends = torch.minimum(cu_k[(doc + 1).clamp(max=cu_k.shape[0] - 1)], starts + (local + 1) // ratio)
-        valid = (torch.arange(candidates, device=idx_q.device)[None, :] >= starts[:, None]) & (
-            torch.arange(candidates, device=idx_q.device)[None, :] < ends[:, None]
-        )
         accum = torch.float32
-        dots = torch.einsum("thd,sd->ths", idx_q.to(accum), idx_k.to(accum))
-        scores = (torch.relu(dots) * idx_w.to(accum).unsqueeze(-1)).sum(1) * (
-            idx_q.shape[1] * idx_q.shape[2]
-        ) ** -0.5
-        scores = scores.masked_fill(~valid, float("-inf"))
-        selected = scores.topk(k, dim=-1).indices.to(torch.int32)
-        selected_valid = (selected >= starts[:, None]) & (selected < ends[:, None])
-        local_indices = torch.where(selected_valid, selected - starts[:, None], -1)
-        if k < topk:
-            local_indices = F.pad(local_indices, (0, topk - k), value=-1)
-        if not return_scores:
-            return local_indices, None
-        gather = compressed_gather_indices(local_indices, cu_seqlens, ratio)
-        selected_k = idx_k[gather]
-        logits = torch.einsum("thd,tkd->thk", idx_q, selected_k)
-        topk_scores = (torch.relu(logits) * idx_w.unsqueeze(-1)).sum(1)
-        topk_scores = topk_scores.masked_fill(local_indices < 0, -torch.inf)
-        return local_indices, topk_scores
+        idx_k_acc = idx_k.to(accum)
+        idx_w_acc = idx_w.to(accum)
+        scale = (idx_q.shape[1] * idx_q.shape[2]) ** -0.5
+        selected_out = torch.empty(tokens, topk, dtype=torch.int32, device=idx_q.device)
+        scores_out = (
+            torch.empty(tokens, topk, dtype=torch.float32, device=idx_q.device)
+            if return_scores
+            else None
+        )
+        columns = torch.arange(candidates, device=idx_q.device)
+        chunk = max(int(query_chunk), 1)
+        for start in range(0, tokens, chunk):
+            stop = min(start + chunk, tokens)
+            positions = torch.arange(start, stop, device=idx_q.device, dtype=torch.int32)
+            doc = torch.searchsorted(cu_seqlens[1:], positions, right=True, out_int32=True)
+            starts = cu_k[doc]
+            local = positions - cu_seqlens[doc]
+            ends = torch.minimum(
+                cu_k[(doc + 1).clamp(max=cu_k.shape[0] - 1)], starts + (local + 1) // ratio
+            )
+            valid = (columns[None, :] >= starts[:, None]) & (
+                columns[None, :] < ends[:, None]
+            )
+            dots = torch.einsum(
+                "qhd,sd->qhs", idx_q[start:stop].to(accum), idx_k_acc
+            )
+            scores = (torch.relu(dots) * idx_w_acc[start:stop].unsqueeze(-1)).sum(1) * scale
+            scores = scores.masked_fill(~valid, float("-inf"))
+            selected = scores.topk(k, dim=-1).indices.to(torch.int32)
+            selected_valid = (selected >= starts[:, None]) & (selected < ends[:, None])
+            local_indices = torch.where(selected_valid, selected - starts[:, None], -1)
+            if k < topk:
+                local_indices = F.pad(local_indices, (0, topk - k), value=-1)
+            selected_out[start:stop] = local_indices
+            if return_scores:
+                gather = compressed_gather_indices(local_indices, cu_seqlens, ratio)
+                selected_k = idx_k[gather]
+                logits = torch.einsum("qhd,qkd->qhk", idx_q[start:stop], selected_k)
+                topk_scores = (torch.relu(logits) * idx_w[start:stop].unsqueeze(-1)).sum(1)
+                topk_scores = topk_scores.masked_fill(local_indices < 0, -torch.inf)
+                scores_out[start:stop] = topk_scores
+        return selected_out, scores_out
 
 
 class SparseIndexerLoss(nn.Module):

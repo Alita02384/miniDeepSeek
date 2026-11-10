@@ -364,6 +364,24 @@ class OPDTrainer:
         return meta
 
 
+def _disable_indexer_aux(model: MiniDeepSeekModel) -> None:
+    """RL/OPD do not supervise the CSA indexer.
+
+    The indexer features are detached in ``Indexer.forward`` and the auxiliary
+    KL is only consumed by the pretrain/SFT loss.  Leaving it enabled in an
+    actor forward costs a chunked teacher pass and, with activation
+    checkpointing, makes the recomputed graph differ from the forward graph
+    (``CheckpointError: different metadata``).  Drop it for the whole RL model.
+    """
+    core = model._core()
+    for layer in getattr(core, "layers", {}).values():
+        attention = getattr(layer, "attention", None)
+        if attention is None:
+            continue
+        attention.indexer_aux = None
+        attention.use_indexer_aux = False
+
+
 def _validate_rl_settings(config: RLConfig) -> None:
     """Reject options that the local OPD trainer would otherwise ignore."""
     if config.rl.kl_coeff != 0:
@@ -449,7 +467,9 @@ def build_opd_trainer(
         config.model,
         device=device,
         dtype=config.model.dtype,
+        activation_checkpointing=bool(config.train.activation_checkpointing),
     )
+    _disable_indexer_aux(student)
     if context.enabled:
         student.model = apply_parallelism(
             student.model, context, config.distributed, device=device

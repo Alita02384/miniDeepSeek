@@ -35,7 +35,7 @@ data:
   domain: code
   lockstep: false
 train:
-  steps: 120
+  steps: 90
   resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
   resume_data: false
   resume_optimizer: false

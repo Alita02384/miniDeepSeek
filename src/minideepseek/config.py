@@ -508,6 +508,11 @@ class RLSettings(BaseConfig):
     log_domain_routing: bool = False
     weight_sync_check_every: int = 0
     weight_sync_threshold: float = 1e-3
+    #: Actor-forward micro-batch size in samples.  A GRPO step packs
+    #: ``prompts_per_step * group_size`` responses; forwarding all of them at
+    #: once materialises O(4 x tokens x heads x window) attention activations.
+    #: 0 means one batch (debug/small runs).
+    ppo_mini_batch_size: int = 0
     #: Recompute the behaviour-policy log-probs with the actor before the
     #: update (verl's ``compute_log_prob``).  With a separate rollout engine the
     #: sampling log-probs differ from the actor by bf16 kernel order (~1e-2);

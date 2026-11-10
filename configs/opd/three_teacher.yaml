@@ -24,6 +24,7 @@ data:
 train:
   steps: 50
   grad_accum: 1
+  activation_checkpointing: true
   log_every: 1
   ckpt_every: 25
   resume: checkpoints/sft_general_145m/final

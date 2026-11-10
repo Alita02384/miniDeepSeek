@@ -276,30 +276,46 @@ class MiniDeepSeekModel:
         per micro-batch) and wastes a third of the forward; slice the hidden
         states first.
         """
+        core = self._core()
         if positions.numel() == 0:
-            return self.model.tok_embeddings.weight.new_zeros((0, self.vocab_size))
+            return core.tok_embeddings.weight.new_zeros((0, self.vocab_size))
         if batch.input_ids.device != self.device:
             batch = batch.to(self.device)
         # FSDP2 shards ``lm_head.weight`` as a DTensor; slicing the hidden
         # states produces a plain tensor and mixing the two in F.linear is an
         # error.  Pay the full-vocabulary forward on that path only.
-        head_weight = getattr(self.model.lm_head, "weight", None)
+        head = getattr(core, "lm_head", None)
+        head_weight = getattr(head, "weight", None)
         if head_weight is not None and type(head_weight).__name__ == "DTensor":
             logits = self.full_logits(batch, temperature=temperature)
             return logits[positions.to(logits.device)]
         metadata = self.attention_metadata(batch)
-        with _autocast(self.device, self.autocast_dtype):
-            hidden = self.model(
-                batch.input_ids,
-                batch.positions,
-                metadata,
-                padding_mask=batch.padding_mask,
-                aux_loss_denominators=None,
-                use_mtp=False,
-                return_hidden=True,
-            )
-            selected = hidden[positions.to(hidden.device)]
-            logits = self.model.lm_head(selected) if self.model.lm_head is not None else selected
+        # RL/OPD never backpropagates the CSA indexer auxiliary loss; computing
+        # its teacher in every actor forward costs a chunked [T, K, D] pass for
+        # nothing.  Disable it for this forward only.
+        saved_aux = []
+        for layer in getattr(core, "layers", {}).values():
+            attention = getattr(layer, "attention", None)
+            aux = getattr(attention, "indexer_aux", None) if attention is not None else None
+            if aux is not None:
+                saved_aux.append((attention, aux))
+                attention.indexer_aux = None
+        try:
+            with _autocast(self.device, self.autocast_dtype):
+                hidden = self.model(
+                    batch.input_ids,
+                    batch.positions,
+                    metadata,
+                    padding_mask=batch.padding_mask,
+                    aux_loss_denominators=None,
+                    use_mtp=False,
+                    return_hidden=True,
+                )
+                selected = hidden[positions.to(hidden.device)]
+                logits = head(selected) if head is not None else selected
+        finally:
+            for attention, aux in saved_aux:
+                attention.indexer_aux = aux
         return logits if temperature == 1.0 else logits / temperature
 
     def response_logprobs(

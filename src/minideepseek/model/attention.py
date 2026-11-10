@@ -49,7 +49,7 @@ def _gather_attention_reference(
     sliding_window_size: int,
     *,
     scale: float,
-    query_chunk: int = 128,
+    query_chunk: int = 512,
 ):
     """Packed gather attention: local sliding window + selected compressed KV.
 

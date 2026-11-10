@@ -101,9 +101,17 @@ decode（bf16 bmm/不同 batch 形状）与 actor 全量前向的 logprob 差约
 | rollout（16 prompt × group 4 × 32 token） | 1.4–1.5 s | 含 16 次 prefill；≈1.4k tok/s |
 | 峰值显存 | 1.45 GB（rollout 64 slot） | cache + 145M |
 | SFT 峰值显存 | 12.7 GB | micro 8192、seq 4096 |
+| GRPO step（16 prompt × group 6 × 512 token） | **18.6 s** | rollout 6.3 / reward 3.1 / actor fwd+bwd 8.9 / opt 0.4 |
+| GRPO 峰值显存 | 9.0 GB | actor mini-batch 16、activation checkpointing、1.8B RM 同驻 |
 
-> 注：rollout 的端到端数字被 prefill 拖累（16×81 ms）；decode 本身已是
+> 注 1：rollout 的端到端数字被 prefill 拖累（16×81 ms）；decode 本身已是
 > 12k tok/s 量级。下一步是 chunked prefill（把 prefill 也走 cache 路径）。
+>
+> 注 2：GRPO 第一次跑全配置时 OOM，根因是 `Indexer.select` 的
+> `[T, H, S]` 分数张量（49k × 8 × ~12k ≈ 7 GB）与无 checkpoint 的 actor
+> 反传。修法：indexer 按 query chunk 512 分块；actor 按 16 sample
+> mini-batch 反传（`rl.ppo_mini_batch_size`）；`train.activation_checkpointing=true`；
+> RL 模型永久关闭 indexer aux loss（本来就不反传，且会让 checkpoint 重算图不一致）。
 
 ---
 

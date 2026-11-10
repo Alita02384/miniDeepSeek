@@ -157,11 +157,11 @@ class GRPOTrainer:
     def _flatten(self, groups: list[RolloutGroup]) -> list[RolloutSample]:
         return [sample for group in groups for sample in group.samples]
 
-    def compute_loss(
+    def _flatten_advantages(
         self,
         groups: list[RolloutGroup],
         rewards: list[list[RewardResult]],
-    ) -> tuple[Tensor, GRPOStepStats]:
+    ) -> tuple[list[RolloutSample], list[float], list[float]]:
         flat_samples = self._flatten(groups)
         flat_rewards = [result.total for group in rewards for result in group]
         advantages: list[float] = []
@@ -169,7 +169,21 @@ class GRPOTrainer:
             advantages.extend(group_advantages([result.total for result in group_rewards]))
         if len(advantages) != len(flat_samples):
             raise RuntimeError("advantage/sample accounting mismatch")
+        return flat_samples, advantages, flat_rewards
 
+    def _loss_chunk(
+        self,
+        flat_samples: Sequence[RolloutSample],
+        advantages: Sequence[float],
+        *,
+        total_tokens: int,
+    ) -> tuple[Tensor, GRPOStepStats]:
+        """Loss on one actor micro-batch, normalised by the *global* token count.
+
+        Dividing by ``total_tokens`` (not the chunk's own count) makes the
+        per-chunk backward sum exactly equal to the full-batch mean, which is
+        what mini-batching needs.
+        """
         batch, response_mask = self.engine.build_batch(flat_samples, self.model.device)
         length = sum(sample.num_loss_tokens for sample in flat_samples)
         if length == 0:
@@ -203,11 +217,6 @@ class GRPOTrainer:
             )
             routing_stats = {}
         if self.config.rl.recompute_old_logprobs:
-            # Behaviour policy = the actor at this step.  The sampled log-probs
-            # came from the decode engine (different bf16 kernel order), so
-            # using them as the denominator would leave a ~1e-2 systematic
-            # bias in every ratio.  One forward at the current weights gives
-            # the exact on-policy denominator.
             old_logprobs = actor_logprobs.detach()
         else:
             old_logprobs = torch.tensor(
@@ -232,36 +241,48 @@ class GRPOTrainer:
         ratio = torch.exp(actor_logprobs - old_logprobs)
         clip = float(self.config.rl.clip)
         if self.config.rl.loss_type == "cispo":
-            # MiniMind's CISPO: keep the gradient path through log-prob even
-            # when the importance ratio is clamped from above.
             clamped_ratio = torch.clamp(
                 ratio, max=float(self.config.rl.epsilon_high)
             ).detach()
             policy_loss = -(
                 clamped_ratio * advantage_tensor * actor_logprobs
-            ).sum() / max(length, 1)
+            ).sum() / max(total_tokens, 1)
         else:
             unclipped = ratio * advantage_tensor
             clipped = torch.clamp(ratio, 1.0 - clip, 1.0 + clip) * advantage_tensor
-            policy_loss = -torch.minimum(unclipped, clipped).sum() / max(length, 1)
+            policy_loss = -torch.minimum(unclipped, clipped).sum() / max(total_tokens, 1)
         with torch.no_grad():
             clip_fraction = (
                 ((ratio < 1.0 - clip) | (ratio > 1.0 + clip)).float().mean()
             )
             approx_kl = (old_logprobs - actor_logprobs).mean()
+            ratio_mean = ratio.mean()
         stats = GRPOStepStats(
             loss=float(policy_loss.detach()),
-            reward_mean=sum(flat_rewards) / len(flat_rewards),
-            reward_std=_std(flat_rewards),
-            advantage_abs_mean=sum(abs(value) for value in advantages) / len(advantages),
             response_tokens=int(length),
             response_length_mean=sum(sample.response_length for sample in flat_samples)
             / len(flat_samples),
             clip_fraction=float(clip_fraction),
-            ratio_mean=float(ratio.detach().mean()),
+            ratio_mean=float(ratio_mean),
             approx_kl=float(approx_kl),
             routing=routing_stats,
         )
+        return policy_loss, stats
+
+    def compute_loss(
+        self,
+        groups: list[RolloutGroup],
+        rewards: list[list[RewardResult]],
+    ) -> tuple[Tensor, GRPOStepStats]:
+        """Full-batch loss (kept for tests and the non-batched path)."""
+        flat_samples, advantages, flat_rewards = self._flatten_advantages(groups, rewards)
+        total_tokens = sum(sample.num_loss_tokens for sample in flat_samples)
+        loss, stats = self._loss_chunk(
+            flat_samples, advantages, total_tokens=total_tokens
+        )
+        stats.reward_mean = sum(flat_rewards) / len(flat_rewards)
+        stats.reward_std = _std(flat_rewards)
+        stats.advantage_abs_mean = sum(abs(value) for value in advantages) / len(advantages)
         component_values: dict[str, list[float]] = {}
         for group in rewards:
             for result in group:
@@ -270,7 +291,34 @@ class GRPOTrainer:
         stats.components = {
             key: sum(values) / len(values) for key, values in component_values.items()
         }
-        return policy_loss, stats
+        return loss, stats
+
+    @staticmethod
+    def _merge_stats(chunks: list[GRPOStepStats]) -> GRPOStepStats:
+        total = sum(stat.response_tokens for stat in chunks)
+        if total <= 0:
+            raise RuntimeError("no response tokens in GRPO step")
+
+        def weighted(attribute: str) -> float:
+            return sum(
+                getattr(stat, attribute) * stat.response_tokens for stat in chunks
+            ) / total
+
+        routing: dict[str, float] = {}
+        for stat in chunks:
+            for key, value in stat.routing.items():
+                routing[key] = routing.get(key, 0.0) + value * stat.response_tokens
+        routing = {key: value / total for key, value in routing.items()}
+        lengths = sum(stat.response_length_mean * stat.response_tokens for stat in chunks)
+        return GRPOStepStats(
+            loss=sum(stat.loss for stat in chunks),
+            response_tokens=int(total),
+            response_length_mean=lengths / total,
+            clip_fraction=weighted("clip_fraction"),
+            ratio_mean=weighted("ratio_mean"),
+            approx_kl=weighted("approx_kl"),
+            routing=routing,
+        )
 
     def _update_expert_biases(self) -> None:
         # RL also increments the router usage counters in the actor/student
@@ -312,11 +360,40 @@ class GRPOTrainer:
                     f"rollout/actor weight-sync logprob mismatch: {sync_diff:.3e} "
                     f"> {self.config.rl.weight_sync_threshold:.1e}"
                 )
-        loss, stats = self.compute_loss(groups, rewards)
+        flat_samples, advantages, flat_rewards = self._flatten_advantages(groups, rewards)
+        total_tokens = sum(sample.num_loss_tokens for sample in flat_samples)
+        if total_tokens == 0:
+            raise RuntimeError("all sampled responses are empty")
+        mini = int(self.config.rl.ppo_mini_batch_size)
+        if mini <= 0 or mini >= len(flat_samples):
+            chunks = [(flat_samples, advantages)]
+        else:
+            chunks = [
+                (flat_samples[start : start + mini], advantages[start : start + mini])
+                for start in range(0, len(flat_samples), mini)
+            ]
+        chunk_stats: list[GRPOStepStats] = []
+        for chunk_samples, chunk_advantages in chunks:
+            loss, chunk_stat = self._loss_chunk(
+                chunk_samples, chunk_advantages, total_tokens=total_tokens
+            )
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"non-finite GRPO loss at step {self.step_index}")
+            loss.backward()
+            chunk_stats.append(chunk_stat)
+        stats = self._merge_stats(chunk_stats)
+        stats.reward_mean = sum(flat_rewards) / len(flat_rewards)
+        stats.reward_std = _std(flat_rewards)
+        stats.advantage_abs_mean = sum(abs(value) for value in advantages) / len(advantages)
+        component_values: dict[str, list[float]] = {}
+        for group in rewards:
+            for result in group:
+                for key, value in result.components.items():
+                    component_values.setdefault(key, []).append(float(value))
+        stats.components = {
+            key: sum(values) / len(values) for key, values in component_values.items()
+        }
         stats.weight_sync_logprob_diff = sync_diff
-        if not torch.isfinite(loss):
-            raise RuntimeError(f"non-finite GRPO loss at step {self.step_index}")
-        loss.backward()
         if self.dist.enabled and self.dist.mode == "ddp":
             all_reduce_gradients(self.model.model, self.dist.world_size)
         stats.grad_norm = float(
@@ -448,7 +525,9 @@ def build_grpo_trainer(
         config.model,
         device=device,
         dtype=config.model.dtype,
+        activation_checkpointing=bool(config.train.activation_checkpointing),
     )
+    _disable_indexer_aux(model)
     if context.enabled:
         model.model = apply_parallelism(
             model.model, context, config.distributed, device=device
@@ -494,6 +573,24 @@ def build_grpo_trainer(
         # refresh it after the resume load.
         trainer.engine.sync_weights(model.state_dict())
     return trainer, model
+
+
+def _disable_indexer_aux(model: MiniDeepSeekModel) -> None:
+    """RL/OPD do not supervise the CSA indexer.
+
+    The indexer features are detached in ``Indexer.forward`` and the auxiliary
+    KL is only consumed by the pretrain/SFT loss.  Leaving it enabled in an
+    actor forward costs a chunked teacher pass and, with activation
+    checkpointing, makes the recomputed graph differ from the forward graph
+    (``CheckpointError: different metadata``).  Drop it for the whole RL model.
+    """
+    core = model._core()
+    for layer in getattr(core, "layers", {}).values():
+        attention = getattr(layer, "attention", None)
+        if attention is None:
+            continue
+        attention.indexer_aux = None
+        attention.use_indexer_aux = False
 
 
 def _validate_rl_settings(config: RLConfig) -> None:

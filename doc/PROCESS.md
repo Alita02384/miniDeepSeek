@@ -1356,3 +1356,43 @@
   - 老机 hn01 已关机（用户操作），代码以 GitHub 为准；单卡那份
     `checkpoints/curriculum_145m_3b/stage_00_seq2048` 已随新机的续训接上；
   - `mem_allocated_mb` 是"取数时刻"的分配量（优化器步之后），会偏低，看 `mem_peak_mb`。
+
+## 2026-11-11（后训练：vLLM 核查、KV-cache rollout、CUDA graph、SFT 启动）
+
+- **commit**: `e17bcce` feat: KV-cache 增量 rollout 引擎（prefill/decode/fork/批量）
+- **commit**: `2d2453c` feat: KV-cache rollout 上 CUDA graph，并接好后训练训练侧
+- **做了什么**:
+  - 核查 vLLM 0.33 的 DeepSeek-V4 实现：仅 FlashMLA（SM90，`head_dim_v=512`）
+    与 FlashInfer（SM100/120）；4090 是 SM89、模型 `head_dim=64`，无法服务
+    （D82）。保留 `rollout_backend` seam，vLLM 仍是可选 extra；
+  - 自研 slot 寻址 KV cache：`model/cache.py`；compressor/indexer 增量状态机
+    按 official `DeepSeek-V4-Flash/inference/model.py` 的 `kv_state` 语义移植；
+    attention/model/wrapper 支持 prefill 写 cache、单 token decode；
+  - `rl/cached_rollout.py`：批量 prefill、group fork、活跃 slot 压缩解码；
+  - `rl/graph_decode.py`：分桶 CUDA graph，padding 行走 scratch slot；
+  - decode 热路径去 host sync（MoE 静态 dense 分支、静态 top-k、vectorized
+    comp/indexer 写入），`einsum`→`bmm`；
+  - GRPO old logprob 改由 actor 重算（D83）；`MiniDeepSeekModel.logits_at`
+    只算 response 位置的 LM head；
+  - 145M 的 SFT/GRPO/OPD 配置切到当前 base（step_001015）、`rollout_backend=cached`、
+    `distributed.mode=ddp`；新增 `doc/posttraining_plan.md`。
+- **实现了什么**:
+  - fp32 CPU：cache prefill/decode 与全量前向逐 token 对齐（max|Δ|≈2e-6），
+    覆盖 SWA/CSA/HCA、不同长度、多 slot、group fork；
+  - 4090 bf16：decode **eager 49 ms/step → CUDA graph 5.4 ms/step**（batch 64，
+    ≈12k tok/s）；rollout 16 prompt×group4×32 token ≈1.4 s（含 prefill）；
+  - 2 进程 CPU DDP + cached 的 GRPO/OPD smoke 通过；
+  - SFT 数据：general 50k 条 / 33.1M token（28.4M target），code 30k / 17.6M，
+    tool 8k / 5.1M；SFT general 145M 正在跑（6–7k tok/s，12.7 GiB peak）。
+- **验证**:
+  - `pytest -q` → **298 passed / 2 skipped**；`ruff check` 变更文件通过；
+  - `scripts/test_rl_distributed.py --dist-mode ddp --rollout-backend cached`
+    GRPO/OPD 均 PASS；
+  - 服务器 `bench_decode.py`：prefill 16×~561 token 4.1 s，graph decode
+    5.39 ms/step；`bench_graph.py` 1.4 s / 2048 response token（含 prefill）。
+- **未完成 / 风险**:
+  - prefill 仍是 torch reference（~81 ms/561 token），未走 chunked prefill；
+  - tool 多轮 rollout 仍回退全量重算，未接 cached continuation；
+  - FSDP2 + cached 未接（只支持 DDP）；
+  - general GRPO 的 1.8B reward model 尚未在 4090 上实测加载/显存；
+  - SFT/GRPO/OPD 的完整三领域实跑尚未完成（SFT general 进行中）。
