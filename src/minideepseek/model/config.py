@@ -50,6 +50,11 @@ class AttentionConfig:
     index_n_heads: int = 8
     index_head_dim: int = 64
     index_topk: int = 64
+    hca_topk_max: int | None = None
+    #: Longest document this layer was built for.  HCA derives its kernel top-k
+    #: from it instead of from the batch, so the TOPK constexpr (and therefore
+    #: the compiled kernel) does not change when a pack happens to be shorter.
+    max_doc_tokens: int = 4096
     norm_eps: float = 1e-6
     rope_theta: float = 10000.0
     compress_rope_theta: float = 40000.0
@@ -227,6 +232,7 @@ def _attention_config(
     layer_id: int,
     n_layers: int,
     index_topk: int,
+    hca_topk_max: int | None,
     use_indexer_aux: bool,
     indexer_loss_coeff: float,
 ) -> AttentionConfig:
@@ -243,6 +249,8 @@ def _attention_config(
         index_n_heads=settings.index_n_heads,
         index_head_dim=settings.index_head_dim,
         index_topk=index_topk,
+        hca_topk_max=settings.hca_topk_max,
+        max_doc_tokens=int(settings.seq_len),
         norm_eps=1e-6,
         rope_theta=10000.0,
         compress_rope_theta=40000.0,
@@ -291,6 +299,7 @@ def build_model_config_from_settings(settings: ModelSettings) -> ModelConfig:
                     layer_id=layer_id,
                     n_layers=settings.n_layers,
                     index_topk=topk,
+                    hca_topk_max=settings.hca_topk_max,
                     use_indexer_aux=ratio == 4 and settings.indexer_loss_coeff > 0,
                     indexer_loss_coeff=settings.indexer_loss_coeff,
                 ),
@@ -316,6 +325,7 @@ def build_model_config_from_settings(settings: ModelSettings) -> ModelConfig:
                     layer_id=layer_id,
                     n_layers=settings.n_layers + settings.n_mtp_layers,
                     index_topk=topk,
+                    hca_topk_max=settings.hca_topk_max,
                     use_indexer_aux=False,
                     indexer_loss_coeff=0.0,
                 ),

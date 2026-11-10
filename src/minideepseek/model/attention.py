@@ -272,6 +272,8 @@ class DeepSeekV4Attention(nn.Module):
         self.compress_ratio = c.compress_ratio
         self.window_size = c.window_size
         self.index_topk = c.index_topk
+        self.hca_topk_max = c.hca_topk_max
+        self.max_doc_tokens = c.max_doc_tokens
         self.norm_eps = c.norm_eps
         self.softmax_scale = c.head_dim**-0.5
         self.layer_id = c.layer_id
@@ -364,12 +366,22 @@ class DeepSeekV4Attention(nn.Module):
         if self.indexer is not None:
             self.indexer.init_weights()
 
-    def _hca_topk(self, tokens: int, cu_seqlens: torch.Tensor, n_candidates: int, device):
+    def _hca_topk(self, tokens: int, cu_seqlens: torch.Tensor, device):
         positions = torch.arange(tokens, device=device, dtype=torch.int32)
         doc = torch.searchsorted(cu_seqlens[1:], positions, right=True, out_int32=True)
         local = positions - cu_seqlens[doc]
         limit = (local + 1) // self.compress_ratio
-        width = min(n_candidates, int(limit.max().item()) if tokens else 0)
+        # Static bound, not ``limit.max()``: HCA's top-k is the kernel's TOPK
+        # constexpr, so deriving it from the batch makes every packing layout a
+        # new Triton specialization (minutes of compile *per layout*, repeatedly,
+        # mid-training) and costs a host sync per layer.  Documents shorter than
+        # the bound are masked by ``cmp < limit`` below.
+        width = -(-int(self.max_doc_tokens) // self.compress_ratio)
+        if self.hca_topk_max is not None:
+            # Kernel-side top-k is a constexpr and statically unrolled, so an
+            # uncapped 8K width (256) costs ~1 h to compile; keep the most
+            # recent entries instead (only the 8K stage is affected).
+            width = min(width, int(self.hca_topk_max))
         if width <= 0:
             return torch.empty(tokens, 0, dtype=torch.int32, device=device)
         cmp = torch.arange(width, device=device, dtype=torch.int32)
@@ -419,7 +431,7 @@ class DeepSeekV4Attention(nn.Module):
         else:
             topk_scores = None
             if cmp_k is not None:
-                topk = self._hca_topk(tokens, cu, cmp_k.shape[0], x.device)
+                topk = self._hca_topk(tokens, cu, x.device)
             else:
                 topk = torch.empty(tokens, 0, dtype=torch.int32, device=x.device)
 

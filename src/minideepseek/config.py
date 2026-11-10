@@ -254,6 +254,12 @@ class ModelSettings(BaseConfig):
     max_context: int = 16384
     # None derives ``min(2048, max(seq_len // 4, 64))`` at build time.
     index_topk: int | None = 16
+    #: Upper bound on HCA's per-query candidate count.  HCA selects *every*
+    #: compressed entry up to the current position, so at 8K (ratio 32) the
+    #: kernel gets TOPK=256 -- and attn_gym statically unrolls that loop, which
+    #: costs ~1 h to compile.  Capping keeps the most recent entries and reuses
+    #: the 4K specialization.  ``None`` keeps the uncapped behaviour.
+    hca_topk_max: int | None = None
     indexer_loss_coeff: float = 0.01
     # Runtime settings.
     device: str = "auto"

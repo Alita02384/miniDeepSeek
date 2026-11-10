@@ -40,6 +40,11 @@ max_context: 8192
 # (12.5% / 6% / 3% of the compressed sequence) and inside the kernel's design
 # envelope; see doc/decisions.md D74.
 index_topk: 64
+# HCA selects every compressed entry up to the current position, so at 8K
+# (ratio 32) its kernel top-k is 256 -> a ~1 h Triton compile (TOPK is a
+# constexpr, statically unrolled).  Capping at 128 keeps the most recent half:
+# only the 8K stage is affected, and it reuses the 4K kernel.  See D74.
+hca_topk_max: 128
 indexer_loss_coeff: 0.01
 device: auto
 dtype: bfloat16
