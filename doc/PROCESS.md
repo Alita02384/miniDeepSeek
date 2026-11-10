@@ -1153,3 +1153,7 @@
   - prewarm 的 8K 阶段按 `train.activation_checkpointing` 建模型以对齐显存，
     但 24 GB 上 8K×1 的真实峰值仍未实测；
   - bf16 fused 仍默认关闭，需要 `MINIDEEPSEEK_ATTN_BF16=1` + 单独 prewarm 一次。
+- 补充（同上一条 commit）: prewarm 改成**逐 stage 容错**——某个 stage 失败（例如 8K
+  在 24 GB 上 OOM）不会连带丢掉前面已预热的 2K/4K，失败原因进 summary 并以非零退出；
+  另加 `--max-seq-len` 用来先跳过 8K、`--fail-fast` 用于 CI。已暖的 kernel 留在缓存里，
+  重跑会从中断处继续。

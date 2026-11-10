@@ -308,6 +308,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mtp-weight", type=float, default=0.3)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--warn-seconds", type=float, default=180.0)
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=None,
+        help="skip stages longer than this (e.g. 4096 when 8K may not fit the card)",
+    )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop at the first stage that fails instead of warming the rest first",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     parser.add_argument("--json-out", default=None)
     args = parser.parse_args(argv)
@@ -317,6 +328,15 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     entries = _entries(args)
+    if args.max_seq_len is not None:
+        skipped = [
+            label for label, config in entries if int(config.model.seq_len) > args.max_seq_len
+        ]
+        for label in skipped:
+            print(f"[prewarm] {label}: skipped (seq_len > --max-seq-len={args.max_seq_len})")
+        entries = [entry for entry in entries if int(entry[1].model.seq_len) <= args.max_seq_len]
+        if not entries:
+            raise SystemExit(f"--max-seq-len={args.max_seq_len} skips every stage")
     planned = [(label, config, _documents(config, args.docs)) for label, config in entries]
     for label, config, docs in planned:
         plan = _plan(label, config, docs)
@@ -342,7 +362,17 @@ def main(argv: list[str] | None = None) -> int:
         "[prewarm] cache: " + " ".join(f"{name}={CACHE_ENV[name]}" for name in COMPILE_CACHE_ENV),
         flush=True,
     )
-    runs = [_warm(label, config, args, docs) for label, config, docs in planned]
+    runs: list[dict[str, Any]] = []
+    failed: list[tuple[str, str]] = []
+    for label, config, docs in planned:
+        try:
+            runs.append(_warm(label, config, args, docs))
+        except Exception as error:  # a failed stage must not hide the warmed ones
+            print(f"[prewarm] {label}: FAILED -- {type(error).__name__}: {error}", flush=True)
+            failed.append((label, f"{type(error).__name__}: {error}"))
+            torch.cuda.empty_cache()
+            if args.fail_fast:
+                break
 
     rows = probe.rows()
     print("\n[prewarm] first-launch cost per variant (largest first):")
@@ -353,12 +383,23 @@ def main(argv: list[str] | None = None) -> int:
         f"[prewarm] {len(rows)} variant(s), {sum(row['compile_seconds'] for row in rows):,.0f}s of compilation"
     )
 
+    if failed:
+        print("\n[prewarm] stages that did NOT warm (fix before relying on the cache):")
+        for label, message in failed:
+            print(f"  {label}: {message}")
+        print("[prewarm] note: kernels warmed by the successful stages stay cached, rerun resumes")
+
     if args.json_out:
-        payload = {"cache": dict(CACHE_ENV), "variants": rows, "runs": runs}
+        payload = {
+            "cache": dict(CACHE_ENV),
+            "variants": rows,
+            "runs": runs,
+            "failed": [{"label": label, "error": message} for label, message in failed],
+        }
         Path(args.json_out).write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

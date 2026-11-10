@@ -34,3 +34,36 @@ def test_prewarm_refuses_to_tune_on_cpu():
 
     assert completed.returncode == 2
     assert "no CUDA device" in completed.stderr
+
+
+def test_prewarm_max_seq_len_skips_longer_stages():
+    completed = _run(
+        "--flavor",
+        "mini_145m_a60m",
+        "--seq-len",
+        "2048",
+        "4096",
+        "--max-seq-len",
+        "2048",
+        "--dry-run",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "seq4096: skipped" in completed.stdout
+    assert "seq=4096" not in completed.stdout
+    assert "seq=2048" in completed.stdout
+
+
+def test_prewarm_max_seq_len_that_skips_everything_fails_loudly():
+    completed = _run(
+        "--flavor",
+        "mini_145m_a60m",
+        "--seq-len",
+        "2048",
+        "--max-seq-len",
+        "16",
+        "--dry-run",
+    )
+
+    assert completed.returncode != 0
+    assert "skips every stage" in completed.stderr
