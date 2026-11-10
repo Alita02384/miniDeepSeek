@@ -167,8 +167,12 @@ def _fused_gather_attention(
     # does not use tensor cores: the same kernel is ~50x slower than bf16 on a
     # 4090.  Cast at the kernel boundary and restore the caller's dtype; the
     # softmax/LSE stay fp32 inside the kernel, and the residual stream keeps
-    # its original precision.
-    kernel_dtype = torch.bfloat16 if query.dtype == torch.float32 else query.dtype
+    # its original precision.  Off by default: Triton's bf16 lowering for this
+    # kernel compiles for tens of minutes on a CPU-only bootstrap, so the cast
+    # is opt-in until the cache is pre-warmed (`MINIDEEPSEEK_ATTN_BF16=1`).
+    kernel_dtype = query.dtype
+    if query.dtype == torch.float32 and os.environ.get("MINIDEEPSEEK_ATTN_BF16", "0") == "1":
+        kernel_dtype = torch.bfloat16
     output_dtype = query.dtype
     query, local_kv, sparse_kv = (
         query.to(kernel_dtype),

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import os
 import types
 from dataclasses import dataclass, field
 
@@ -51,13 +52,27 @@ class RoutingRecord:
                 "all routers in a record must see the same token count; "
                 f"expected {self.num_tokens}, got {expert_ids.shape[0]} for {name}"
             )
+        # Copying to CPU inside the forward hook synchronises the stream after
+        # every router (21 times per micro-batch for 7 layers x 3 tensors) and
+        # stalls the pipeline.  Pretraining only needs the metrics, which are
+        # device-side, so keep the tensors on the GPU there; replay/compare
+        # paths still ask for the CPU copy.
+        keep_on_device = os.environ.get("MINIDEEPSEEK_ROUTING_GPU", "0") == "1"
+        if keep_on_device:
+            expert_ids = expert_ids.detach().long()
+            scores = scores.detach().float()
+            routing_map = routing_map.detach().bool()
+        else:
+            expert_ids = expert_ids.detach().to("cpu", torch.long).clone()
+            scores = scores.detach().float().to("cpu").clone()
+            routing_map = routing_map.detach().to("cpu", torch.bool).clone()
         self.layers[name] = LayerRouting(
             name=name,
             layer_id=int(getattr(module, "layer_id", -1)),
             is_hash=bool(getattr(module, "hash", False)),
-            expert_ids=expert_ids.detach().to("cpu", torch.long).clone(),
-            scores=scores.detach().float().to("cpu").clone(),
-            routing_map=routing_map.detach().to("cpu", torch.bool).clone(),
+            expert_ids=expert_ids,
+            scores=scores,
+            routing_map=routing_map,
         )
 
 
