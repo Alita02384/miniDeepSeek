@@ -64,75 +64,61 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
         top_p: float = 1.0,
         seed: int | None = None,
     ) -> list[RolloutGroup]:
-        groups: list[RolloutGroup] = []
-        for index, record in enumerate(records):
-            if not self._is_tool_record(record):
-                groups.append(
-                    super().rollout(
-                        [record],
-                        group_size=group_size,
-                        max_new_tokens=max_new_tokens,
-                        temperature=temperature,
-                        top_k=top_k,
-                        top_p=top_p,
-                        seed=None if seed is None else seed + index,
-                    )[0]
-                )
-                continue
-            groups.append(
-                self._rollout_tool_group(
-                    record,
-                    group_size=group_size,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    top_p=top_p,
-                    seed=seed,
-                )
-            )
-        return groups
+        """Batch plain records together; batch every tool record's first turn.
 
-    def _rollout_tool_group(
-        self,
-        record: GRPORecord,
-        *,
-        group_size: int,
-        max_new_tokens: int,
-        temperature: float,
-        top_k: int,
-        top_p: float,
-        seed: int | None,
-    ) -> RolloutGroup:
-        # One record -> slots 0..group_size-1.  The batched first turn fills
-        # every slot; continuations then advance the same slot.
-        base_group = super().rollout(
-            [record],
-            group_size=group_size,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            seed=seed,
-        )[0]
-        cache = self._cache
-        if cache is None:
-            raise RuntimeError("tool continuation needs the rollout cache")
-        out = RolloutGroup(record=record)
-        for slot, sample in enumerate(base_group.samples):
-            out.samples.append(
-                self._continue_tool(
-                    record,
-                    sample,
-                    slot,
-                    cache,
-                    max_new_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_k=top_k,
-                    top_p=top_p,
-                    seed=None if seed is None else seed + slot,
-                )
+        Calling ``super().rollout`` once per record would reset the cache and
+        recapture the CUDA graph per prompt (a mixed OPD batch spent ~40 s in
+        prefill alone).  The first turn of all tool records can share one
+        batched call; only the tool-observation continuations are per slot.
+        """
+        results: list[RolloutGroup | None] = [None] * len(records)
+        plain = [index for index, record in enumerate(records) if not self._is_tool_record(record)]
+        tool = [index for index, record in enumerate(records) if self._is_tool_record(record)]
+        if plain:
+            groups = super().rollout(
+                [records[index] for index in plain],
+                group_size=group_size,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                seed=seed,
             )
-        return out
+            for index, group in zip(plain, groups, strict=True):
+                results[index] = group
+        if tool:
+            tool_records = [records[index] for index in tool]
+            base_groups = super().rollout(
+                tool_records,
+                group_size=group_size,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                seed=None if seed is None else seed + 1,
+            )
+            cache = self._cache
+            if cache is None:
+                raise RuntimeError("tool continuation needs the rollout cache")
+            for local, (index, base_group) in enumerate(zip(tool, base_groups, strict=True)):
+                group = RolloutGroup(record=records[index])
+                for offset, sample in enumerate(base_group.samples):
+                    slot = local * group_size + offset
+                    group.samples.append(
+                        self._continue_tool(
+                            records[index],
+                            sample,
+                            slot,
+                            cache,
+                            max_new_tokens=max_new_tokens,
+                            temperature=temperature,
+                            top_k=top_k,
+                            top_p=top_p,
+                            seed=None if seed is None else seed + index * group_size + offset,
+                        )
+                    )
+                results[index] = group
+        return [group for group in results if group is not None]
 
     def _feed(
         self,
