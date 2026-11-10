@@ -230,6 +230,7 @@ _ROUTING_SUFFIXES = (
     "expert_load_max_over_mean_worst",
     "min_relative_load",
     "routing_entropy_normalized",
+    "routing_entropy_nats",
     "experts_used_fraction",
     "expert_usage_mean_std",
 )
@@ -240,6 +241,7 @@ def _group_metrics(layers: list[LayerRouting]) -> list[Tensor]:
     max_ratios = []
     min_ratios = []
     entropies = []
+    entropy_nats = []
     active_fracs = []
     usage_all = []
     for layer in layers:
@@ -252,7 +254,13 @@ def _group_metrics(layers: list[LayerRouting]) -> list[Tensor]:
         # least once, so ``experts_used_fraction`` sits at 1.0 forever.
         min_ratios.append((usage.min() / mean_count).reshape(()))
         entropy = -(usage * usage.clamp_min(1e-12).log()).sum()
-        entropies.append((entropy / math.log(usage.numel())).reshape(()))
+        # ``usage`` sums to 1 over E experts, so H <= log E and the ratio is in
+        # [0, 1]; clamping turns any future mis-scaling into a visible 1.0
+        # instead of silently reporting >1 (records after step ~900 of the 145M
+        # run show up to 1.87, which no valid distribution can produce).
+        normalised = (entropy / math.log(max(usage.numel(), 2))).clamp(0.0, 1.0)
+        entropies.append(normalised.reshape(()))
+        entropy_nats.append(entropy.reshape(()))
         active_fracs.append((counts > 0).float().mean().reshape(()))
         usage_all.append(usage)
     ratios = torch.stack(max_ratios)
@@ -264,6 +272,7 @@ def _group_metrics(layers: list[LayerRouting]) -> list[Tensor]:
         ratios.max(),
         torch.stack(min_ratios).mean(),
         entropy_values.mean(),
+        torch.stack(entropy_nats).mean(),
         fractions.mean(),
         usage_mean.std(unbiased=False),
     ]
@@ -295,6 +304,54 @@ def routing_metrics(record: RoutingRecord) -> dict[str, float]:
             _ROUTING_SUFFIXES, _group_metrics(layers), strict=True
         ):
             output[f"router_{label}_{suffix}"] = float(value)
+    return output
+
+
+def domain_expert_specialization(
+    counts_by_domain: dict[str, dict[str, Tensor]],
+) -> dict[str, float]:
+    """Per-domain expert concentration and divergence from the pooled load.
+
+    ``counts_by_domain[domain][layer]`` are accumulated per-expert counts for
+    that domain.  For every domain this reports:
+
+    * ``share_max`` / ``share_min`` -- mean over layers of the hottest / coldest
+      expert's share of routed slots (balanced top-2 of 6 -> 1/3 each);
+    * ``js_vs_pooled`` -- mean Jensen-Shannon divergence (nats) between the
+      domain's expert distribution and the pooled one.  0 means the domain
+      routes exactly like the average; larger means the domain pulls its own
+      experts.  This is the number that answers "did the experts specialise by
+      domain", which a whole-batch average cannot show.
+    """
+    if not counts_by_domain:
+        return {}
+    pooled: dict[str, Tensor] = {}
+    for layers in counts_by_domain.values():
+        for name, counts in layers.items():
+            pooled[name] = counts if name not in pooled else pooled[name] + counts
+    output: dict[str, float] = {}
+    for domain, layers in counts_by_domain.items():
+        maxima: list[float] = []
+        minima: list[float] = []
+        divergences: list[float] = []
+        for name, counts in layers.items():
+            total = counts.sum().clamp_min(1.0)
+            share = counts / total
+            maxima.append(float(share.max()))
+            minima.append(float(share.min()))
+            pool = pooled[name] / pooled[name].sum().clamp_min(1.0)
+            middle = (0.5 * (share + pool)).clamp_min(1e-12)
+
+            def _kl(left: Tensor, middle: Tensor = middle) -> float:
+                return float((left * (left.clamp_min(1e-12) / middle).log()).sum())
+
+            divergences.append(0.5 * _kl(share) + 0.5 * _kl(pool))
+        if not maxima:
+            continue
+        slug = str(domain).replace("/", "_").replace(" ", "_")
+        output[f"router_domain_{slug}_share_max"] = sum(maxima) / len(maxima)
+        output[f"router_domain_{slug}_share_min"] = sum(minima) / len(minima)
+        output[f"router_domain_{slug}_js_vs_pooled"] = sum(divergences) / len(divergences)
     return output
 
 

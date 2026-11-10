@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+
+import pytest
 import torch
 
 from minideepseek.config import ModelSettings, load_config
@@ -265,3 +268,23 @@ def test_routed_experts_accumulate_under_autocast():
         out = moe(x, input_ids=ids)
     assert out.shape == x.shape
     assert out.dtype == x.dtype
+
+
+def test_predictive_entropy_stats_of_known_distributions():
+    """Uniform logits give log(V) nats; a peaked distribution gives ~0."""
+    from minideepseek.model.batch import from_sequences
+    from minideepseek.model.wrapper import MiniDeepSeekModel
+
+    batch = from_sequences([[1, 2, 3, 4, 5, 6]])
+    vocab = 64
+    tokens = batch.input_ids.numel()
+    flat = torch.zeros(tokens, vocab)
+    entropy, top1 = MiniDeepSeekModel._masked_distribution_stats(flat, batch, 0)
+    assert entropy == pytest.approx(math.log(vocab), rel=1e-4)
+    assert top1 == pytest.approx(1.0 / vocab, rel=1e-4)
+
+    peaked = torch.full((tokens, vocab), -1e4)
+    peaked[:, 0] = 0.0
+    entropy, top1 = MiniDeepSeekModel._masked_distribution_stats(peaked, batch, 0)
+    assert entropy < 1e-3
+    assert top1 > 0.999

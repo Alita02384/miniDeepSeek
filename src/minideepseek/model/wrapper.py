@@ -37,6 +37,10 @@ class LossOutput:
     main_token_count: int = 0
     mtp_token_count: dict[int, int] = field(default_factory=dict)
     indexer: Tensor | None = None
+    #: Mean predictive entropy (nats) and mean top-1 probability over the main
+    #: head's target tokens; ``None`` unless ``compute_loss(entropy=True)``.
+    entropy: float | None = None
+    top1_prob: float | None = None
 
     @property
     def token_count(self) -> int:
@@ -200,11 +204,40 @@ class MiniDeepSeekModel:
         loss = F.cross_entropy(selected, targets[valid], reduction="mean")
         return loss, int(valid.sum())
 
+    @staticmethod
+    def _masked_distribution_stats(
+        logits: Tensor, batch: PackedBatch, shift: int, chunk: int = 2048
+    ) -> tuple[float, float]:
+        """Mean predictive entropy (nats) and top-1 probability of the model.
+
+        Chunked over rows: a full ``[T, vocab]`` float32 softmax is 200+ MiB at
+        8k tokens, and this runs once per optimizer step on one micro-batch.
+        """
+        targets, valid = shift_targets(batch, shift)
+        if targets.numel() == 0 or not bool(valid.any()):
+            return 0.0, 0.0
+        selected = logits[: targets.numel()][valid]
+        total_entropy = 0.0
+        total_top1 = 0.0
+        rows = 0
+        with torch.no_grad():
+            for part in selected.split(chunk):
+                part = part.float()
+                logp = F.log_softmax(part, dim=-1)
+                prob = logp.exp()
+                total_entropy += float(-(prob * logp).sum())
+                total_top1 += float(prob.max(dim=-1).values.sum())
+                rows += int(part.shape[0])
+        if not rows:
+            return 0.0, 0.0
+        return total_entropy / rows, total_top1 / rows
+
     def compute_loss(
         self,
         batch: PackedBatch,
         *,
         mtp_weight: float = 0.3,
+        entropy: bool = False,
     ) -> LossOutput:
         """Cross-entropy over the main depth plus every configured MTP depth."""
         preds = self.forward(batch)
@@ -227,6 +260,11 @@ class MiniDeepSeekModel:
             # turns that into the global per-token value; dividing by the DP
             # size here would under-weight it by another factor of world_size.
             total = total + indexer_loss
+        entropy_value = top1_value = None
+        if entropy:
+            entropy_value, top1_value = self._masked_distribution_stats(
+                preds[0], batch, 0
+            )
         return LossOutput(
             total=total,
             main=main_loss,
@@ -234,6 +272,8 @@ class MiniDeepSeekModel:
             main_token_count=main_count,
             mtp_token_count=mtp_counts,
             indexer=indexer_loss,
+            entropy=entropy_value,
+            top1_prob=top1_value,
         )
 
     # -- log-probabilities ----------------------------------------------------

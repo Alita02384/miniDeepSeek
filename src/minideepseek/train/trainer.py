@@ -44,6 +44,7 @@ from ..model.anticipatory import (
 from ..model.batch import PackedBatch
 from ..model.checkpoint import load_checkpoint, read_metadata, save_checkpoint
 from ..model.routing import (
+    domain_expert_specialization,
     layer_expert_counts,
     record_routing,
     replay_routing,
@@ -233,6 +234,8 @@ _TOKEN_WEIGHTED_KEYS = (
     "balance_loss",
     "indexer_loss",
     "ar_active",
+    "entropy",
+    "top1_prob",
 )
 
 #: Diagnostic rates/ratios that follow the same token weighting as the losses.
@@ -320,6 +323,11 @@ class Trainer:
         # ``_batches_consumed`` it does not change meaning when the GPU count
         # changes (see Trainer._consumed_data_tokens).
         self._data_tokens_global = 0
+        #: Predictive-distribution diagnostics of the last metric micro-batch.
+        self._entropy_value = 0.0
+        self._top1_value = 0.0
+        #: Per-domain accumulated expert counts, emitted every ``router_every``.
+        self._domain_routing: dict[str, dict[str, Any]] = {}
         self._val_factory: Callable[[], Iterable[PackedBatch]] | None = (
             val_batches
             if callable(val_batches)
@@ -534,6 +542,7 @@ class Trainer:
         *,
         micro_index: int = 0,
         collect_metrics: bool = True,
+        domain_name: str = "",
     ) -> StepMetrics:
         batch = batch.to(self.device)
         metrics = StepMetrics(mtp_weight=mtp_weight)
@@ -549,7 +558,9 @@ class Trainer:
                 capture_gate_scores(self.model.model) as gate_scores,
                 swiglu_monitor(self.model.model) as swiglu,
             ):
-                loss_output = self.model.compute_loss(batch, mtp_weight=mtp_weight)
+                loss_output = self.model.compute_loss(
+                    batch, mtp_weight=mtp_weight, entropy=collect_metrics
+                )
                 balance_loss = torch.zeros((), device=self.device)
                 if self.config.train.balance_loss_coeff > 0:
                     top_k = 1
@@ -603,8 +614,13 @@ class Trainer:
             if collect_metrics:
                 metrics.router = routing_metrics(routing)
                 metrics.swiglu = swiglu.as_dict()
+                self._entropy_value = float(getattr(loss_output, "entropy", None) or 0.0)
+                self._top1_value = float(getattr(loss_output, "top1_prob", None) or 0.0)
+                if domain_name:
+                    self._accumulate_domain_routing(domain_name, routing)
                 if self._router_snapshot_due():
                     metrics.router_layers = layer_expert_counts(routing)
+                    metrics.router.update(self._domain_specialization())
             return total, metrics
 
         total = None
@@ -649,6 +665,23 @@ class Trainer:
     def _router_snapshot_due(self) -> bool:
         every = int(self.config.train.router_every)
         return every > 0 and self.step % every == 0
+
+    def _accumulate_domain_routing(self, domain: str, routing) -> None:
+        """Add this micro-batch's per-expert counts to the domain's bucket."""
+        if not routing:
+            return
+        bucket = self._domain_routing.setdefault(str(domain), {})
+        for name, layer in routing.layers.items():
+            if layer.is_hash:
+                continue  # hash layers cannot specialise by construction
+            counts = layer.routing_map.sum(dim=0).float().detach()
+            bucket[name] = counts if name not in bucket else bucket[name] + counts
+
+    def _domain_specialization(self) -> dict[str, float]:
+        """Per-domain expert concentration, then start a new window."""
+        metrics = domain_expert_specialization(self._domain_routing)
+        self._domain_routing = {}
+        return metrics
 
     def _router_layer_snapshot(
         self, micro_metrics: list[StepMetrics]
@@ -704,6 +737,7 @@ class Trainer:
                         routing_record,
                         micro_index=micro,
                         collect_metrics=micro == accum - 1,
+                        domain_name=step_domain_name,
                     )
                 )
         self._tokens_seen += sum(m.tokens for m in micro_metrics)
@@ -774,6 +808,8 @@ class Trainer:
             setattr(averaged, key, value)
 
         record = averaged.as_dict()
+        record["entropy"] = self._entropy_value
+        record["top1_prob"] = self._top1_value
         record = self._globalize(record, tokens=averaged.tokens)
         self._loss_ema = (
             record["loss"]
