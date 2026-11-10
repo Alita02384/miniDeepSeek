@@ -23,8 +23,10 @@ def test_prewarm_dry_run_plans_one_entry_per_sequence_length():
     assert completed.returncode == 0, completed.stderr
     plan = [line for line in completed.stdout.splitlines() if line.startswith("[prewarm] seq")]
     assert len(plan) == 2
-    assert "seq=2048" in plan[0] and "topk=512" in plan[0]
-    assert "seq=4096" in plan[1] and "topk=1024" in plan[1]
+    # One constant top-k across stages: a single kernel specialization, and
+    # genuinely sparse CSA instead of dense-over-compressed.
+    assert "seq=2048" in plan[0] and "topk=64" in plan[0]
+    assert "seq=4096" in plan[1] and "topk=64" in plan[1]
     # 145M hybrid map: two SWA layers, three CSA (ratio 4), two HCA (ratio 32).
     assert "fused_layers=[2, 3, 4, 5, 6]" in plan[0]
 
@@ -67,3 +69,22 @@ def test_prewarm_max_seq_len_that_skips_everything_fails_loudly():
 
     assert completed.returncode != 0
     assert "skips every stage" in completed.stderr
+
+
+def test_prewarm_index_topk_expands_the_ladder():
+    completed = _run(
+        "--flavor",
+        "mini_145m_a60m",
+        "--seq-len",
+        "2048",
+        "--index-topk",
+        "256",
+        "64",
+        "--dry-run",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    plan = [line for line in completed.stdout.splitlines() if line.startswith("[prewarm] seq")]
+    assert len(plan) == 2
+    assert "topk=256" in plan[0]
+    assert "topk=64" in plan[1]

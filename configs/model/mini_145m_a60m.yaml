@@ -32,8 +32,14 @@ tie_word_embeddings: true
 n_mtp_layers: 1
 seq_len: 4096
 max_context: 8192
-# null -> min(2048, max(seq_len // 4, 64)), i.e. 1024 @4K and 2048 @8K.
-index_topk: null
+# Sparse top-k for CSA/HCA.  ``null`` would derive min(2048, seq_len // 4),
+# which at this scale equals the *whole* compressed sequence (512 @2K,
+# 1024 @4K, 2048 @8K): the sparse path degenerates to dense-over-compressed
+# and attn_gym statically unrolls the selection loop over TOPK, so every one
+# of those is also a 20+ minute compile.  64 keeps CSA genuinely sparse
+# (12.5% / 6% / 3% of the compressed sequence) and inside the kernel's design
+# envelope; see doc/decisions.md D74.
+index_topk: 64
 indexer_loss_coeff: 0.01
 device: auto
 dtype: bfloat16

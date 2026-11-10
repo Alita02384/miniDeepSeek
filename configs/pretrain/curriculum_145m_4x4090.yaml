@@ -47,14 +47,11 @@ stages:
     batch_tokens: 16384
     batch_tokens_final: 16384
     batch_warmup_ratio: 0.0
-    # Dense-over-compressed at the start (2048 = every CSA entry at 8K), then
-    # shrink linearly to the sparse top-k 64 over the first 10% of the stage
-    # (~343 steps, ~90M tokens = 3% of the run) and stay sparse for the rest.
-    # This is the 4K -> 8K indexer warmup from roadmap section 3.5; the base
-    # config's end-of-run shrink is disabled for this stage.
-    index_topk: 2048
-    index_topk_final: 64
-    index_topk_warmup_ratio: 0.10
+    # No dense-over-compressed warm-up: roadmap section 3.5 assumes the 1M-context
+    # regime where 2048 << compressed length.  At 8K the compressed sequence is
+    # 2048 entries, so "2048" means selecting everything -- no sparsity, plus a
+    # ~2 h Triton compile (TOPK is a constexpr, statically unrolled).  The stage
+    # inherits the model's sparse top-k 64 instead.  See doc/decisions.md D74.
     activation_checkpointing: true
     sources:
       - {path: data/tokenization/pretrain_general_8k.npz, weight: 0.82, domain: general}

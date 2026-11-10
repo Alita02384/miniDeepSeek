@@ -95,6 +95,21 @@ class IndexTopKSchedule:
                 f"end_step must be greater than start_step, got {self.start_step}..{self.end_step}"
             )
 
+    def _quantise(self, value: float) -> int:
+        """Snap to the power-of-two ladder between ``final`` and ``start``.
+
+        Every distinct top-k is a *new Triton specialization*: the gather
+        kernel takes ``TOPK`` as a constexpr and statically unrolls the
+        selection loop, so the compiler sees a different program per value and
+        a cold compile costs minutes (89 s for 64, 28 min for 512 on a 4090).
+        Linear interpolation hands the trainer a new integer every step, which
+        recompiles the kernel mid-run on every step of the warm-up window.
+        Snapping bounds a whole schedule to ``log2(start/final)`` specializations
+        that ``scripts/prewarm_attn.py`` can warm ahead of time.
+        """
+        snapped = 1 << max(0, int(round(math.log2(max(value, 1.0)))))
+        return min(max(snapped, self.final), self.start)
+
     def topk_at(self, step: int, total_steps: int) -> int:
         if self.start_step is not None and self.end_step is not None:
             start, end = self.start_step, self.end_step
@@ -104,7 +119,7 @@ class IndexTopKSchedule:
                 return self.final
             progress = (step - start) / (end - start)
             value = self.start + (self.final - self.start) * progress
-            return max(1, int(round(value)))
+            return self._quantise(value)
         if self.warmup_ratio <= 0 or total_steps <= 0:
             return self.start
         start_step = int(total_steps * (1.0 - self.warmup_ratio))
@@ -113,4 +128,4 @@ class IndexTopKSchedule:
         span = max(total_steps - start_step, 1)
         progress = min(max((step - start_step) / span, 0.0), 1.0)
         value = self.start + (self.final - self.start) * progress
-        return max(1, int(round(value)))
+        return self._quantise(value)

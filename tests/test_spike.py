@@ -51,11 +51,21 @@ def test_index_topk_schedule():
     assert passive.topk_at(99, 100) == 1024
 
 
+def test_index_topk_schedule_visits_a_bounded_ladder():
+    schedule = IndexTopKSchedule(start=2048, final=64, start_step=100, end_step=1100)
+    ladder = {schedule.topk_at(step, 10_000) for step in range(0, 1201)}
+
+    # Powers of two between final and start: 6 specializations, not ~1000.
+    assert ladder == {64, 128, 256, 512, 1024, 2048}
+    assert [schedule.topk_at(step, 10_000) for step in (0, 1100, 1200)] == [2048, 64, 64]
+
+
 def test_index_topk_schedule_explicit_window():
     schedule = IndexTopKSchedule(start=2048, final=64, start_step=100, end_step=200)
     assert schedule.topk_at(0, 1000) == 2048
     assert schedule.topk_at(100, 1000) == 2048
-    assert schedule.topk_at(150, 1000) == 1056
+    # Quantised to powers of two: every new top-k is a Triton specialization.
+    assert schedule.topk_at(150, 1000) == 1024
     assert schedule.topk_at(200, 1000) == 64
     assert schedule.topk_at(999, 1000) == 64
     with pytest.raises(ValueError, match="greater than start_step"):

@@ -192,6 +192,14 @@ def _entries(args: argparse.Namespace) -> list[tuple[str, TrainConfig]]:
             staged.model.seq_len = int(length)
             staged.model.max_context = max(int(staged.model.max_context), int(length))
             entries.append((f"seq{length}", staged))
+    if args.index_topk:
+        expanded: list[tuple[str, TrainConfig]] = []
+        for label, config in entries:
+            for topk in args.index_topk:
+                variant = TrainConfig.from_dict(config.to_dict())
+                variant.model.index_topk = int(topk)
+                expanded.append((f"{label}_k{topk}", variant))
+        entries = expanded
     return entries
 
 
@@ -301,6 +309,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="packs per step; defaults to data.batch_tokens / seq_len, "
         "i.e. the micro-batch the trainer will build",
+    )
+    parser.add_argument(
+        "--index-topk",
+        type=int,
+        nargs="+",
+        default=None,
+        help="warm these top-k values instead of the model's own; an active shrink "
+        "schedule visits a power-of-two ladder and each rung is its own kernel",
     )
     parser.add_argument(
         "--steps", type=int, default=1, help="measured steps after the warm-up step"
