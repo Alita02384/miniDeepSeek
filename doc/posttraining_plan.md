@@ -170,3 +170,30 @@ prompt 按 `records[rank::world]` 分片。
    单卡与 actor 同驻时峰值约 16–20 GB，需要实测。
 7. **一致性门禁**：bf16 下 rollout/actor 的 logprob 差 ~4e-2，不能按
    roadmap 的 1e-3 卡；已改为 actor 重算 old logprob + fp32 cache 单测。
+
+---
+
+## 7. 实跑状态（2026-11-11）
+
+| 阶段 | 状态 | 关键数字 |
+|---|---|---|
+| SFT data | ✅ | general 50k/33.1M tok、code 30k/17.6M、tool 8k/5.1M |
+| SFT general | ✅ `checkpoints/sft_general_145m/final` | 120 step，main loss 5.5→2.7，6–7k tok/s，12.7 GiB |
+| GRPO general | ✅ `checkpoints/grpo_general_145m/final` | 50 step，49k resp tok/step，reward −1.8~−2.2，grad 0.6，18.6 s/step，9.0 GiB |
+| OPD smoke（同 teacher） | ✅ | KL 0，grad 0（同权重应然） |
+| OPD smoke（pretrain teacher） | ✅ | KL 0.315，grad 13.2（不同权重，验证 KL 路径） |
+| SFT code / tool | 🔄 | code 90 step / tool 80 step，顺序跑 |
+| GRPO code / tool | ⏳ | 依赖 code/tool SFT |
+| 三教师 OPD | ⏳ | 依赖三个 teacher final |
+
+### 7.1 已知现象
+
+- GRPO general 的 response 全部顶到 `max_new=512`，reward 在 −2 附近；说明
+  SFT 后模型还不愿主动收尾，或者 512 太短。真实训练应把 `max_new_tokens`
+  提到 768/1024，并检查 stop token 命中率（`rollout` 已记录 `finished`）。
+- reward 的 think/length 分量很小，主项是 1.8B GRM（−2.1 左右）；group 内
+  std ~0.63，advantage 有信号。
+- 单卡 4090 上 GRPO 的 18.6 s/step 里：rollout 6.3 / RM 3.1 / actor fwd+bwd
+  8.9 / opt 0.4。rollout 已不是唯一瓶颈，actor 的 reference attention 仍是
+  大头；进一步提速需要 chunked prefill + 更大 query chunk + 更快的
+  gather attention（H100 上可用 attn_gym/FlashAttention）。

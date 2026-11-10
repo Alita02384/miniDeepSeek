@@ -493,15 +493,28 @@ def build_opd_trainer(
     from .backends import build_rollout_engine
 
     engine = build_rollout_engine(config, student, tokenizer)
-    if any(prompt.multi_turn or prompt.domain == "tool" for prompt in prompts):
-        engine = ToolRolloutEngine(
-            student,
-            tokenizer,
-            generator=getattr(engine, "generator", None),
-            max_turns=config.rl.max_turns,
-            thinking_ratio=config.rl.thinking_ratio,
-            max_tool_calls=config.rl.max_tool_calls,
-        )
+    tool_prompts = any(prompt.multi_turn or prompt.domain == "tool" for prompt in prompts)
+    if tool_prompts:
+        if config.rl.rollout_backend in {"cached", "kv"}:
+            from .cached_tool import CachedToolRolloutEngine
+
+            engine = CachedToolRolloutEngine(
+                student,
+                tokenizer,
+                max_turns=config.rl.max_turns,
+                thinking_ratio=config.rl.thinking_ratio,
+                max_tool_calls=config.rl.max_tool_calls,
+                max_context=int(config.model.seq_len),
+            )
+        else:
+            engine = ToolRolloutEngine(
+                student,
+                tokenizer,
+                generator=getattr(engine, "generator", None),
+                max_turns=config.rl.max_turns,
+                thinking_ratio=config.rl.thinking_ratio,
+                max_tool_calls=config.rl.max_tool_calls,
+            )
     trainer = OPDTrainer(
         config,
         student,

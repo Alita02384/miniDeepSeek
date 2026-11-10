@@ -1,0 +1,287 @@
+# Copyright (c) 2026 miniDeepSeek contributors.
+"""Multi-turn tool rollout on top of the KV-cache engine.
+
+``ToolRolloutEngine`` re-prefills the whole trajectory after every tool
+observation, which makes tool GRPO as slow as the old torch rollout.  This
+class keeps the per-turn cache: the first turn is batched for all group
+samples, then each sample's tool observation is appended token by token
+(``decode_step``) and generation continues from the same cache slot.
+
+The chat template is prefix-stable (asserted, as in ``ToolRolloutEngine``), so
+the appended observation tokens are exactly the tokens the next turn would see
+in a full re-render.  Observation tokens are masked out of the loss and get
+zero sampling log-prob, matching the SFT/agent convention.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from collections.abc import Sequence
+
+import torch
+
+from ..data.grpo import GRPORecord
+from ..model.wrapper import _sample_tokens
+from ..tokenizer import MiniDeepSeekTokenizer
+from .cached_rollout import CachedRolloutEngine
+from .rollout import RolloutGroup, RolloutSample
+from .tools import execute_tool, normalize_tool_args, parse_tool_calls
+
+
+class CachedToolRolloutEngine(CachedRolloutEngine):
+    """Cached single-turn path + per-slot tool continuation."""
+
+    def __init__(
+        self,
+        model,
+        tokenizer: MiniDeepSeekTokenizer,
+        *,
+        max_turns: int = 3,
+        thinking_ratio: float = 0.1,
+        max_tool_calls: int = 4,
+        **kwargs,
+    ):
+        super().__init__(model, tokenizer, thinking_ratio=thinking_ratio, **kwargs)
+        self.max_turns = max(int(max_turns), 1)
+        self.max_tool_calls = max(int(max_tool_calls), 1)
+        self.thinking_ratio = float(thinking_ratio)
+
+    def _is_tool_record(self, record: GRPORecord) -> bool:
+        return bool(record.resolved_tools()) and (
+            record.domain == "tool" or record.multi_turn
+        )
+
+    @torch.no_grad()
+    def rollout(
+        self,
+        records: Sequence,
+        *,
+        group_size: int = 4,
+        max_new_tokens: int = 32,
+        temperature: float = 1.0,
+        top_k: int = 0,
+        top_p: float = 1.0,
+        seed: int | None = None,
+    ) -> list[RolloutGroup]:
+        groups: list[RolloutGroup] = []
+        for index, record in enumerate(records):
+            if not self._is_tool_record(record):
+                groups.append(
+                    super().rollout(
+                        [record],
+                        group_size=group_size,
+                        max_new_tokens=max_new_tokens,
+                        temperature=temperature,
+                        top_k=top_k,
+                        top_p=top_p,
+                        seed=None if seed is None else seed + index,
+                    )[0]
+                )
+                continue
+            groups.append(
+                self._rollout_tool_group(
+                    record,
+                    group_size=group_size,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    seed=seed,
+                )
+            )
+        return groups
+
+    def _rollout_tool_group(
+        self,
+        record: GRPORecord,
+        *,
+        group_size: int,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        seed: int | None,
+    ) -> RolloutGroup:
+        # One record -> slots 0..group_size-1.  The batched first turn fills
+        # every slot; continuations then advance the same slot.
+        base_group = super().rollout(
+            [record],
+            group_size=group_size,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            seed=seed,
+        )[0]
+        cache = self._cache
+        if cache is None:
+            raise RuntimeError("tool continuation needs the rollout cache")
+        out = RolloutGroup(record=record)
+        for slot, sample in enumerate(base_group.samples):
+            out.samples.append(
+                self._continue_tool(
+                    record,
+                    sample,
+                    slot,
+                    cache,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    seed=None if seed is None else seed + slot,
+                )
+            )
+        return out
+
+    def _feed(
+        self,
+        cache,
+        slot: int,
+        tokens: Sequence[int],
+        *,
+        start_pos: int,
+    ):
+        device = self.model.device
+        runner = self._graph
+        logits = None
+        for offset, token in enumerate(tokens):
+            ids = torch.tensor([int(token)], dtype=torch.long, device=device)
+            positions = torch.tensor([start_pos + offset], dtype=torch.long, device=device)
+            slots = torch.tensor([slot], dtype=torch.long, device=device)
+            if runner is not None:
+                logits = runner.step(ids, positions, slots)
+            else:
+                logits = self.model.decode_step(ids, positions, cache, slots)
+        return logits
+
+    def _continue_tool(
+        self,
+        record: GRPORecord,
+        sample: RolloutSample,
+        slot: int,
+        cache,
+        *,
+        max_new_tokens: int,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        seed: int | None,
+    ) -> RolloutSample:
+        responses = list(sample.response_ids)
+        logprobs = list(sample.sampling_logprobs)
+        token_mask = [True] * len(responses)
+        messages = [dict(message) for message in record.prompt]
+        messages.append(
+            {"role": "assistant", "content": sample.response_text}
+        )
+        tool_turns: list[str] = []
+        unfinished = False
+        final_text = sample.response_text
+        if not tool_turns:
+            tool_turns.append(sample.response_text)
+        stop = set(int(t) for t in self.tokenizer.stop_token_ids)
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=self.model.device)
+            generator.manual_seed(int(seed))
+
+        for turn in range(1, self.max_turns):
+            calls = parse_tool_calls(final_text)[: self.max_tool_calls]
+            if not calls:
+                break
+            for call in calls:
+                name = str(call.get("name", ""))
+                args = normalize_tool_args(call)
+                result = execute_tool(name, args)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "content": json.dumps(
+                            result if result is not None else {"error": "tool not found"},
+                            ensure_ascii=False,
+                        )[:2048],
+                    }
+                )
+            if turn >= self.max_turns - 1:
+                unfinished = True
+                break
+            prefix = sample.prompt_ids + responses
+            observation_ids = None
+            # The first turn picked thinking/non-thinking at random; the
+            # re-render must use the same flag or the prefix shifts.  Try both
+            # and keep the one that reproduces the sampled token ids.
+            for open_thinking in (True, False):
+                full_text = self.tokenizer.render_chat(
+                    messages,
+                    add_generation_prompt=True,
+                    tools=record.resolved_tools(),
+                    open_thinking=open_thinking,
+                )
+                full_ids = self.tokenizer.encode(full_text)
+                if full_ids[: len(prefix)] == prefix:
+                    observation_ids = full_ids[len(prefix) :]
+                    break
+            if observation_ids is None:
+                raise RuntimeError(
+                    "multi-turn chat template is not prefix-stable; observation "
+                    "tokens cannot be aligned"
+                )
+            cache_len = int(cache.length[slot].item())
+            if cache_len > len(prefix):
+                raise RuntimeError(
+                    f"cache length {cache_len} exceeds rendered prefix {len(prefix)}"
+                )
+            # The stop token that ended the previous turn was sampled but not
+            # fed back; replay the missing prefix tail, then the observation.
+            tokens_to_feed = prefix[cache_len:] + observation_ids
+            logits = self._feed(
+                cache,
+                slot,
+                tokens_to_feed,
+                start_pos=cache_len,
+            )
+            responses.extend(observation_ids)
+            logprobs.extend([0.0] * len(observation_ids))
+            token_mask.extend([False] * len(observation_ids))
+
+            new_tokens: list[int] = []
+            new_logprobs: list[float] = []
+            for step in range(max_new_tokens):
+                next_ids, next_logprobs = _sample_tokens(
+                    logits.float(),
+                    temperature=float(temperature),
+                    top_k=int(top_k),
+                    top_p=float(top_p),
+                    greedy=False,
+                    generator=generator,
+                )
+                token = int(next_ids[0].item())
+                new_tokens.append(token)
+                new_logprobs.append(float(next_logprobs[0].item()))
+                if token in stop:
+                    break
+                if step + 1 < max_new_tokens:
+                    new_len = int(cache.length[slot].item())
+                    logits = self._feed(cache, slot, [token], start_pos=new_len)
+            responses.extend(new_tokens)
+            logprobs.extend(new_logprobs)
+            token_mask.extend([True] * len(new_tokens))
+            final_text = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+            tool_turns.append(final_text)
+            messages.append({"role": "assistant", "content": final_text})
+
+        record_copy = dataclasses.replace(
+            record,
+            rubric={**record.rubric, "tool_turns": tool_turns, "unfinished": unfinished},
+        )
+        return RolloutSample(
+            prompt_ids=list(sample.prompt_ids),
+            response_ids=responses,
+            sampling_logprobs=logprobs,
+            temperature=float(temperature),
+            record=record_copy,
+            prompt_text=sample.prompt_text,
+            response_text=final_text,
+            token_mask=token_mask,
+        )

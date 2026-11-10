@@ -51,13 +51,17 @@ teachers:
     weight: 0.3333333333
   - name: tool_teacher
     key: tool
-    checkpoint: checkpoints/grpo_tool_145m/final
+    # Tool GRPO is gated on cached multi-turn rollout; SFT is the teacher for
+    # the first OPD pass (roadmap allows a non-GRPO teacher per domain).
+    checkpoint: checkpoints/sft_tool_145m/final
     flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333333
   - name: code_teacher
     key: code
-    checkpoint: checkpoints/grpo_code_145m/final
+    # First OPD pass uses the SFT specialist; switch to grpo_code_145m/final
+    # once code GRPO has run and passed its reward gate.
+    checkpoint: checkpoints/sft_code_145m/final
     flavor: mini_145m_a60m
     seq_len: 4096
     weight: 0.3333333334

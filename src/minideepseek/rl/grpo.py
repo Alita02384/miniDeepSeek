@@ -546,15 +546,30 @@ def build_grpo_trainer(
     from .backends import build_rollout_engine
 
     engine = build_rollout_engine(config, model, tokenizer)
-    if any(record.multi_turn and record.domain == "tool" for record in records):
-        engine = ToolRolloutEngine(
-            model,
-            tokenizer,
-            generator=getattr(engine, "generator", None),
-            max_turns=config.rl.max_turns,
-            thinking_ratio=config.rl.thinking_ratio,
-            max_tool_calls=config.rl.max_tool_calls,
-        )
+    tool_records = any(
+        record.multi_turn and record.domain == "tool" for record in records
+    )
+    if tool_records:
+        if config.rl.rollout_backend in {"cached", "kv"}:
+            from .cached_tool import CachedToolRolloutEngine
+
+            engine = CachedToolRolloutEngine(
+                model,
+                tokenizer,
+                max_turns=config.rl.max_turns,
+                thinking_ratio=config.rl.thinking_ratio,
+                max_tool_calls=config.rl.max_tool_calls,
+                max_context=int(config.model.seq_len),
+            )
+        else:
+            engine = ToolRolloutEngine(
+                model,
+                tokenizer,
+                generator=getattr(engine, "generator", None),
+                max_turns=config.rl.max_turns,
+                thinking_ratio=config.rl.thinking_ratio,
+                max_tool_calls=config.rl.max_tool_calls,
+            )
     trainer = GRPOTrainer(
         config,
         model,
