@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="assets/banner.svg" alt="miniDeepSeek — 蓝色 DeepSeek 鲸鱼，肚子前是粉色奶嘴，嘴边是拨浪鼓，右侧是 miniDeepSeek 艺术字与口号 Train your own baby DeepSeek" width="100%">
+  <img src="assets/banner.webp" alt="miniDeepSeek — 蓝色 DeepSeek 鲸鱼，身侧是粉色奶嘴，嘴边是拨浪鼓，右侧是 miniDeepSeek 艺术字与口号 Train your own baby DeepSeek" width="100%">
 </div>
 
 <p align="center">
