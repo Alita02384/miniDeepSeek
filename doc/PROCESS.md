@@ -1301,3 +1301,29 @@
     被并行会话改到 import 失败而没跑成，需要单独一个窗口；
   - micro-batch 8192 仍受 autotune 的 12.8 GiB 峰值限制，16384 未验证；
   - 宿主 load 77–185 时同一配置能差 30%，所有吞吐数字都要标注负载。
+
+## 2026-11-11（迁移到 2×4090D：跨卡数续训的两个 bug）
+
+- **commit**: `47eed99` fix: 单卡存档的 optimizer 状态在多卡续训时找不到
+- **commit**: `2f02131` fix: 续训按全局 token 偏移回放数据，换卡数不再多跳数据
+
+- 做了什么:
+  - `_load_single_optimizer` 接受 `torch.optim` 的原始整数键格式：按 `param_groups`
+    展平顺序映射回参数名，再走原来的 DTensor 分片，不再假定键是参数全名；
+  - trainer 记录并回放 `data_tokens`（全局 token），不再按 micro-batch 数回放；旧存档
+    回退到 `data_batches × 存档 config 的全局 batch_tokens`。
+- 实现了什么:
+  - 1 卡 → 2 卡续训能真正接上：Muon 动量不再丢，也不再抛
+    `parameter group that doesn't match the size of optimizer's group`；
+  - 数据偏移不再随卡数翻倍：旧逻辑在 2 卡上按 32480 个 micro-batch 回放会跳过
+    5.06 亿 token（2K 阶段总量才 4.5 亿），新逻辑落在同一全局位置（1.62 万 ×
+    16384），最多多走一个 micro-batch。
+- 验证: `pytest tests/` **287 passed, 2 skipped**；`ruff check src/ tests/ scripts/` 通过；
+  新增 3 个用例：整数键 optimizer 恢复、新格式按 token 回放、旧格式回退。
+- 背景: 145M run 在单卡 4090 上跑到 step 1015（2K 阶段 1717 步），迁到 2×4090D
+  续训时暴露这两个问题；换机步骤见 `doc/server_runbook.md` §7。
+- 未完成 / 风险:
+  - 2 卡（FSDP2 分片）的实测吞吐还没记录；跨 NUMA、无 NVLink，`NCCL_P2P_DISABLE=1`
+    必须开；
+  - 回放假定 `data.batch_warmup_ratio == 0`（现有配置都是 0），warmup 打开时最多
+    多走一个 micro-batch。
