@@ -1007,3 +1007,23 @@
 - **验证**：`tests/test_spike.py::test_index_topk_schedule_visits_a_bounded_ladder`
   （2048→64 全程只出现 6 个值）；4090 上 `K=64` 冷编译 89.2 s，之后同 specialization
   的调用 `compiled in 0.0s`。
+
+### D75. HCA 不封顶：8K 覆盖全部压缩段，代价是一次性的 K=256 编译
+
+- **背景**：HCA 的语义是"覆盖当前文档到当前位置的**全部**压缩段"（D3：压缩率 32，
+  无 indexer）。`_hca_topk` 的宽度就是 kernel 的 `TOPK` constexpr，而 attn_gym 把
+  选择循环 `tl.static_range(0, TOPK)` 全展开，编译时间随 TOPK 超线性增长。
+- **D74 曾经的做法**：`hca_topk_max: 128`，把 8K 的宽度从 256 压到 128，
+  以复用 4K 已编好的 kernel。**这是语义改动**：128 个压缩段 × 32 token/段 =
+  最近 4096 token，8K 文档的**前半段被直接丢掉**，而不是被压缩。
+- **决定**：去掉封顶（`hca_topk_max: null`）。宽度回到静态 `ceil(seq_len / ratio)`
+  = 2K:64 / 4K:128 / 8K:256，三档都等于压缩段总数，**任何 stage 都不截断**。
+- **代价**：8K 的 `K=256` 变体第一次要编一次（实测 >1 h，一次性、进缓存）。
+  2K/4K 不受影响（K=64/128 已缓存）。
+- **何时付**：8K stage 从 step 8011 开始（按当前 step_time 约 3–4 天后）。
+  在那之前找一段 GPU 空闲窗口跑
+  `prewarm_attn.py --curriculum ... --max-seq-len 8192`，不能在训练占着 12 GiB
+  显存时跑（8K 预检本身要 ~12 GiB）。
+- **备选（未采用）**：把 HCA 压缩率从 32 改成 64（更接近官方的 128），8K 就只需要
+  `K=128`、可直接复用缓存；代价是所有 stage 的长程分辨率减半，属于比"付一次编译"
+  更大的结构性偏离。留作消融。
