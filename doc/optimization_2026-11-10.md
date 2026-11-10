@@ -121,3 +121,22 @@
 NPROC_PER_NODE=1 bash scripts/train_curriculum.sh \
   configs/pretrain/generated/curriculum_145m_g1.yaml
 ```
+
+## 7. 2026-11-10 夜间状态与 morning checklist
+
+- **不要设 `MINIDEEPSEEK_ATTN_AUTOTUNE=0`**：它保留的是未经 prune 的第一号 tile
+  config，该 config 在本机的 Triton 编译是病理性的（>40 分钟无产出）。走完整
+  autotune 时，隔离脚本（`/tmp/one_micro2.py`，4K/2doc、fp32 fused）冷缓存
+  **86 秒**编译完成，稳态 **12,637 tok/s**。
+- `MINIDEEPSEEK_ATTN_BACKEND=torch` 在训练真实 batch 下只有 **~870 tok/s**
+  （203–235 s/step），比 fused 慢 8.4x，**不能当兜底**。
+- 当前进程仍在 tmux `train`，卡在某个训练变体的编译上（cache 19 MB 不再增长）。
+- 早上按顺序处理：
+  1. `tail -f logs/curriculum_145m.log`；若 step 0 已出，等 step 10 看 `tok/s`，
+     正常应在 8–12k；
+  2. 若 >60 分钟仍无 step 0：kill 后先跑
+     `.venv/bin/python /tmp/one_micro2.py`（autotune 预热 4K/2doc 缓存），
+     再启动训练；
+  3. 若启动后 `tok/s < 2k`：确认没有误设 `MINIDEEPSEEK_ATTN_AUTOTUNE=0`
+     或 `MINIDEEPSEEK_ATTN_BACKEND=torch`；
+  4. 4080/4090 上不要用 reference 兜底。

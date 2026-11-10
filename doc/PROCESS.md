@@ -1105,3 +1105,17 @@
   - **没在 4090 上跑过带 `router_every` 的真实训练**，CUDA 数值路径未验证；
   - 未做 update-to-weight ratio / expert 梯度范数 / expert 输出贡献 E[g·||h||]；
   - 哈希层的"专业化"是 `tid2eid` 表的性质，不能当成学出来的分工来解读。
+
+## 2026-11-10（夜间：编译问题定位）
+
+- 结论: **`MINIDEEPSEEK_ATTN_AUTOTUNE=0` 会强制选中一个会被 prune 掉的 tile
+  config，该 config 的 Triton 编译在本机是病理性的（>40 分钟不产出）**。关闭限制、
+  走完整 autotune 后，隔离脚本在冷缓存下 **86 秒**编完，稳态 **12,637 tok/s**
+  （4K/2doc、fp32 fused）。但训练进程仍会在某个变体上卡住（24+ 分钟），
+  尚未定位到具体是哪个 shape/方向的组合。
+- 另一个实测: `MINIDEEPSEEK_ATTN_BACKEND=torch` 在训练真实 batch 下是
+  **203–235 s/step（~870 tok/s）**，比 fused 的 27.8 s 慢 **8.4x**，不能当 fallback。
+- 已做的代码改动: `MINIDEEPSEEK_ROUTING_GPU`（routing 记录不落 CPU）、
+  bf16 cast 开关、mHC compile 开关；见 `doc/decisions.md` D72。
+- 当前训练进程仍在跑（tmux `train`），处于编译阶段；日志
+  `logs/curriculum_145m.log`。morning checklist 见 `doc/optimization_2026-11-10.md` §7。
