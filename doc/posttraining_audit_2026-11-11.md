@@ -55,8 +55,8 @@
 
 | 位置 | 审计前 | 审计后 | 操作 |
 |---|---|---|---|
-| 本地 `main` | `2cfb34c`（+ 并发会话的未提交 dashboard/pretrain 修改） | `84721bf`（代码基线 `bf6a670` + 2 个 docs commit） | 只读/写文档 |
-| `origin/main` | `ad66d08` | `84721bf` | `git push origin main`（正常 fast-forward，无 force） |
+| 本地 `main` | `2cfb34c`（+ 并发会话的未提交 dashboard/pretrain 修改） | 代码基线 `bf6a670` + docs commit（`e6b3c13`/`84721bf`/`9e28786`） | 只读/写文档 |
+| `origin/main` | `ad66d08` | 代码基线 `bf6a670` + docs commit（`9e28786`） | `git push origin main`（正常 fast-forward，无 force） |
 | hn01 | `c946f5b`，`.venv` 外无改动 | `bf6a670`（代码；docs 同步的 fetch 被网络中断） | `git fetch` + `git merge --ff-only origin/main` |
 | hb01 | `e30ef7c`（工作树 14 个 modified + 5 个 untracked） | 未动 | 只读检查；训练 job 未触碰 |
 
