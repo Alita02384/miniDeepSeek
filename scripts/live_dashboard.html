@@ -8,13 +8,15 @@
   :root {
     --bg: #0d1117; --panel: #161b22; --line: #30363d; --fg: #e6edf3;
     --dim: #8b949e; --accent: #58a6ff; --good: #3fb950; --warn: #d29922;
+    --bad: #f85149;
     --c1: #58a6ff; --c2: #f78166; --c3: #3fb950; --c4: #d2a8ff; --c5: #ffa657;
+    --c6: #79c0ff; --c7: #ff7b72; --c8: #a5d6ff;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
   header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap;
-           gap: 18px; align-items: baseline; padding: 10px 16px;
+           gap: 16px; align-items: baseline; padding: 10px 16px;
            background: #0d1117ee; border-bottom: 1px solid var(--line);
            backdrop-filter: blur(4px); }
   header h1 { font-size: 13px; margin: 0; font-weight: 600; letter-spacing: .04em; }
@@ -35,14 +37,40 @@
             font-size: 11px; margin-top: 4px; }
   .legend i { display: inline-block; width: 10px; height: 3px; margin-right: 5px;
               vertical-align: middle; border-radius: 2px; }
-  #experts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+
+  /* ---- metric matrix ---- */
+  #matrix { display: grid; gap: 6px;
+            grid-template-columns: repeat(auto-fit, minmax(178px, 1fr)); }
+  .cell { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+          min-width: 0; }
+  .cell .k { color: var(--dim); font-size: 10px; letter-spacing: .02em;
+             white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cell .v { font-size: 15px; font-weight: 600; }
+  .cell .d { font-size: 10px; color: var(--dim); }
+  .up   { color: var(--good); } .down { color: var(--warn); } .flat { color: var(--dim); }
+
+  /* ---- expert load, four domain views ---- */
+  .tabs { display: flex; gap: 6px; margin: 2px 0 8px; flex-wrap: wrap; }
+  .tabs button { background: #21262d; color: var(--dim); border: 1px solid var(--line);
+                 border-radius: 5px; padding: 3px 10px; font: inherit; font-size: 11px;
+                 cursor: pointer; }
+  .tabs button.on { color: var(--fg); border-color: var(--accent);
+                    background: #1f6feb22; }
+  .tabs button .n { color: var(--dim); font-size: 10px; margin-left: 5px; }
+  #experts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
              gap: 8px 18px; }
   .layer { font-size: 11px; }
   .layer .name { color: var(--dim); margin-bottom: 2px; }
   .bar { display: flex; align-items: center; gap: 6px; margin: 1px 0; }
-  .bar span { width: 14px; color: var(--dim); }
-  .bar i { display: block; height: 7px; border-radius: 2px; background: var(--accent); }
-  .bar em { font-style: normal; color: var(--dim); font-size: 10px; }
+  .bar span { width: 16px; color: var(--dim); }
+  .bar .track { position: relative; flex: 1; height: 8px; background: #21262d;
+                border-radius: 2px; overflow: hidden; }
+  .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
+           background: var(--accent); }
+  .bar .fair { position: absolute; top: -1px; bottom: -1px; width: 1px;
+               background: var(--dim); opacity: .8; }
+  .bar em { font-style: normal; color: var(--dim); font-size: 10px; width: 38px;
+            text-align: right; }
   footer { color: var(--dim); padding: 0 16px 20px; font-size: 11px; }
   a { color: var(--accent); }
 </style>
@@ -51,30 +79,36 @@
 <header>
   <h1>miniDeepSeek · live</h1>
   <div class="stat">step <b id="s-step">–</b></div>
-  <div class="stat">loss <b id="s-loss">–</b> <span id="s-ema"></span></div>
+  <div class="stat">LM <b id="s-lm">–</b> <span id="s-lm-ema"></span></div>
+  <div class="stat">total <b id="s-loss">–</b></div>
+  <div class="stat">val <b id="s-val">–</b></div>
+  <div class="stat">lr <b id="s-lr">–</b></div>
+  <div class="stat">|g| <b id="s-grad">–</b></div>
   <div class="stat">tok/s <b id="s-toks">–</b></div>
   <div class="stat">ETA <b id="s-eta">–</b></div>
-  <div class="stat">tokens <b id="s-tokens">–</b></div>
   <div class="stat">mem <b id="s-mem">–</b></div>
+  <div class="stat">best val <b id="s-best">–</b></div>
   <div id="state" class="ok">connecting…</div>
 </header>
 
 <main>
   <section class="panel wide">
     <h2>loss</h2>
-    <div class="sub">train step loss (thin) · EMA (thick) · validation (dots)</div>
+    <div class="sub">LM = main head (line + EMA) · total = main + 0.3·MTP (thin) ·
+      validation points use the main head too</div>
     <canvas id="c-loss"></canvas>
     <div class="legend">
-      <span><i style="background:var(--c1)"></i>train</span>
-      <span><i style="background:var(--c3)"></i>EMA</span>
-      <span><i style="background:var(--c2)"></i>val</span>
+      <span><i style="background:var(--c1)"></i>LM main</span>
+      <span><i style="background:var(--c6)"></i>LM EMA</span>
+      <span><i style="background:var(--c4)"></i>total (incl. MTP)</span>
+      <span><i style="background:var(--c2)"></i>val LM</span>
     </div>
   </section>
 
   <section class="panel">
-    <h2>validation by domain</h2>
-    <div class="sub">val_loss_general / code / tool</div>
-    <canvas id="c-val"></canvas>
+    <h2>training loss by domain</h2>
+    <div class="sub">train_main_loss_general / code / tool (EMA of the step mean)</div>
+    <canvas id="c-train-domain"></canvas>
     <div class="legend">
       <span><i style="background:var(--c1)"></i>general</span>
       <span><i style="background:var(--c2)"></i>code</span>
@@ -83,25 +117,47 @@
   </section>
 
   <section class="panel">
-    <h2>throughput</h2>
-    <div class="sub">tokens/s (whole job)</div>
-    <canvas id="c-speed"></canvas>
+    <h2>validation by domain</h2>
+    <div class="sub">val_main_loss_* · main head only, so the three are comparable</div>
+    <canvas id="c-val"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c1)"></i>general</span>
+      <span><i style="background:var(--c2)"></i>code</span>
+      <span><i style="background:var(--c3)"></i>tool</span>
+      <span><i style="background:var(--dim)"></i>all (dashed)</span>
+    </div>
+  </section>
+
+  <section class="panel wide">
+    <h2>metrics matrix</h2>
+    <div class="sub" id="matrix-sub">latest value and change over the window on screen</div>
+    <div id="matrix"></div>
+  </section>
+
+  <section class="panel wide">
+    <h2>expert load · by domain</h2>
+    <div class="sub" id="exp-sub">share of routed tokens per expert per layer ·
+      tick = fair share 1/E · red = under half the fair share</div>
+    <div class="tabs" id="exp-tabs"></div>
+    <div id="experts"></div>
   </section>
 
   <section class="panel">
-    <h2>grad norm</h2>
-    <div class="sub">log scale</div>
-    <canvas id="c-grad"></canvas>
-  </section>
-
-  <section class="panel">
-    <h2>MoE routing</h2>
-    <div class="sub">max/mean expert load (left) · experts used (right, 0–1)</div>
+    <h2>MoE routing health</h2>
+    <div class="sub">max/mean expert load (left) · min relative load and entropy (right)</div>
     <canvas id="c-router"></canvas>
     <div class="legend">
       <span><i style="background:var(--c4)"></i>load max/mean</span>
-      <span><i style="background:var(--c5)"></i>experts used</span>
+      <span><i style="background:var(--c5)"></i>min relative load</span>
+      <span><i style="background:var(--c8)"></i>entropy (normalised)</span>
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>domain specialisation</h2>
+    <div class="sub">JS divergence of each domain's expert load vs the pooled load</div>
+    <canvas id="c-domain"></canvas>
+    <div class="legend" id="domain-legend"></div>
   </section>
 
   <section class="panel">
@@ -115,22 +171,40 @@
   </section>
 
   <section class="panel">
-    <h2>domain specialisation</h2>
-    <div class="sub">JS divergence of each domain's expert load vs the pooled load</div>
-    <canvas id="c-domain"></canvas>
-    <div class="legend" id="domain-legend"></div>
+    <h2>learning rate</h2>
+    <div class="sub">lr (left) · schedule factor (right)</div>
+    <canvas id="c-lr"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c1)"></i>lr</span>
+      <span><i style="background:var(--c5)"></i>lr factor</span>
+    </div>
   </section>
 
   <section class="panel">
-    <h2>learning rate</h2>
-    <div class="sub">optimizer lr</div>
-    <canvas id="c-lr"></canvas>
+    <h2>grad norm</h2>
+    <div class="sub">pre-clip, log scale</div>
+    <canvas id="c-grad"></canvas>
   </section>
 
-  <section class="panel wide">
-    <h2>expert load · latest snapshot</h2>
-    <div class="sub" id="exp-sub">per layer share of routed tokens (6 experts)</div>
-    <div id="experts"></div>
+  <section class="panel">
+    <h2>throughput</h2>
+    <div class="sub">tokens/s (whole job) · step time (right, s)</div>
+    <canvas id="c-speed"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c3)"></i>tok/s</span>
+      <span><i style="background:var(--c7)"></i>step time</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>auxiliary losses</h2>
+    <div class="sub">balance · indexer · MTP depth 1 (log scale, very different sizes)</div>
+    <canvas id="c-aux"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--c4)"></i>balance</span>
+      <span><i style="background:var(--c5)"></i>indexer</span>
+      <span><i style="background:var(--c8)"></i>MTP d1</span>
+    </div>
   </section>
 </main>
 
@@ -152,6 +226,10 @@ function fmt(x, digits = 3) {
   if (Math.abs(x) >= 1e4) return (x / 1e3).toFixed(1) + 'k';
   return Number(x).toFixed(digits);
 }
+function fmtRate(x) {
+  if (!Number.isFinite(x)) return '–';
+  return x >= 1e-3 ? x.toExponential(2) : x.toFixed(9).replace(/0+$/, '');
+}
 function dur(seconds) {
   if (!seconds || seconds < 0) return '–';
   const h = Math.floor(seconds / 3600), m = Math.round((seconds % 3600) / 60);
@@ -169,13 +247,13 @@ function chart(canvas, series, opts = {}) {
   ctx.clearRect(0, 0, w, h);
 
   const live = series.filter(s => s.points && s.points.length);
-  const pad = { l: 46, r: opts.right ? 40 : 10, t: 8, b: 22 };
+  const pad = { l: 46, r: opts.right ? 44 : 10, t: 8, b: 22 };
   const plotW = Math.max(10, w - pad.l - pad.r), plotH = Math.max(10, h - pad.t - pad.b);
   ctx.font = '10px ui-monospace, monospace';
 
   if (!live.length) {
     ctx.fillStyle = color('--dim', '#8b949e');
-    ctx.fillText('no data yet', pad.l, pad.t + 14);
+    ctx.fillText(opts.empty || 'no data yet', pad.l, pad.t + 14);
     return;
   }
 
@@ -200,7 +278,6 @@ function chart(canvas, series, opts = {}) {
   };
   const left = axisFor('left'), right = axisFor('right');
 
-  // grid + left axis labels
   ctx.strokeStyle = color('--line', '#30363d'); ctx.lineWidth = 1;
   ctx.fillStyle = color('--dim', '#8b949e');
   for (let i = 0; i <= 4; i++) {
@@ -210,7 +287,8 @@ function chart(canvas, series, opts = {}) {
       const frac = 1 - i / 4;
       const v = opts.log ? Math.pow(10, left.lo + (left.hi - left.lo) * frac)
                          : left.lo + (left.hi - left.lo) * frac;
-      ctx.fillText(fmt(v, opts.digits ?? 2), 4, y + 3);
+      ctx.fillText(v >= 1e4 || (v !== 0 && Math.abs(v) < 1e-3)
+                     ? v.toExponential(1) : fmt(v, opts.digits ?? 2), 3, y + 3);
     }
   }
   if (right) {
@@ -221,14 +299,13 @@ function chart(canvas, series, opts = {}) {
       ctx.fillText(fmt(v, 2), pad.l + plotW + 6, y + 3);
     }
   }
-  // x labels
   ctx.fillStyle = color('--dim', '#8b949e');
   ctx.fillText(String(Math.round(x0)), pad.l, h - 6);
   const endLabel = String(Math.round(x1));
   ctx.fillText(endLabel, pad.l + plotW - ctx.measureText(endLabel).width, h - 6);
 
   for (const s of live) {
-    const axis = (s.axis || 'left') === 'right' ? right : left;
+    const axis = s.axis === 'right' ? right : left;
     if (!axis) continue;
     ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 1.6;
     ctx.setLineDash(s.dash || []);
@@ -250,105 +327,154 @@ function chart(canvas, series, opts = {}) {
   }
 }
 
-/* ---------- rendering ---------- */
-function series(rows, key, opts = {}) {
-  return rows.filter(r => Number.isFinite(r[key]))
-             .map(r => [r.step, r[key]]);
+/* ---------- helpers ---------- */
+function series(rows, key) {
+  return rows.filter(r => Number.isFinite(r[key])).map(r => [r.step, r[key]]);
+}
+function paletteColor(name, index) {
+  const names = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+  return color('--' + names[index % names.length], name);
 }
 
-function render(data) {
-  const rows = data.rows || [];
-  const latest = data.latest || {};
-  document.getElementById('s-step').textContent = latest.step ?? '–';
-  document.getElementById('s-loss').textContent = fmt(latest.loss, 4);
-  document.getElementById('s-ema').textContent =
-    latest.loss_ema ? `(ema ${fmt(latest.loss_ema, 4)})` : '';
-  document.getElementById('s-toks').textContent = fmt(latest.tokens_per_sec, 0);
-  document.getElementById('s-eta').textContent = dur(latest.eta_seconds);
-  document.getElementById('s-tokens').textContent = fmt(latest.tokens_seen, 0);
-  document.getElementById('s-mem').textContent =
-    latest.mem_peak_mb ? (latest.mem_peak_mb / 1024).toFixed(1) + ' GiB' : '–';
+/* ---------- metric matrix ---------- */
+const MATRIX = [
+  ['step', 'step', 0, null],
+  ['main_loss', 'LM loss (main)', 4, 'down'],
+  ['main_loss_ema', 'LM loss EMA', 4, 'down'],
+  ['loss', 'total (incl MTP)', 4, 'down'],
+  ['val_main_loss', 'val LM', 4, 'down'],
+  ['val_ppl', 'val ppl', 2, 'down'],
+  ['train_main_loss_general', 'train gen', 4, 'down'],
+  ['train_main_loss_code', 'train code', 4, 'down'],
+  ['train_main_loss_tool', 'train tool', 4, 'down'],
+  ['val_main_loss_general', 'val gen', 4, 'down'],
+  ['val_main_loss_code', 'val code', 4, 'down'],
+  ['val_main_loss_tool', 'val tool', 4, 'down'],
+  ['grad_norm', 'grad norm', 3, null],
+  ['lr', 'lr', 6, null],
+  ['lr_factor', 'lr factor', 4, null],
+  ['mtp_weight', 'MTP weight', 3, null],
+  ['mtp_loss', 'MTP loss', 4, 'down'],
+  ['balance_loss', 'balance loss', 6, null],
+  ['indexer_loss', 'indexer loss', 6, null],
+  ['entropy', 'H(p) nats', 3, null],
+  ['top1_prob', 'top-1 prob', 3, null],
+  ['router_learned_expert_load_max_over_mean', 'load max/mean', 3, 'down'],
+  ['router_learned_min_relative_load', 'min load share', 3, 'up'],
+  ['router_learned_routing_entropy_normalized', 'router entropy', 3, 'up'],
+  ['swiglu_up_clamp_rate', 'up clamp rate', 4, null],
+  ['tokens_per_sec', 'tok/s', 0, null],
+  ['step_time_s', 'step time s', 1, null],
+  ['tokens_seen', 'tokens seen', 0, null],
+  ['mem_peak_mb', 'peak MiB', 0, null],
+  ['eta_seconds', 'ETA', 0, null],
+];
 
-  const c = {
-    c1: color('--c1', '#58a6ff'), c2: color('--c2', '#f78166'),
-    c3: color('--c3', '#3fb950'), c4: color('--c4', '#d2a8ff'),
-    c5: color('--c5', '#ffa657'), dim: color('--dim', '#8b949e'),
-  };
+function renderMatrix(rows, latest) {
+  const host = document.getElementById('matrix');
+  const first = rows.find(r => Number.isFinite(r.main_loss)) || rows[0] || {};
+  const cells = MATRIX.map(([key, label, digits, goodDir]) => {
+    const value = latest[key];
+    if (value === null || value === undefined) return '';
+    let text;
+    if (key === 'tokens_seen') text = fmt(value, 0);
+    else if (key === 'mem_peak_mb') text = (value / 1024).toFixed(1) + ' GiB';
+    else if (key === 'eta_seconds') text = dur(value);
+    else if (key === 'lr') text = fmtRate(value);
+    else if (key === 'lr_factor' || key === 'mtp_weight') text = Number(value).toFixed(4);
+    else text = fmt(value, digits);
 
-  chart(document.getElementById('c-loss'), [
-    { color: c.c1, points: series(rows, 'loss'), width: 1 },
-    { color: c.c3, points: series(rows, 'loss_ema'), width: 2.2 },
-    { color: c.c2, points: series(rows, 'val_loss'), width: 1.2, dots: true },
-  ], { digits: 2 });
-
-  chart(document.getElementById('c-val'), [
-    { color: c.c1, points: series(rows, 'val_loss_general'), dots: true },
-    { color: c.c2, points: series(rows, 'val_loss_code'), dots: true },
-    { color: c.c3, points: series(rows, 'val_loss_tool'), dots: true },
-  ], { digits: 2 });
-
-  chart(document.getElementById('c-speed'),
-        [{ color: c.c3, points: series(rows, 'tokens_per_sec') }], { digits: 0 });
-
-  chart(document.getElementById('c-grad'),
-        [{ color: c.c5, points: series(rows, 'grad_norm') }], { log: true, digits: 2 });
-
-  chart(document.getElementById('c-router'), [
-    { color: c.c4, points: series(rows, 'router_learned_expert_load_max_over_mean') },
-    { color: c.c5, points: series(rows, 'router_learned_experts_used_fraction'),
-      axis: 'right' },
-  ], { digits: 2 });
-
-  chart(document.getElementById('c-entropy'), [
-    { color: c.c2, points: series(rows, 'entropy') },
-    { color: c.c5, points: series(rows, 'top1_prob'), axis: 'right' },
-  ], { digits: 3 });
-
-  const domainKeys = new Set();
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (key.startsWith('router_domain_') && key.endsWith('_js_vs_pooled')) domainKeys.add(key);
+    let delta = '', cls = 'flat';
+    const before = first[key];
+    if (Number.isFinite(before) && Number.isFinite(value) && key !== 'step'
+        && key !== 'eta_seconds' && Math.abs(value - before) > 1e-12) {
+      const diff = value - before;
+      cls = diff > 0 ? 'up' : 'down';
+      const shown = key === 'lr' ? fmtRate(Math.abs(diff)) : fmt(Math.abs(diff), Math.max(1, digits));
+      delta = (diff > 0 ? '▲ ' : '▼ ') + shown;
+      if (goodDir === 'down') cls = diff < 0 ? 'up' : 'down';
+      if (goodDir === 'up') cls = diff > 0 ? 'up' : 'down';
+      if (goodDir === null) cls = 'flat';
     }
-  }
-  const palette = [c.c3, c.c4, c.c1, c.c5, c.c2];
-  const domains = [...domainKeys].sort();
-  chart(document.getElementById('c-domain'), domains.map((key, index) => ({
-    color: palette[index % palette.length],
-    points: series(rows, key),
-    dots: true,
-  })), { digits: 3 });
-  document.getElementById('domain-legend').innerHTML = domains.map((key, index) => {
-    const name = key.replace('router_domain_', '').replace('_js_vs_pooled', '');
-    return `<span><i style="background:${palette[index % palette.length]}"></i>${name}</span>`;
-  }).join('') || '<span>waiting for a router_every snapshot…</span>';
-
-  chart(document.getElementById('c-lr'),
-        [{ color: c.c1, points: series(rows, 'lr') }], { digits: 6 });
-
-  renderExperts(data.router_layers);
+    return `<div class="cell"><div class="k">${label}</div>` +
+           `<div class="v">${text}</div><div class="d ${cls}">${delta || '&nbsp;'}</div></div>`;
+  });
+  host.innerHTML = cells.join('') ||
+    '<span style="color:var(--dim)">no metrics yet</span>';
+  const from = first.step ?? '?', to = latest.step ?? '?';
+  document.getElementById('matrix-sub').textContent =
+    `latest value · change over steps ${from}–${to} (green = improving, grey = neutral)`;
 }
 
-function renderExperts(snapshot) {
+/* ---------- expert load: four domain views ---------- */
+let expertView = 'overall';
+const DOMAIN_LABEL = { overall: 'overall', general: 'general', code: 'code', tool: 'tool' };
+
+function expertDomains(data) {
+  const snap = data.router_domain_layers;
+  const keys = snap && snap.domains ? Object.keys(snap.domains) : [];
+  const order = ['overall', 'general', 'code', 'tool'];
+  const extra = keys.filter(k => !order.includes(k)).sort();
+  return order.filter(k => keys.includes(k)).concat(extra);
+}
+
+function renderExpertTabs(data) {
+  const host = document.getElementById('exp-tabs');
+  const snap = data.router_domain_layers;
+  const domains = expertDomains(data);
+  if (!domains.length) {
+    host.innerHTML = '<span style="color:var(--dim)">waiting for a router_every snapshot…</span>';
+    return;
+  }
+  if (!domains.includes(expertView)) expertView = domains[0];
+  host.innerHTML = domains.map(name => {
+    const layers = snap.domains[name] || {};
+    const total = Object.values(layers)
+      .reduce((sum, info) => sum + (info.counts || []).reduce((a, b) => a + b, 0), 0);
+    const on = name === expertView ? ' class="on"' : '';
+    return `<button data-view="${name}"${on}>${DOMAIN_LABEL[name] || name}` +
+           `<span class="n">${total ? fmt(total, 0) + ' slots' : ''}</span></button>`;
+  }).join('');
+  for (const button of host.querySelectorAll('button')) {
+    button.onclick = () => {
+      expertView = button.dataset.view;
+      renderExpertTabs(lastData);
+      renderExperts(lastData);
+    };
+  }
+}
+
+function renderExperts(data) {
   const host = document.getElementById('experts');
   const sub = document.getElementById('exp-sub');
-  if (!snapshot || !snapshot.layers) {
-    host.innerHTML = '<span style="color:var(--dim)">no routing snapshot yet ' +
+  const snap = data.router_domain_layers;
+  const domains = expertDomains(data);
+  if (!snap || !snap.domains || !domains.length) {
+    host.innerHTML = '<span style="color:var(--dim)">no per-domain routing snapshot yet ' +
                      '(train.router_every steps)</span>';
     return;
   }
-  sub.textContent = `snapshot at step ${snapshot.step} · share of routed tokens per expert ` +
-                    `(dashed = would be 1/6)`;
-  const layers = Object.entries(snapshot.layers);
+  const layersObj = snap.domains[expertView] || {};
+  const layers = Object.entries(layersObj);
+  if (!layers.length) {
+    host.innerHTML = `<span style="color:var(--dim)">no tokens of this domain in the ` +
+                     `snapshot step</span>`;
+    return;
+  }
+  sub.textContent = `step ${snap.step} · view: ${DOMAIN_LABEL[expertView] || expertView} · ` +
+    `share of routed tokens per expert per layer · tick = fair share 1/E · ` +
+    `red = under half the fair share`;
   host.innerHTML = layers.map(([name, info]) => {
     const counts = info.counts || [];
     const total = counts.reduce((a, b) => a + b, 0) || 1;
-    const max = Math.max(...counts, 1);
+    const fair = 1 / Math.max(counts.length, 1);
     const bars = counts.map((n, i) => {
       const share = n / total;
-      const width = Math.max(1, Math.round(n / max * 90));
-      const warn = share < 1 / 12 ? 'background:var(--c2)' : '';
+      const width = Math.max(0.6, share / Math.max(fair * 2.2, 1e-9) * 100);
+      const hot = share < fair / 2 ? 'background:var(--bad)' : '';
       return `<div class="bar"><span>e${i}</span>` +
-             `<i style="width:${width}px;${warn}"></i>` +
+             `<div class="track"><i style="width:${Math.min(100, width)}%;${hot}"></i>` +
+             `<span class="fair" style="left:${(fair / Math.max(fair * 2.2, 1e-9)) * 100}%"></span></div>` +
              `<em>${(share * 100).toFixed(1)}%</em></div>`;
     }).join('');
     const tag = info.hash ? 'hash' : 'learned';
@@ -356,6 +482,111 @@ function renderExperts(snapshot) {
                       .replace('mtp_layers.', 'mtp');
     return `<div class="layer"><div class="name">${short} · ${tag}</div>${bars}</div>`;
   }).join('');
+}
+
+/* ---------- rendering ---------- */
+let lastData = null;
+
+function render(data) {
+  lastData = data;
+  const rows = data.rows || [];
+  const latest = data.latest || {};
+  document.getElementById('s-step').textContent = latest.step ?? '–';
+  document.getElementById('s-lm').textContent = fmt(latest.main_loss, 4);
+  document.getElementById('s-lm-ema').textContent =
+    latest.main_loss_ema ? `(ema ${fmt(latest.main_loss_ema, 4)})` : '';
+  document.getElementById('s-loss').textContent = fmt(latest.loss, 4);
+  document.getElementById('s-val').textContent = fmt(latest.val_main_loss, 4);
+  document.getElementById('s-lr').textContent = fmtRate(latest.lr);
+  document.getElementById('s-grad').textContent = fmt(latest.grad_norm, 3);
+  document.getElementById('s-toks').textContent = fmt(latest.tokens_per_sec, 0);
+  document.getElementById('s-eta').textContent = dur(latest.eta_seconds);
+  document.getElementById('s-mem').textContent =
+    latest.mem_peak_mb ? (latest.mem_peak_mb / 1024).toFixed(1) + ' GiB' : '–';
+  const best = data.best_val;
+  document.getElementById('s-best').textContent =
+    best ? `${fmt(best.value, 4)} @${best.step}` : '–';
+
+  const c = {
+    c1: color('--c1', '#58a6ff'), c2: color('--c2', '#f78166'),
+    c3: color('--c3', '#3fb950'), c4: color('--c4', '#d2a8ff'),
+    c5: color('--c5', '#ffa657'), c6: color('--c6', '#79c0ff'),
+    c7: color('--c7', '#ff7b72'), c8: color('--c8', '#a5d6ff'),
+    dim: color('--dim', '#8b949e'),
+  };
+
+  chart(document.getElementById('c-loss'), [
+    { color: c.c1, points: series(rows, 'main_loss'), width: 1 },
+    { color: c.c6, points: series(rows, 'main_loss_ema'), width: 2.2 },
+    { color: c.c4, points: series(rows, 'loss'), width: 0.9, dash: [3, 3] },
+    { color: c.c2, points: series(rows, 'val_main_loss'), width: 1.2, dots: true },
+  ], { digits: 2 });
+
+  chart(document.getElementById('c-train-domain'), [
+    { color: c.c1, points: series(rows, 'train_main_loss_general') },
+    { color: c.c2, points: series(rows, 'train_main_loss_code') },
+    { color: c.c3, points: series(rows, 'train_main_loss_tool') },
+  ], { digits: 2, empty: 'needs data.lockstep=false + a restart' });
+
+  chart(document.getElementById('c-val'), [
+    { color: c.dim, points: series(rows, 'val_main_loss'), dash: [4, 3], dots: true },
+    { color: c.c1, points: series(rows, 'val_main_loss_general'), dots: true },
+    { color: c.c2, points: series(rows, 'val_main_loss_code'), dots: true },
+    { color: c.c3, points: series(rows, 'val_main_loss_tool'), dots: true },
+  ], { digits: 2 });
+
+  renderMatrix(rows, latest);
+
+  chart(document.getElementById('c-router'), [
+    { color: c.c4, points: series(rows, 'router_learned_expert_load_max_over_mean') },
+    { color: c.c5, points: series(rows, 'router_learned_min_relative_load'), axis: 'right' },
+    { color: c.c8, points: series(rows, 'router_learned_routing_entropy_normalized'),
+      axis: 'right' },
+  ], { digits: 2 });
+
+  const domainKeys = new Set();
+  for (const row of rows) {
+    for (const key of Object.keys(row)) {
+      if (key.startsWith('router_domain_') && key.endsWith('_js_vs_pooled')) domainKeys.add(key);
+    }
+  }
+  const domains = [...domainKeys].sort();
+  chart(document.getElementById('c-domain'), domains.map((key, index) => ({
+    color: paletteColor(null, index),
+    points: series(rows, key),
+    dots: true,
+  })), { digits: 3, empty: 'waiting for a router_every snapshot…' });
+  document.getElementById('domain-legend').innerHTML = domains.map((key, index) => {
+    const name = key.replace('router_domain_', '').replace('_js_vs_pooled', '');
+    return `<span><i style="background:${paletteColor(null, index)}"></i>${name}</span>`;
+  }).join('') || '<span>waiting for a router_every snapshot…</span>';
+
+  chart(document.getElementById('c-entropy'), [
+    { color: c.c2, points: series(rows, 'entropy') },
+    { color: c.c5, points: series(rows, 'top1_prob'), axis: 'right' },
+  ], { digits: 3 });
+
+  chart(document.getElementById('c-lr'), [
+    { color: c.c1, points: series(rows, 'lr'), axis: 'left' },
+    { color: c.c5, points: series(rows, 'lr_factor'), axis: 'right' },
+  ], { digits: 2 });
+
+  chart(document.getElementById('c-grad'),
+        [{ color: c.c5, points: series(rows, 'grad_norm') }], { log: true, digits: 2 });
+
+  chart(document.getElementById('c-speed'), [
+    { color: c.c3, points: series(rows, 'tokens_per_sec') },
+    { color: c.c7, points: series(rows, 'step_time_s'), axis: 'right' },
+  ], { digits: 0 });
+
+  chart(document.getElementById('c-aux'), [
+    { color: c.c4, points: series(rows, 'balance_loss') },
+    { color: c.c5, points: series(rows, 'indexer_loss') },
+    { color: c.c8, points: series(rows, 'mtp_loss_d1') },
+  ], { log: true, digits: 2 });
+
+  renderExpertTabs(data);
+  renderExperts(data);
 }
 
 /* ---------- polling ---------- */

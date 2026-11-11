@@ -107,3 +107,49 @@ def test_logger_summary_tolerates_sparse_records(tmp_path):
     summary = logger.summary()
     assert summary["loss_last"] == 2.0
     assert summary["val_loss_last"] == 1.0
+
+
+def test_dashboard_slims_per_domain_training_losses_and_keeps_snapshots_out_of_rows():
+    """The live dashboard must forward the per-domain curves it draws.
+
+    ``router_domain_layers`` is ~1 KB per snapshot step and the page only ever
+    renders the newest one, so it may not ride along inside ``rows``.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "live_dashboard", root / "scripts" / "live_dashboard.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    record = {
+        "step": 5250,
+        "main_loss": 2.04,
+        "train_main_loss_general": 2.24,
+        "train_main_loss_code": 1.13,
+        "train_main_loss_tool": 0.846,
+        "lr_factor": 0.79,
+        "router_domain_general_js_vs_pooled": 0.01,
+        "router_layers": {"layers.0.feed_forward.router": {"counts": [1, 2]}},
+        "router_domain_layers": {"overall": {"layers.0.feed_forward.router": {"counts": [1, 2]}}},
+    }
+    slim = module._slim(record)
+    assert slim["train_main_loss_general"] == 2.24
+    assert slim["train_main_loss_tool"] == 0.846
+    assert slim["router_domain_general_js_vs_pooled"] == 0.01
+    assert "router_domain_layers" not in slim
+    assert "router_layers" not in slim
+
+    best = module._best_val(
+        [
+            {"step": 100, "val_main_loss": 1.9},
+            {"step": 200, "val_main_loss": 1.7},
+            {"step": 300, "val_main_loss": 1.8},
+            {"step": 400},
+        ]
+    )
+    assert best == {"value": 1.7, "step": 200}
+    assert module._best_val([{"step": 1}]) is None

@@ -1638,3 +1638,37 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
 `skip_tokens 1723000000`（真实区间），与 `curriculum_145m_4x4090.yaml`
 里写的 8K 阶段 698M general 预算一致。18 个数据集全部通过
 `PackedPretrainDataset` 加载校验，磁盘剩 14 GB，`.incoming/` 与暂存目录均已清空。
+
+## 2026-11-11（实时看板扩容 + 分域路由快照）
+
+- 用户要求：指标太少要扩容（含 matrix），专家路由从"总体"改成 general/code/tool/总体 四种。
+- trainer：新增 `router_domain_layers`，在 `train.router_every` 的快照步里按
+  域累积**整步 16 个 micro-batch** 的每层每专家计数，并额外给一个 `overall`
+  桶。原来 `router_layers` 只取最后 1 个 micro-batch，在 `lockstep=false`
+  之后那只是"某一步里恰好排在最后的那个域"，做不了分域对比。
+- 看板 `scripts/live_dashboard.py`：
+  - `KEEP` 从 ~40 个字段扩到 ~60（分域 train/val、lr_factor、balance/indexer/MTP、
+    router 的 min/entropy/std、swiglu、mem_allocated 等）；
+  - 新增 `best_val`（历史最低 `val_main_loss` 及其 step）；
+  - `router_domain_layers` 不进 `rows`（每个约 1 KB），单独保留最新 2 份；
+  - `_slim` 只透传标量形式的 `router_domain_*`，避免把嵌套快照塞进每一行。
+- 看板 `scripts/live_dashboard.html`：
+  - loss 面板改为 LM(main) 为主线 + total 虚线 + val LM 点；
+  - 新增 "training loss by domain"（`train_main_loss_*`）、"metrics matrix"
+    （30 个指标的当前值 + 窗口内变化，绿=改善）、"auxiliary losses"
+    （balance/indexer/MTP，对数轴）；
+  - lr 面板加 lr_factor（右轴），throughput 面板加 step time（右轴），
+    router 面板加 min-share 与归一化熵；
+  - 专家负载改成四视图（overall / general / code / tool）带标签页切换，
+    每层每专家一根柱 + 1/E 公平线 + 低于半个公平值标红。
+- 验证：
+  - `pytest -q` **316 passed / 2 skipped**；`ruff` 通过；`node --check` 校验页面 JS；
+  - 端到端起本地 bridge（`--local-port 8799`，用 `MINIDEEPSEEK_SSH_PASSWORD`）
+    拉 `/data`：546 行、latest step 5320、`router_domain_layers` 在 step 5300
+    带 code/general/overall/tool、`best_val` 1.2654@5199、`error` 为空；
+  - 重启训练后 step 5300 的 L2 计数：general `[41482, 22416, 27205, 49833,
+    39486, 48954]`（均衡），code `[1202, 6889, 5428, 26, 2839, 0]`、
+    tool `[2589, 4815, 4738, 7, 4235, 0]`（e3/e5 基本为 0）——分域视图直接
+    把"总体看起来均衡、按域其实极端"这件事暴露出来了。
+- 未完成 / 风险：`balance_loss_coeff` 仍是 1e-4，code/tool 的 0% 专家还在；
+  改它需要单独一次实验（见 D88 末尾的判据）。

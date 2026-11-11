@@ -41,21 +41,38 @@ HTML_PATH = HERE / "live_dashboard.html"
 #: Fields the dashboard draws (per-domain ``router_domain_*`` keys are added
 #: dynamically in ``_slim``).  Everything else stays on the server.
 KEEP = (
-    "step", "loss", "loss_ema", "main_loss", "mtp_loss",
-    "val_loss", "val_ppl", "val_main_loss",
+    # ---- loss ------------------------------------------------------------
+    "step", "loss", "loss_ema", "main_loss", "main_loss_ema", "mtp_loss",
+    "mtp_loss_d1", "mtp_weight", "balance_loss", "indexer_loss",
+    # ---- validation (main head is the comparable one) --------------------
+    "val_loss", "val_ppl", "val_main_loss", "val_mtp_loss", "val_tokens",
     "val_loss_general", "val_loss_code", "val_loss_tool",
     "val_main_loss_general", "val_main_loss_code", "val_main_loss_tool",
+    # ---- per-domain training loss (needs data.lockstep=false) ------------
+    "train_main_loss_general", "train_main_loss_code", "train_main_loss_tool",
+    "train_loss_general", "train_loss_code", "train_loss_tool",
+    # ---- throughput / schedule -------------------------------------------
     "tokens", "tokens_per_sec", "tokens_seen", "step_time_s",
-    "grad_norm", "lr", "eta_seconds",
+    "grad_norm", "lr", "lr_factor", "eta_seconds", "index_topk",
+    # ---- model behaviour -------------------------------------------------
     "entropy", "top1_prob",
+    # ---- router health (learned + hash) ----------------------------------
     "router_learned_expert_load_max_over_mean",
+    "router_learned_expert_load_max_over_mean_worst",
     "router_learned_experts_used_fraction",
     "router_learned_routing_entropy_normalized",
     "router_learned_routing_entropy_nats",
     "router_learned_min_relative_load",
+    "router_learned_expert_usage_mean_std",
     "router_hash_expert_load_max_over_mean",
-    "swiglu_gate_clamp_rate",
-    "mem_peak_mb", "domain_name", "loss_spike", "indexer_loss", "balance_loss",
+    "router_hash_experts_used_fraction",
+    "router_hash_routing_entropy_normalized",
+    "router_hash_min_relative_load",
+    # ---- SwiGLU clamp / memory / misc ------------------------------------
+    "swiglu_gate_clamp_rate", "swiglu_up_clamp_rate",
+    "swiglu_gate_abs_max", "swiglu_up_abs_max",
+    "mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb",
+    "domain_name", "loss_spike", "ar_active",
 )
 
 
@@ -75,6 +92,10 @@ class Remote:
         self.path = ""
         self.records: dict[int, dict] = {}
         self.snapshots: list[dict] = []
+        #: ``{domain: {layer: {"counts": [E]}}}`` for the newest snapshot step.
+        #: Kept out of ``rows``: ~1 KB each, and the 4-way expert view only ever
+        #: renders the latest one.
+        self.domain_snapshots: list[dict] = []
         self.error = ""
         self.updated = 0.0
         self._lock = threading.Lock()
@@ -137,6 +158,7 @@ class Remote:
                     self.offset = 0
                     self.records = {}
                     self.snapshots = []
+                    self.domain_snapshots = []
                     for path in self._all_files():
                         for record in self._read_file(path):
                             self._absorb(record)
@@ -163,6 +185,10 @@ class Remote:
         if layers:
             self.snapshots.append({"step": int(step), "layers": layers})
             self.snapshots = self.snapshots[-8:]
+        domain_layers = record.get("router_domain_layers")
+        if domain_layers:
+            self.domain_snapshots.append({"step": int(step), "domains": domain_layers})
+            self.domain_snapshots = self.domain_snapshots[-2:]
 
     def payload(self) -> dict:
         with self._lock:
@@ -178,14 +204,34 @@ class Remote:
                 "latest": {
                     key: newest.get(key)
                     for key in (
-                        "step", "loss", "loss_ema", "main_loss", "tokens_per_sec",
-                        "eta_seconds", "lr", "grad_norm", "tokens_seen", "mem_peak_mb",
-                        "domain_name",
+                        "step", "loss", "loss_ema", "main_loss", "main_loss_ema",
+                        "tokens_per_sec", "eta_seconds", "lr", "lr_factor",
+                        "grad_norm", "tokens_seen", "mem_peak_mb", "mtp_weight",
+                        "balance_loss", "entropy", "top1_prob", "domain_name",
+                        "train_main_loss_general", "train_main_loss_code",
+                        "train_main_loss_tool", "val_main_loss",
+                        "router_learned_min_relative_load",
                     )
                 },
                 "router_layers": latest_layers,
+                "router_domain_layers": (
+                    self.domain_snapshots[-1] if self.domain_snapshots else None
+                ),
+                "best_val": _best_val(rows),
                 "rows": [_slim(record) for record in _thin(rows)],
             }
+
+
+def _best_val(rows: list[dict]) -> dict | None:
+    """Lowest ``val_main_loss`` so far, for the header badge."""
+    best = None
+    for row in rows:
+        value = row.get("val_main_loss")
+        if isinstance(value, (int, float)) and (best is None or value < best[0]):
+            best = (float(value), int(row["step"]))
+    if best is None:
+        return None
+    return {"value": best[0], "step": best[1]}
 
 
 def _parse(text: str) -> list[dict]:
@@ -206,9 +252,12 @@ def _parse(text: str) -> list[dict]:
 def _slim(record: dict) -> dict:
     out = {key: record[key] for key in KEEP if key in record}
     # Per-domain routing keys are emitted every ``router_every`` steps and name
-    # their domain, so they cannot live in the fixed list above.
+    # their domain, so they cannot live in the fixed list above.  Only the
+    # scalars: ``router_domain_layers`` is the nested per-layer snapshot (~1 KB)
+    # and travels on its own, outside ``rows``.
     for key, value in record.items():
-        if key.startswith("router_domain_"):
+        if key.startswith("router_domain_") and isinstance(value, (int, float)) \
+                and not isinstance(value, bool):
             out[key] = value
     return out
 

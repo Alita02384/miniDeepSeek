@@ -119,6 +119,13 @@ class StepMetrics:
     #: snapshot steps (``train.router_every``), since it is the one signal that
     #: cannot be reconstructed from the group-level scalars afterwards.
     router_layers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: ``{domain: {router: {"counts": [E]}}}`` for every domain that appeared in
+    #: the snapshot step, plus an ``overall`` bucket.  ``router_layers`` is one
+    #: micro-batch's routing; this is the whole step, split by source domain, so
+    #: the dashboard can show general / code / tool side by side.
+    router_domain_layers: dict[str, dict[str, dict[str, Any]]] = field(
+        default_factory=dict
+    )
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -149,6 +156,8 @@ class StepMetrics:
             payload["domain_name"] = self.domain_name
         if self.router_layers:
             payload["router_layers"] = self.router_layers
+        if self.router_domain_layers:
+            payload["router_domain_layers"] = self.router_domain_layers
         for key in ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb"):
             value = getattr(self, key)
             if value is not None:
@@ -345,6 +354,10 @@ class Trainer:
         self._top1_value = 0.0
         #: Per-domain accumulated expert counts, emitted every ``router_every``.
         self._domain_routing: dict[str, dict[str, Any]] = {}
+        #: Step-local ``{domain: {layer: counts}}`` for the router snapshot.
+        #: Reset every step so a snapshot describes "this step", not a sliding
+        #: 50-step window that mixes pre- and post-update routing.
+        self._domain_layer_counts: dict[str, dict[str, torch.Tensor]] = {}
         self._val_factory: Callable[[], Iterable[PackedBatch]] | None = (
             val_batches
             if callable(val_batches)
@@ -652,6 +665,13 @@ class Trainer:
                 if self._router_snapshot_due():
                     metrics.router_layers = layer_expert_counts(routing)
                     metrics.router.update(self._domain_specialization())
+            # Per-domain, per-layer expert counts over *every* micro-batch of a
+            # snapshot step.  ``router_layers`` above only sees the last
+            # micro-batch, which under ``data.lockstep=false`` is a single
+            # domain's corner of the step -- enough for a heatmap, useless as a
+            # "which experts does code actually use" view.
+            if domain_name and self._router_snapshot_due():
+                self._accumulate_layer_domains(domain_name, routing)
             return total, metrics
 
         total = None
@@ -696,6 +716,33 @@ class Trainer:
     def _router_snapshot_due(self) -> bool:
         every = int(self.config.train.router_every)
         return every > 0 and self.step % every == 0
+
+    def _accumulate_layer_domains(self, domain: str, routing) -> None:
+        """Count this micro-batch's expert load per layer, for ``domain``.
+
+        Also folds it into an ``overall`` bucket, which is the only honest
+        "all domains" view once steps mix domains: ``router_layers`` is one
+        micro-batch, this is the whole step.
+        """
+        if not routing:
+            return
+        for key in (str(domain), "overall"):
+            bucket = self._domain_layer_counts.setdefault(key, {})
+            for name, layer in routing.layers.items():
+                counts = layer.routing_map.sum(dim=0).float().detach()
+                bucket[name] = counts if name not in bucket else bucket[name] + counts
+
+    def _domain_layer_snapshot(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Per-domain per-layer expert counts, then start a new step window."""
+        snapshot = {
+            domain: {
+                name: {"counts": [int(value) for value in counts.tolist()]}
+                for name, counts in layers.items()
+            }
+            for domain, layers in self._domain_layer_counts.items()
+        }
+        self._domain_layer_counts = {}
+        return snapshot
 
     def _accumulate_domain_routing(self, domain: str, routing) -> None:
         """Add this micro-batch's per-expert counts to the domain's bucket."""
@@ -835,6 +882,7 @@ class Trainer:
             # Read after ``update_expert_biases`` above so the logged bias is
             # the one the next step will actually route with.
             averaged.router_layers = self._router_layer_snapshot(micro_metrics)
+            averaged.router_domain_layers = self._domain_layer_snapshot()
         if self._first_loss is None:
             self._first_loss = averaged.loss
 
