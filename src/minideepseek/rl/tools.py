@@ -34,7 +34,35 @@ WEATHER_DATA = {"北京": ("28°C", "晴"), "上海": ("15°C", "多云"), "广�
 TIME_DATA = {"Asia/Shanghai": "2025-03-07 14:30:00", "America/New_York": "2025-03-07 01:30:00", "Europe/London": "2025-03-07 06:30:00", "Asia/Tokyo": "2025-03-07 15:30:00", "Europe/Paris": "2025-03-07 07:30:00", "Australia/Sydney": "2025-03-07 17:30:00"}
 EXCHANGE_DATA = {("USD", "CNY"): 7.21, ("EUR", "CNY"): 7.85, ("GBP", "CNY"): 9.12, ("JPY", "CNY"): 0.048, ("USD", "EUR"): 0.92, ("USD", "GBP"): 0.79, ("CNY", "JPY"): 20.83, ("AUD", "CNY"): 4.72}
 TRANSLATE_DATA = {("你好世界", "english"): "Hello World", ("Good morning", "chinese"): "早上好", ("今天天气真好", "english"): "The weather is nice today", ("I love programming", "chinese"): "我喜欢编程", ("机器学习很有趣", "english"): "Machine learning is interesting", ("Happy birthday", "chinese"): "生日快乐"}
-UNIT_DATA = {"km_miles": 0.621371, "miles_km": 1.60934, "kg_pounds": 2.20462, "pounds_kg": 0.453592, "meters_feet": 3.28084, "feet_meters": 0.3048, "celsius_fahrenheit": 1.8, "fahrenheit_celsius": 0.5556}
+UNIT_DATA = {"km_miles": 0.621371, "miles_km": 1.60934, "kg_pounds": 2.20462, "pounds_kg": 0.453592, "meters_feet": 3.28084, "feet_meters": 0.3048}
+
+_TEMPERATURE_ALIASES = {"c": "celsius", "f": "fahrenheit", "k": "kelvin"}
+
+
+def convert_unit_value(value: float, from_unit: str, to_unit: str) -> float:
+    """Convert a value, using affine formulas for the temperature scales.
+
+    The old implementation multiplied by 1.8 / 0.5556, which ignored the
+    offset (10 C -> 18 instead of 50; 18 F -> 10.0008 instead of -7.7778).
+    """
+    source = _TEMPERATURE_ALIASES.get(str(from_unit).lower(), str(from_unit).lower())
+    target = _TEMPERATURE_ALIASES.get(str(to_unit).lower(), str(to_unit).lower())
+    if source == target:
+        return float(value)
+    if source == "celsius" and target == "fahrenheit":
+        return float(value) * 9.0 / 5.0 + 32.0
+    if source == "fahrenheit" and target == "celsius":
+        return (float(value) - 32.0) * 5.0 / 9.0
+    if source == "celsius" and target == "kelvin":
+        return float(value) + 273.15
+    if source == "kelvin" and target == "celsius":
+        return float(value) - 273.15
+    if source == "fahrenheit" and target == "kelvin":
+        return (float(value) - 32.0) * 5.0 / 9.0 + 273.15
+    if source == "kelvin" and target == "fahrenheit":
+        return (float(value) - 273.15) * 9.0 / 5.0 + 32.0
+    factor = UNIT_DATA.get(f"{source}_{target}")
+    return float(value) * float(factor) if factor is not None else float(value)
 
 
 def safe_math_eval(expression: str) -> Any:
@@ -98,7 +126,7 @@ def safe_math_eval(expression: str) -> Any:
 
 MOCK_RESULTS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "calculate_math": lambda args: {"result": str(safe_math_eval(args.get("expression", "0")))},
-    "unit_converter": lambda args: {"result": round(float(args.get("value", 0)) * UNIT_DATA.get(f"{args.get('from_unit', '').lower()}_{args.get('to_unit', '').lower()}", 1), 4)},
+    "unit_converter": lambda args: {"result": round(convert_unit_value(float(args.get("value", 0)), str(args.get("from_unit", "")), str(args.get("to_unit", ""))), 4)},
     "get_current_weather": lambda args: (lambda w: {"city": args.get("location"), "temperature": w[0], "humidity": "65%", "condition": w[1]})(WEATHER_DATA.get(args.get("location"), ("22°C", "晴"))),
     "get_current_time": lambda args: {"datetime": TIME_DATA.get(args.get("timezone", "Asia/Shanghai"), "2025-03-07 14:30:00"), "timezone": args.get("timezone", "Asia/Shanghai")},
     "get_exchange_rate": lambda args: {"from": args.get("from_currency"), "to": args.get("to_currency"), "rate": EXCHANGE_DATA.get((args.get("from_currency"), args.get("to_currency")), 1.0)},

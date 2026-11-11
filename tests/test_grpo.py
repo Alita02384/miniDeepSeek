@@ -366,7 +366,69 @@ def test_general_reward_model_and_shaping():
     assert result.components["reward_model"] == 1.5
     assert result.components["length"] == 0.5
     assert result.components["think"] > 0
-    assert result.total <= 3.0
+    # reward_clip bounds the reward-model score, not the shaping terms: a good
+    # group must keep its intra-group differences (audit 4.10).
+    assert abs(result.total - 3.25) < 1e-9
+    assert "clip" not in result.components
+
+
+def test_reward_clip_does_not_erase_good_group_differences():
+    from minideepseek.rl.reward import dispatch_reward
+
+    class FakeRewardModel:
+        def __init__(self, score):
+            self.score = score
+
+        def get_score(self, messages, response):
+            del messages, response
+            return self.score
+
+    record = GRPORecord(prompt=[{"role": "user", "content": "hello"}], domain="general")
+    settings = RewardSettings(
+        kind="general",
+        length_bonus=0.5,
+        think_bonus=1.0,
+        repetition_penalty=0.5,
+        reward_clip=3.0,
+    )
+    totals = [
+        dispatch_reward(
+            "你好，这是回答。<think>思考内容足够长足够长足够长</think>",
+            record,
+            settings,
+            reward_model=FakeRewardModel(score),
+        ).total
+        for score in (2.0, 2.9, 3.0)
+    ]
+    assert totals[0] < totals[1] < totals[2]
+    advantages = group_advantages(totals)
+    assert any(abs(value) > 1e-9 for value in advantages)
+
+
+def test_code_reward_components_sum_to_total_and_empty_block_is_zero():
+    record = GRPORecord(
+        prompt=[{"role": "user", "content": "add"}],
+        domain="code",
+        verifier="unit_test",
+        rubric={"tests": "assert add(1, 2) == 3"},
+    )
+    settings = RewardSettings(
+        kind="code",
+        code_pass_reward=2.0,
+        code_compile_bonus=0.2,
+        code_syntax_penalty=0.3,
+        code_format_bonus=0.1,
+    )
+    for response in (
+        "```python\ndef add(a, b):\n    return a + b\n```",
+        "```python\ndef add(a, b)\n```",
+        "```python\n```",
+    ):
+        result = code_reward(response, record, settings)
+        assert abs(sum(result.components.values()) - result.total) < 1e-9
+    empty = code_reward("```python\n```", record, settings)
+    assert empty.total == 0.0
+    assert empty.components["compiled"] == 0.0
 
 
 def test_code_reward_configurable_weights():

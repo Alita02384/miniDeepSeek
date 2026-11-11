@@ -160,3 +160,65 @@ def test_tool_grpo_one_step(tmp_path):
     assert metrics["response_tokens"] > 0
     assert metrics["reward_gt_match"] > 0
     assert torch.isfinite(torch.tensor(metrics["loss"]))
+
+
+def test_tool_reward_does_not_use_gt_count_as_expected_calls():
+    record = _tool_record()
+    record.gt = ["2", "3"]  # two answer values, still one weather/math call
+    record.rubric["tool_turns"] = [
+        '<tool_call>{"name": "calculate_math", "arguments": {"expression": "1+1"}}</tool_call>',
+        "2",
+    ]
+    result = tool_reward("2", record, RewardSettings(kind="tool"))
+    assert result.components["tool_alignment"] == 0.5
+    assert result.components["gt_match"] == 1.25  # one of two gt values
+
+
+def test_tool_reward_unfinished_skips_gt_and_shaping():
+    from minideepseek.rl.reward import dispatch_reward
+
+    record = _tool_record()
+    record.rubric["tool_turns"] = [
+        '<tool_call>{"name": "calculate_math", "arguments": {"expression": "1+1"}}</tool_call>',
+        "2",
+    ]
+    record.rubric["unfinished"] = True
+    settings = RewardSettings(
+        kind="tool",
+        length_bonus=0.5,
+        think_bonus=1.0,
+        repetition_penalty=0.5,
+        reward_clip=3.0,
+    )
+    result = dispatch_reward("2", record, settings)
+    assert "gt_match" not in result.components
+    assert "length" not in result.components
+    assert "think" not in result.components
+    # valid call bonus + unfinished penalty
+    assert abs(result.total) < 1e-9
+
+
+def test_tool_reward_does_not_scan_think_text_for_gt():
+    record = _tool_record()
+    record.gt = ["42"]
+    record.rubric["tool_turns"] = [
+        '<tool_call>{"name": "calculate_math", "arguments": {"expression": "1+1"}}</tool_call>',
+        "<think>42</think>wrong",
+    ]
+    result = tool_reward("<think>42</think>wrong", record, RewardSettings(kind="tool"))
+    assert result.components["gt_match"] == 0.0
+
+
+def test_unit_converter_uses_affine_temperature_formulas():
+    from minideepseek.rl.tools import execute_tool
+
+    celsius = execute_tool(
+        "unit_converter",
+        {"value": 10, "from_unit": "celsius", "to_unit": "fahrenheit"},
+    )
+    fahrenheit = execute_tool(
+        "unit_converter",
+        {"value": 18, "from_unit": "fahrenheit", "to_unit": "celsius"},
+    )
+    assert celsius == {"result": 50.0}
+    assert fahrenheit == {"result": -7.7778}

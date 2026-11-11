@@ -29,6 +29,11 @@ _ANSWER_RE = re.compile(
     r"(?i)(?:final\s+answer|answer\s*[:：]|答案是|答案为)\s*[:：]? *([^\n]{1,120})"
 )
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?")
+#: ``x = 42`` is an explicit answer even without "answer:"; bare prose numbers
+#: are not (see the no-fallback rule below).
+_ASSIGNMENT_RE = re.compile(
+    r"(?<![\w.])([A-Za-z]\w*)\s*=\s*(-?\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?)"
+)
 
 
 @dataclass
@@ -53,14 +58,17 @@ def extract_answer(text: str) -> str | None:
     if match:
         captured = match.group(1).strip()
         # The capture may include units/words ("42 元", "x = 42"); prefer the
-        # last numeric token when one is present.
-        numbers = _NUMBER_RE.findall(captured)
+        # last numeric token when one is present.  Strip thousands separators
+        # first so "1,234" is one number, not "234".
+        numbers = _NUMBER_RE.findall(captured.replace(",", ""))
         if numbers:
             return numbers[-1].strip()
         return captured
-    numbers = _NUMBER_RE.findall(text)
-    if numbers:
-        return numbers[-1].strip()
+    match = _ASSIGNMENT_RE.search(text)
+    if match:
+        return match.group(2).strip()
+    # No explicit answer marker: do not guess from the last number in prose.
+    # "the numbers are 3 and 5" must not be scored as the reference answer.
     return None
 
 
@@ -138,24 +146,32 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
 
     The tests live in ``record.rubric['tests']`` (or ``test_code``).  The
     settings are deliberately explicit so the code specialist's reward can be
-    tuned later without editing the executor.
+    tuned later without editing the executor.  Every component is already
+    weighted, so ``sum(components.values()) == total`` for diagnostics.
     """
     code = _extract_code(response)
     tests = record.rubric.get("tests") or record.rubric.get("test_code")
-    format_bonus = settings.code_format_bonus if code != response else 0.0
+    if not code.strip():
+        return RewardResult(
+            total=0.0,
+            components={"unit_tests": 0.0, "compiled": 0.0, "format": 0.0},
+            details={"error": "empty code"},
+        )
+    format_bonus = float(settings.code_format_bonus) if code != response else 0.0
     if not tests:
         return RewardResult(
             total=0.0,
-            components={"unit_tests": 0.0, "compiled": 0.0, "format": format_bonus},
+            components={"unit_tests": 0.0, "compiled": 0.0, "format": 0.0},
             details={"error": "record has no rubric.tests"},
         )
     try:
         ast.parse(code)
         compiled = 1.0
     except SyntaxError as error:
+        penalty = -float(settings.code_syntax_penalty)
         return RewardResult(
-            total=-float(settings.code_syntax_penalty),
-            components={"unit_tests": 0.0, "compiled": 0.0, "format": format_bonus},
+            total=penalty,
+            components={"unit_tests": 0.0, "compiled": 0.0, "format": 0.0, "syntax": penalty},
             details={"error": f"syntax: {error}"},
         )
     program = code + "\n\n" + str(tests) + "\n"
@@ -171,21 +187,24 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
                 cwd=directory,
             )
         except subprocess.TimeoutExpired:
+            components = {
+                "unit_tests": 0.0,
+                "compiled": float(settings.code_compile_bonus),
+                "format": format_bonus,
+            }
             return RewardResult(
-                total=float(settings.code_compile_bonus) + format_bonus,
-                components={"unit_tests": 0.0, "compiled": compiled, "format": format_bonus},
+                total=sum(components.values()),
+                components=components,
                 details={"error": "timeout"},
             )
     passed = completed.returncode == 0
-    base = float(settings.code_pass_reward) if passed else 0.0
-    total = base + float(settings.code_compile_bonus) + format_bonus
     components = {
-        "unit_tests": 1.0 if passed else 0.0,
-        "compiled": compiled,
+        "unit_tests": float(settings.code_pass_reward) if passed else 0.0,
+        "compiled": float(settings.code_compile_bonus),
         "format": format_bonus,
     }
     return RewardResult(
-        total=total,
+        total=sum(components.values()),
         components=components,
         details={
             "returncode": completed.returncode,
@@ -280,24 +299,45 @@ def _repetition_shaping(text: str, settings: RewardSettings) -> float:
     return min(cap, repeats * cap * 2 / len(grams))
 
 
-def _finalize(result: RewardResult, response: str, settings: RewardSettings) -> RewardResult:
-    """Apply MiniMind-style dense shaping and optional reward clipping."""
+def _finalize(
+    result: RewardResult,
+    response: str,
+    settings: RewardSettings,
+    *,
+    apply_shaping: bool = True,
+) -> RewardResult:
+    """Apply MiniMind-style dense shaping and optional reward clipping.
+
+    ``reward_clip`` bounds the base reward (the reward model / verifier), not
+    the shaping terms.  Clipping the sum made every sufficiently good group
+    collapse to the same value -- ``group_advantages`` then returned all zeros
+    and the group silently stopped learning.  Shaping is deliberately kept
+    outside the clip so a good group still has intra-group differences.
+    """
     shaped = dict(result.components)
-    if settings.length_bonus > 0:
-        shaped["length"] = _length_shaping(response, settings)
-    if settings.think_bonus > 0:
-        shaped["think"] = _think_shaping(response, settings)
-    if settings.repetition_penalty > 0:
-        shaped["repetition"] = -_repetition_shaping(response, settings)
-    total = float(result.total) + sum(
-        value for key, value in shaped.items() if key not in result.components
-    )
     details = dict(result.details)
+    base_total = float(result.total)
     if settings.reward_clip > 0:
-        clipped = max(-settings.reward_clip, min(settings.reward_clip, total))
-        if clipped != total:
-            details["pre_clip_total"] = total
-        total = clipped
+        clipped = max(-settings.reward_clip, min(settings.reward_clip, base_total))
+        if clipped != base_total:
+            details["pre_clip_total"] = base_total
+            shaped["clip"] = clipped - base_total
+            base_total = clipped
+
+    shaping: dict[str, float] = {}
+    if apply_shaping:
+        if settings.length_bonus > 0:
+            shaping["length"] = _length_shaping(response, settings)
+        if settings.think_bonus > 0:
+            shaping["think"] = _think_shaping(response, settings)
+        if settings.repetition_penalty > 0:
+            shaping["repetition"] = -_repetition_shaping(response, settings)
+    # A reward may already expose a component with the shaping name; keep its
+    # own value rather than silently overwriting it.
+    for key, value in shaping.items():
+        if key not in shaped:
+            shaped[key] = value
+    total = base_total + sum(shaping.values())
     return RewardResult(total=total, components=shaped, details=details)
 
 
@@ -336,12 +376,15 @@ def general_reward(
     shaping so a smoke run does not silently train on a zero reward.
     """
     score = 0.0
+    # MiniMind feeds the answer after the think block to the reward model, not
+    # the raw reasoning trace (which the RM was not trained to score).
+    answer = response.split("</think>")[-1] if "</think>" in response else response
     if reward_model is not None:
-        score = float(reward_model.get_score(record.prompt, response))
+        score = float(reward_model.get_score(record.prompt, answer))
     return RewardResult(
         total=score,
         components={"reward_model": score},
-        details={"reward_model": reward_model is not None},
+        details={"reward_model": reward_model is not None, "answer": answer},
     )
 
 
@@ -355,7 +398,9 @@ def tool_reward(
     """MiniMind ``train_agent.py`` tool/agent reward.
 
     ``record.rubric['tool_turns']`` is filled by the multi-turn rollout engine;
-    ``record.rubric['unfinished']`` marks a trajectory that hit ``max_turns``.
+    ``record.rubric['unfinished']`` marks a trajectory that hit ``max_turns``
+    or ran out of context.  An unfinished trajectory gets no gt credit: the
+    final answer came from a turn that never saw the tool result.
     """
     turns = record.rubric.get("tool_turns") or [response]
     turns = [str(turn) for turn in turns]
@@ -366,14 +411,27 @@ def tool_reward(
     )
     total = -float(settings.tool_tag_penalty) * tag_balance
     components = {"tool_tag_balance": -float(settings.tool_tag_penalty) * tag_balance}
-    details: dict[str, Any] = {"turns": len(turns), "tool_calls": len(calls)}
+    unfinished = bool(record.rubric.get("unfinished", False))
+    details: dict[str, Any] = {
+        "turns": len(turns),
+        "tool_calls": len(calls),
+        "has_calls": bool(calls),
+        "unfinished": unfinished,
+    }
 
     if not calls:
-        # No tool call: fall back to the ordinary answer branch.
-        if reward_model is not None:
-            rm_score = float(reward_model.get_score(record.prompt, response))
+        # No tool call: fall back to the ordinary answer branch.  Dense
+        # length/think shaping still applies in this branch (MiniMind only
+        # applies it when there is no tool call).
+        if reward_model is not None and not unfinished:
+            answer = response.split("</think>")[-1] if "</think>" in response else response
+            rm_score = float(reward_model.get_score(record.prompt, answer))
             total += rm_score
             components["reward_model"] = rm_score
+        if unfinished:
+            penalty = -float(settings.tool_unfinished_penalty)
+            total += penalty
+            components["unfinished"] = penalty
         return RewardResult(total=total, components=components, details=details)
 
     gt = list(record.gt)
@@ -384,20 +442,34 @@ def tool_reward(
         elif record.reference_answer:
             gt = [record.reference_answer]
     valid_calls = sum(1 for call in calls if valid_tool_call(call, tools))
-    gap = abs(valid_calls - len(gt)) + max(0, len(calls) - valid_calls)
+    expected = record.rubric.get("expected_calls")
+    if expected is None:
+        # Do not use ``len(gt)`` as the expected call count: one weather call
+        # can return several gt values, and the old code then penalised a
+        # correct single call by ``abs(1 - len(gt))``.
+        gap = max(0, len(calls) - valid_calls)
+    else:
+        gap = abs(valid_calls - int(expected)) + max(0, len(calls) - valid_calls)
     align = float(settings.tool_valid_bonus) if gap == 0 else -float(settings.tool_valid_bonus) * gap
     total += align
     components["tool_alignment"] = align
-    final_text = response.split("</tool_call>")[-1] if "</tool_call>" in response else response
+    if unfinished:
+        # No gt credit: the final answer was produced without seeing this
+        # turn's observation (or the turn was cut off mid-generation).
+        penalty = -float(settings.tool_unfinished_penalty)
+        total += penalty
+        components["unfinished"] = penalty
+        details.update({"valid_calls": valid_calls, "gt": gt, "hits": []})
+        return RewardResult(total=total, components=components, details=details)
+    final_turn = turns[-1] if turns else response
+    final_text = final_turn.split("</think>")[-1] if "</think>" in final_turn else final_turn
     hits = _gt_hits(final_text, gt) if gt else set()
     gt_score = float(settings.tool_gt_weight) * (len(hits) / len(gt)) if gt else 0.0
     total += gt_score
     components["gt_match"] = gt_score
-    if bool(record.rubric.get("unfinished", False)):
-        total -= float(settings.tool_unfinished_penalty)
-        components["unfinished"] = -float(settings.tool_unfinished_penalty)
     details.update({"valid_calls": valid_calls, "gt": gt, "hits": sorted(hits)})
     return RewardResult(total=total, components=components, details=details)
+
 
 def dispatch_reward(
     response: str,
@@ -407,7 +479,8 @@ def dispatch_reward(
     judge: Judge | None = None,
     reward_model=None,
 ) -> RewardResult:
-    if record.verifier == "tool" or settings.kind == "tool":
+    is_tool = record.verifier == "tool" or settings.kind == "tool"
+    if is_tool:
         result = tool_reward(response, record, settings, reward_model=reward_model)
     elif record.verifier == "math_exact_match" or settings.kind == "math":
         result = math_reward(response, record, settings)
@@ -422,7 +495,13 @@ def dispatch_reward(
     else:
         # Unknown verifier: no learning signal rather than a silently wrong one.
         result = RewardResult(total=0.0, components={}, details={"verifier": record.verifier})
-    return _finalize(result, response, settings)
+    # Tool trajectories are scored by tool alignment + gt; MiniMind does not
+    # add length/think shaping once the model actually called a tool.  An
+    # unfinished trajectory gets no shaping either.
+    apply_shaping = not (
+        is_tool and (result.details.get("has_calls") or result.details.get("unfinished"))
+    )
+    return _finalize(result, response, settings, apply_shaping=apply_shaping)
 
 
 def make_reward_fn(
@@ -435,6 +514,16 @@ def make_reward_fn(
         from .judge import make_judge
 
         judge = make_judge(settings)
+    if (
+        reward_model is None
+        and settings.kind in {"general", "rlaif"}
+        and not settings.reward_model_path
+    ):
+        raise ValueError(
+            "general reward needs a reward model: set reward.reward_model_path "
+            "or pass one explicitly (a zero reward would silently train the "
+            "specialist on shaping only)"
+        )
     if reward_model is None and settings.reward_model_path:
         from .reward_model import LocalRewardModel
 
