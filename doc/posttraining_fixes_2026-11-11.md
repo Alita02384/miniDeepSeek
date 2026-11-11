@@ -193,7 +193,7 @@ OMP_NUM_THREADS=1 .venv/bin/python scripts/test_sft_ddp_scaling.py --dist-mode f
 
 # hn01（同步后）
 .venv/bin/python scripts/sft_step_budget.py --config configs/sft/general.yaml --steps 400
-# -> primary target/step 78,160；1 epoch 277 步；当前 210 步 = 0.76 epoch
+# -> primary target/step 78,160；1 epoch 277 步；当前 280 步 = 1.01 epoch
 #    code 49,789/114 步；tool 23,311/48 步（1 epoch），95 步≈2.0 epoch
 ```
 
