@@ -26,7 +26,8 @@ from .tools import parse_tool_calls, valid_tool_call
 
 _BOXED_RE = re.compile(r"\\boxed\{([^{}]+)\}")
 _ANSWER_RE = re.compile(
-    r"(?i)(?:final\s+answer|answer\s*[:：]|答案是|答案为)\s*[:：]? *([^\n]{1,120})"
+    r"(?i)(?:final\s+answer|answer\s*[:：]?|答案(?:是|为)?\s*[:：]?)\s*"
+    r"([^\n]{1,120})"
 )
 _NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?(?:\s*/\s*\d+(?:\.\d+)?)?")
 #: ``x = 42`` is an explicit answer even without "answer:"; bare prose numbers

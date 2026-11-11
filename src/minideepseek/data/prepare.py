@@ -67,6 +67,7 @@ def cmd_sft(args: argparse.Namespace) -> int:
         seed=args.seed,
         dedup=not args.no_dedup,
         shuffle=not args.no_shuffle,
+        require_tools=bool(args.require_tools),
     )
     _print(meta)
     return 0
@@ -202,6 +203,11 @@ def build_parser() -> argparse.ArgumentParser:
     sft.add_argument("--seed", type=int, default=1234)
     sft.add_argument("--no-dedup", action="store_true")
     sft.add_argument("--no-shuffle", action="store_true")
+    sft.add_argument(
+        "--require-tools",
+        action="store_true",
+        help="only keep records that declare a tool schema (sft_tool source)",
+    )
     sft.add_argument("--vocab-limit", type=int, default=None, help="debug-only token-id modulo")
     sft.set_defaults(func=cmd_sft)
 

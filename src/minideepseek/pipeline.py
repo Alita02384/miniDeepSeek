@@ -246,6 +246,7 @@ def _tokenize_stage(
             seq_len=int(stage.get("sft_seq_len", 4096)),
             max_records=budget,
             max_tokens=max_tokens,
+            require_tools=(name == "tool"),
         )
 
 

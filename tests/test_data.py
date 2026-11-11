@@ -612,3 +612,46 @@ def test_sft_dataset_validation_rejects_broken_masks(tmp_path):
     )
     with pytest.raises(ValueError, match="target tokens"):
         _validate_dataset(SFTDataset(path), tokenizer, TrainConfig(), label="train")
+
+
+def test_sft_require_tools_filters_the_appended_general_slice(tmp_path):
+    from minideepseek.data.sft import build_sft_dataset
+
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "calc",
+                "description": "calc",
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}},
+            },
+        }
+    ]
+    rows = [
+        {
+            "messages": [
+                {"role": "system", "content": "", "tools": tools},
+                {"role": "user", "content": "1+1"},
+                {"role": "assistant", "content": "2"},
+            ]
+        }
+        for _ in range(3)
+    ]
+    rows.append(
+        {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
+    )
+    source = tmp_path / "sft_tool.jsonl"
+    source.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    meta = build_sft_dataset(
+        [source],
+        tmp_path / "tool.npz",
+        seq_len=256,
+        max_records=10,
+        require_tools=True,
+    )
+    assert meta["examples"] == 1  # three identical tool records dedup to one
+    assert meta["source_stats"][0]["filtered_no_tools"] == 1
+    assert meta["require_tools"] is True

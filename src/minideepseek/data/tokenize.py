@@ -66,6 +66,7 @@ def tokenize_sft(
     max_records: int | None = None,
     max_tokens: int | None = None,
     seed: int = 1234,
+    require_tools: bool = False,
 ) -> dict:
     return build_sft_dataset(
         [input_path],
@@ -75,6 +76,7 @@ def tokenize_sft(
         max_records=max_records,
         max_tokens=max_tokens,
         seed=seed,
+        require_tools=require_tools,
     )
 
 
@@ -131,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 max_tokens=args.max_tokens,
                 seed=args.sft_seed,
+                require_tools=(name == "tool"),
             )
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0

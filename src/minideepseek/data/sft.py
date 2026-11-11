@@ -109,13 +109,29 @@ def encode_sft_record(
     return encoded.input_ids, encoded.target_mask
 
 
-def _conversation_key(record: dict[str, Any]) -> str:
-    """Stable digest of the normalized conversation for exact dedup."""
+def _conversation_signature(record: dict[str, Any]) -> tuple[str, bool]:
+    """Stable dedup digest plus whether this record carries a tool schema.
+
+    ``sft_tool.jsonl`` has a general slice appended after the tool records
+    (25% of tool input tokens).  Uniformly sampling the whole file makes those
+    long general answers half of the tool source's loss tokens, so the tool
+    source must be filtered to records that actually declare tools.
+    """
     messages = normalize_conversation(record)
+    top_level_tools = record.get("tools")
+    if isinstance(top_level_tools, str):
+        try:
+            top_level_tools = json.loads(top_level_tools)
+        except json.JSONDecodeError:
+            top_level_tools = None
+    has_tools = bool(top_level_tools) or any(
+        bool(message.get("tools")) for message in messages
+    )
     payload = json.dumps(
         messages, sort_keys=True, ensure_ascii=False, separators=(",", ":")
     )
-    return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+    key = hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+    return key, has_tools
 
 
 def _allocate(counts: list[int], total: int) -> list[int]:
@@ -162,6 +178,7 @@ def build_sft_dataset(
     seed: int = 1234,
     shuffle: bool = True,
     dedup: bool = True,
+    require_tools: bool = False,
 ) -> dict[str, Any]:
     """Tokenize SFT sources with sampling, dedup and no file-prefix bias.
 
@@ -186,13 +203,16 @@ def build_sft_dataset(
     seen: set[str] = set()
     source_stats: list[dict[str, Any]] = []
     for path_index, path in enumerate(paths):
-        total = duplicates = invalid = 0
+        total = duplicates = invalid = filtered = 0
         for line_index, record in enumerate(iter_jsonl(path)):
             total += 1
             try:
-                key = _conversation_key(record)
+                key, has_tools = _conversation_signature(record)
             except ValueError:
                 invalid += 1
+                continue
+            if require_tools and not has_tools:
+                filtered += 1
                 continue
             if dedup:
                 if key in seen:
@@ -207,6 +227,7 @@ def build_sft_dataset(
                 "unique": len(candidates[path_index]),
                 "duplicates": duplicates,
                 "invalid": invalid,
+                "filtered_no_tools": filtered,
                 "selected": 0,
             }
         )
@@ -292,6 +313,7 @@ def build_sft_dataset(
         "seed": int(seed),
         "shuffle": bool(shuffle),
         "dedup": bool(dedup),
+        "require_tools": bool(require_tools),
         "max_records": None if max_records is None else int(max_records),
         "max_tokens": None if max_tokens is None else int(max_tokens),
         "unique_records": int(unique_total),
