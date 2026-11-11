@@ -100,6 +100,8 @@ def _scheduled_records(domains: tuple[str, ...] = ("code", "general", "tool")) -
             {
                 "step": step,
                 "loss": 5.0 - step * 0.1,
+                # ``loss`` is main + 0.3*mtp; every real run logs both.
+                "main_loss": 4.3 - step * 0.1,
                 "lr_factor": 1.0 - step / 20,
                 "mtp_weight": 0.3 - step * 0.005,
                 "index_topk": 2048 - step * 100,
@@ -129,13 +131,17 @@ def test_report_plots_each_validation_domain(tmp_path):
     summary = build_report(_scheduled_records(), out)
     document = out.read_text(encoding="utf-8")
 
-    assert summary["val_domains"] == ["code", "general", "tool"]
+    # general first: it is 82% of the mix and the curve the run is judged on.
+    assert summary["val_domains"] == ["general", "code", "tool"]
     assert "Validation loss by domain" in document
     assert ">general<" in document
     assert ">code<" in document
     assert ">tool<" in document
-    # ``val_main_loss_<domain>`` shares the val_/loss_ fragments but is not a domain.
+    # ``val_main_loss_<domain>`` shares the val_/loss_ fragments but is not a
+    # domain of its own -- it is the *preferred* series for the domain it names,
+    # so the bare suffix must never leak into the legend.
     assert ">main_loss_general<" not in document
+    assert ">main_loss_code<" not in document
 
 
 def test_report_plots_schedules_and_csa_topk(tmp_path):
@@ -289,3 +295,34 @@ def test_report_labels_legacy_router_series_as_mixed(tmp_path):
     document = out.read_text(encoding="utf-8")
     assert "all: max/mean (legacy)" in document
     assert "learned: max/mean" not in document
+
+
+def test_report_plots_training_loss_per_domain_in_mix_order(tmp_path):
+    """With ``lockstep=false`` the step loss is a blend; the per-domain curves
+    are the ones that show a domain still learning."""
+    records = _scheduled_records()
+    for record in records:
+        if "loss" in record:
+            record["train_main_loss_general"] = 2.5
+            record["train_main_loss_code"] = 1.4
+            record["train_main_loss_tool"] = 1.0
+    out = tmp_path / "report.html"
+    build_report(records, out)
+    document = out.read_text(encoding="utf-8")
+    assert "Training loss by domain" in document
+    # general must be the first legend entry of that panel, not code.
+    panel = document.split("Training loss by domain", 1)[1]
+    assert panel.index(">general<") < panel.index(">code<") < panel.index(">tool<")
+
+
+def test_report_prefers_the_main_head_loss(tmp_path):
+    records = _scheduled_records()
+    out = tmp_path / "report.html"
+    build_report(records, out)
+    document = out.read_text(encoding="utf-8")
+    assert "LM loss (main head)" in document
+    assert "total loss (incl. MTP)" in document
+    # the loss panel's primary series is the main head, so the total must be
+    # labelled as the secondary one rather than called plain "total".
+    assert "LM (main head)" in document
+    assert "total (incl. MTP)" in document

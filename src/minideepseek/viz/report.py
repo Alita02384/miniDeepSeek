@@ -20,7 +20,10 @@ from .svg import PALETTE, Annotation, Chart, Heatmap
 #: built from an older ``metrics.jsonl`` (flat, hash-mixed router keys) still
 #: renders alongside one built after the hash/learned split.
 _CARD_KEYS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("loss",), "loss"),
+    # ``loss`` is ``main + 0.3 * mtp + indexer``; the LM number is what an
+    # operator has to judge the run by, so it leads and ``loss`` says what it is.
+    (("main_loss",), "LM loss (main head)"),
+    (("loss",), "total loss (incl. MTP)"),
     (("val_loss",), "val loss"),
     (("val_ppl",), "val ppl"),
     (("lr",), "learning rate"),
@@ -46,6 +49,8 @@ _STABILITY_KEYS = (
 )
 
 _TABLE_KEYS = (
+    "main_loss",
+    "val_main_loss",
     "loss",
     "val_loss",
     "lr",
@@ -173,9 +178,12 @@ def _panel(title: str, ylabel: str, *, logy: bool = False, x_key: str = "step") 
 
 def _loss_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     chart = _panel("Loss", "cross-entropy")
-    added = _add_series(chart, records, "loss", "total", color=PALETTE[0])
-    added |= _add_series(chart, records, "loss_ema", "EMA", color="#60a5fa", dash="4 3")
-    added |= _add_series(chart, records, "main_loss", "main head", color=PALETTE[2])
+    # ``loss`` carries ``+0.3 * mtp`` on top of the LM head, so it sits ~0.85
+    # nats higher and moves for reasons unrelated to language modelling: plot
+    # the main head first and label the sum for what it is.
+    added = _add_series(chart, records, "main_loss", "LM (main head)", color=PALETTE[0])
+    added |= _add_series(chart, records, "main_loss_ema", "LM EMA", color="#60a5fa", dash="4 3")
+    added |= _add_series(chart, records, "loss", "total (incl. MTP)", color=PALETTE[2])
     if _has_key(records, "mtp_loss"):
         added |= _add_series(chart, records, "mtp_loss", "MTP", color=PALETTE[3])
     depths = sorted(
@@ -187,8 +195,13 @@ def _loss_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
         added |= _add_series(
             chart, records, f"mtp_loss_d{depth}", f"MTP d{depth}", color=PALETTE[4]
         )
-    if _has_key(records, "val_loss"):
-        _add_series(chart, records, "val_loss", "validation", color="#111827", kind="points")
+    if _has_key(records, "val_main_loss"):
+        _add_series(chart, records, "val_main_loss", "validation (LM)",
+                    color="#111827", kind="points")
+        added = True
+    elif _has_key(records, "val_loss"):
+        _add_series(chart, records, "val_loss", "validation (total)",
+                    color="#111827", kind="points")
         added = True
     return chart if added else None
 
@@ -200,16 +213,32 @@ def _validation_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     return chart
 
 
-def _val_domains(records: Sequence[dict[str, Any]]) -> list[str]:
-    """Domain suffixes of the per-domain validation keys (``val_loss_<name>``)."""
-    prefix = "val_loss_"
+#: Display order for the three pretraining domains.  Alphabetical would read
+#: ``code general tool`` and bury the 82%-of-the-mix curve the run is judged on.
+_DOMAIN_ORDER = ("general", "code", "tool")
+
+
+def _domain_names(records: Sequence[dict[str, Any]], prefixes: Sequence[str]) -> list[str]:
+    """Domain suffixes appearing under any of ``prefixes``, in display order."""
     names = {
         key[len(prefix) :]
         for record in records
         for key in record
+        for prefix in prefixes
         if key.startswith(prefix) and key[len(prefix) :]
     }
-    return sorted(names)
+    return sorted(
+        names,
+        key=lambda name: (
+            _DOMAIN_ORDER.index(name) if name in _DOMAIN_ORDER else len(_DOMAIN_ORDER),
+            name,
+        ),
+    )
+
+
+def _val_domains(records: Sequence[dict[str, Any]]) -> list[str]:
+    """Domain suffixes of the per-domain validation keys."""
+    return _domain_names(records, ("val_main_loss_", "val_loss_"))
 
 
 def _domain_val_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
@@ -218,12 +247,37 @@ def _domain_val_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     The aggregate ``val_loss`` hides a regression that only hits one domain, so
     every ``val_loss_<domain>`` recorded by the trainer gets its own series here.
     """
-    chart = _panel("Validation loss by domain", "cross-entropy")
-    added = _add_series(chart, records, "val_loss", "all domains", color="#111827", dash="5 3")
+    chart = _panel("Validation loss by domain", "cross-entropy (main head)")
+    added = _add_series(chart, records, "val_main_loss", "all domains",
+                        color="#111827", dash="5 3")
+    if not added:
+        added = _add_series(chart, records, "val_loss", "all domains",
+                            color="#111827", dash="5 3")
     for index, name in enumerate(_val_domains(records)):
-        added |= _add_series(
-            chart, records, f"val_loss_{name}", name, color=PALETTE[index % len(PALETTE)]
-        )
+        color = PALETTE[index % len(PALETTE)]
+        painted = _add_series(chart, records, f"val_main_loss_{name}", name, color=color)
+        added |= painted or _add_series(chart, records, f"val_loss_{name}", name, color=color)
+    return chart if added else None
+
+
+def _domain_train_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
+    """Per-domain training loss.
+
+    Under ``data.lockstep=false`` one optimizer step mixes domains at
+    micro-batch granularity, so the step loss is a blend whose level depends on
+    how many code/tool micro-batches it drew.  These are the trainer's smoothed
+    per-source means, and they are the curves that actually answer "is anything
+    still learning".
+    """
+    names = _domain_names(records, ("train_main_loss_", "train_loss_"))
+    if not names:
+        return None
+    chart = _panel("Training loss by domain", "cross-entropy (main head)")
+    added = False
+    for index, name in enumerate(names):
+        color = PALETTE[index % len(PALETTE)]
+        painted = _add_series(chart, records, f"train_main_loss_{name}", name, color=color)
+        added |= painted or _add_series(chart, records, f"train_loss_{name}", name, color=color)
     return chart if added else None
 
 
@@ -562,16 +616,15 @@ def _learning_curve_panel(records: Sequence[dict[str, Any]]) -> Chart | None:
     if not _has_key(records, "tokens_seen"):
         return None
     chart = _panel("Learning curve", "cross-entropy", x_key="tokens_seen")
-    added = _add_series(chart, records, "loss", "train loss", color=PALETTE[0], x_key="tokens_seen")
-    _add_series(
-        chart,
-        records,
-        "val_loss",
-        "val loss",
-        color="#111827",
-        kind="points",
-        x_key="tokens_seen",
-    )
+    added = _add_series(chart, records, "main_loss", "train LM", color=PALETTE[0],
+                        x_key="tokens_seen")
+    added |= _add_series(chart, records, "loss", "train total", color=PALETTE[2],
+                         x_key="tokens_seen", dash="4 3")
+    for key, label in (("val_main_loss", "val LM"), ("val_loss", "val total")):
+        if _has_key(records, key):
+            _add_series(chart, records, key, label, color="#111827",
+                        kind="points", x_key="tokens_seen")
+            break
     return chart if added else None
 
 
@@ -739,6 +792,7 @@ def build_report(
 
     panels = [
         _loss_panel(records),
+        _domain_train_panel(records),
         _learning_curve_panel(records),
         _domain_val_panel(records),
         _validation_panel(records),
