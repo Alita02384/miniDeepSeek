@@ -62,6 +62,8 @@ def _prune_checkpoints(out_dir: str, keep: int) -> None:
 
 
 def run_grpo(config: RLConfig) -> dict:
+    if config.rl.method != "grpo":
+        raise SystemExit(f"config.rl.method is {config.rl.method!r}, expected 'grpo'")
     if not config.data.path:
         raise SystemExit("data.path is required for GRPO")
     context = init_distributed(config.distributed, config.model.device)
@@ -95,6 +97,8 @@ def run_grpo(config: RLConfig) -> dict:
 
 
 def run_opd(config: RLConfig) -> dict:
+    if config.rl.method != "opd":
+        raise SystemExit(f"config.rl.method is {config.rl.method!r}, expected 'opd'")
     if not config.data.path:
         raise SystemExit("data.path is required for OPD")
     context = init_distributed(config.distributed, config.model.device)

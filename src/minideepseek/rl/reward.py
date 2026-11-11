@@ -503,6 +503,30 @@ def dispatch_reward(
     return _finalize(result, response, settings, apply_shaping=apply_shaping)
 
 
+class _LazyRewardModel:
+    """Load the 1.8B reward model on first ``get_score``.
+
+    ``tool`` only consults the RM when the model made no tool call; loading it
+    eagerly at startup costs 3.6 GB and seconds even for runs that never hit
+    that branch.  General hits it on the first sample.
+    """
+
+    def __init__(self, path: str, dtype: str):
+        self.path = path
+        self.dtype = dtype
+        self._model = None
+
+    def _load(self):
+        if self._model is None:
+            from .reward_model import LocalRewardModel
+
+            self._model = LocalRewardModel(self.path, dtype=self.dtype)
+        return self._model
+
+    def get_score(self, messages, response):
+        return self._load().get_score(messages, response)
+
+
 def make_reward_fn(
     settings: RewardSettings,
     *,
@@ -524,9 +548,7 @@ def make_reward_fn(
             "specialist on shaping only)"
         )
     if reward_model is None and settings.reward_model_path:
-        from .reward_model import LocalRewardModel
-
-        reward_model = LocalRewardModel(
+        reward_model = _LazyRewardModel(
             settings.reward_model_path,
             dtype=settings.reward_model_dtype,
         )

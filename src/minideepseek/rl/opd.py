@@ -440,13 +440,23 @@ class OPDTrainer:
         else:
             import torch as _torch
 
-            from ..model.checkpoint import filter_state_dict_prefixes, read_metadata
+            from ..model.checkpoint import (
+                _sha256,
+                filter_state_dict_prefixes,
+                read_metadata,
+            )
 
             path = Path(directory)
+            meta = read_metadata(path)
+            expected = meta.get("model_sha256")
+            if expected and _sha256(path / "model.pt") != expected:
+                raise ValueError(
+                    f"checkpoint model.pt sha256 mismatch under {path}; "
+                    "the file is corrupt or incomplete"
+                )
             state = _torch.load(path / "model.pt", map_location="cpu", weights_only=True)
             state = filter_state_dict_prefixes(state, ("mtp_layers.",))
             load_model_state_dict(self.student.model, state)
-            meta = read_metadata(path)
         self.step_index = (
             int(meta.get("step", 0)) if self.config.train.resume_step else 0
         )

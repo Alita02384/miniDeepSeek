@@ -258,7 +258,13 @@ class TorchRolloutEngine:
         return record
 
     def flat_logprobs(self, samples: Sequence[RolloutSample]) -> list[float]:
-        """Teacher-forced actor log-probs, grouped back per sample."""
+        """Teacher-forced actor log-probs for the *loss* tokens of each sample.
+
+        ``actor_logprobs`` returns only ``token_mask=True`` positions; multi-turn
+        samples therefore have fewer values than ``response_length`` (which
+        includes masked tool observations).  Slicing by ``response_length``
+        silently shifted every later sample.
+        """
         if not samples:
             return []
         values = self.actor_logprobs(samples, temperature=samples[0].temperature)
@@ -266,8 +272,9 @@ class TorchRolloutEngine:
         result: list[float] = []
         cursor = 0
         for sample in samples:
-            result.extend(values[cursor : cursor + sample.response_length])
-            cursor += sample.response_length
+            count = sample.num_loss_tokens
+            result.extend(values[cursor : cursor + count])
+            cursor += count
         if cursor != len(values):
             raise RuntimeError("response-token accounting mismatch")
         return result

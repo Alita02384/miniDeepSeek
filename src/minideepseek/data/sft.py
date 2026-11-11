@@ -61,7 +61,9 @@ class SFTDataset:
         input_ids = torch.from_numpy(
             np.array(self.input_ids[start:end], dtype=np.int64, copy=True)
         )
-        positions = torch.arange(end - start, dtype=torch.long)
+        positions = torch.from_numpy(
+            np.array(self.positions[start:end], dtype=np.int64, copy=True)
+        )
         mask = torch.from_numpy(
             np.array(self.target_mask[start:end], dtype=bool, copy=True)
         )

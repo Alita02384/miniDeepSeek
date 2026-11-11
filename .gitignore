@@ -21,7 +21,7 @@ reports/*
 # 缓存 / 虚拟环境
 __pycache__/
 *.pyc
-.venv/
+.venv
 .cache/
 .ruff_cache/
 .pytest_cache/
