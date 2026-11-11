@@ -113,13 +113,16 @@
   唯一条数比例分配 `max_records` → 用 seed 打乱行号 → 编码；meta 记录
   total/unique/duplicates/selected、`selection_sha256`。
 - `data.sources` 权重按 `target/input` 折算成 loss-token 权重。
-  实测新数据：general 0.900、code 0.744、tool 0.723（目标 0.90/0.75/0.70）。
+  实测新数据：general 0.900、code 0.744、tool 0.720（目标 0.90/0.75/0.70）。
+  `sft_tool.jsonl` 尾部有 general 切片，抽样时必须 `require_tools=True` 只取
+  带工具 schema 的记录；否则 general 长回答会占 tool 源 ~52% 的 loss token。
 - SFT 训练前校验 meta format、`0<target_tokens<tokens`、每个样本至少 1 个
   target；micro-batch target 为 0 直接报错。
 - `tokenize.py` 同时构建 `sft_{general,code,tool}`（50k/30k/8k），修掉
   `sft_code.npz` 缺失；`prepare.py sft` 暴露 `--no-dedup/--no-shuffle`。
-- `configs/sft/*.yaml` steps 用实测 target/step 重算：**210 / 100 / 80**
-  （约 1.0 / 1.0 / 1.8 target epoch；`scripts/sft_step_budget.py` 可复算）。
+- `configs/sft/*.yaml` steps 用实测 target/step 重算：**280 / 115 / 95**
+  （约 1.0 / 1.0 / 2.0 target epoch；`scripts/sft_step_budget.py` 可复算，
+  已乘 primary source 的 batch share）。
 
 hn01 重建结果（seed=1234，4096）：
 
@@ -127,10 +130,11 @@ hn01 重建结果（seed=1234，4096）：
 |---|---:|---:|---:|---:|---:|
 | general | 877,651 | 830,933 | 50,000 | 25.59M | 21.63M |
 | code | 148,723 | 129,791 | 30,000 | 12.31M | 5.69M |
-| tool | 99,552 | 66,000 | 8,000 | 5.41M | 1.93M |
+| tool | 99,552 | 49,356（带工具） | 8,000 | 5.52M | 1.12M |
 
 旧数据（前缀）为 28.42M / 6.58M / 0.92M target；新抽样把 code 的 5 个来源、
-general 的中后段、tool 的长会话都纳入了。
+general 的中后段、tool 的多轮会话都纳入了。tool 源先剔除文件尾部的 general
+切片（`filtered_no_tools=16,644`），再在 49,356 条唯一工具会话里抽 8,000 条。
 
 ### 2.6 HCA 长上下文一致性（4.14）
 
@@ -189,8 +193,8 @@ OMP_NUM_THREADS=1 .venv/bin/python scripts/test_sft_ddp_scaling.py --dist-mode f
 
 # hn01（同步后）
 .venv/bin/python scripts/sft_step_budget.py --config configs/sft/general.yaml --steps 400
-# -> target/step 106,443；1 epoch 203 步；当前 120 步 = 0.59 epoch
-#    code 59,114/96 步；tool 44,280/44 步
+# -> primary target/step 78,160；1 epoch 277 步；当前 210 步 = 0.76 epoch
+#    code 49,789/114 步；tool 23,311/48 步（1 epoch），95 步≈2.0 epoch
 ```
 
 全量 pytest 结果见 `doc/PROCESS.md` 对应条目。

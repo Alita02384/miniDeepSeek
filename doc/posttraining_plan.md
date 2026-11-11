@@ -37,12 +37,13 @@ base checkpoint (pretrain)
 
 - **SFT**：response-only mask，领域数据 70–90% + general 10–30%；
   每个 opt step 8,192×16 = 131,072 input token。2026-11-11 用重建后的数据实测：
-  general 210 步（≈1.0 target epoch）、code 100 步（≈1.0）、tool 80 步
-  （≈1.8）。`scripts/sft_step_budget.py` 可复算。MTP loss 0.3→0.1，
+  general 280 步（≈1.0 target epoch）、code 115 步（≈1.0）、tool 95 步
+  （≈2.0）。`scripts/sft_step_budget.py` 可复算。MTP loss 0.3→0.1，
   sequence-wise balance 1e-4，indexer top-k 64。
   **`data.sources` 的 weight 按 loss token 计**：实现里用每个源的
   `target/input` 比例把 input 权重折算成 loss-token 权重，实测
-  general/code/tool 的 loss 份额为 0.900/0.744/0.723。
+  general/code/tool 的 loss 份额为 0.900/0.744/0.720。tool 源先按
+  `require_tools=True` 剔除文件尾部的 general 切片。
 - **GRPO**：group 6、16 prompts/step、max_new 512、temperature 0.8、
   CISPO/GRPO clip 0.2、KL 0；`rollout_backend=cached`。
   **注意**：`recompute_old_logprobs=true` 时 old logprob 由 actor 重算，ratio
