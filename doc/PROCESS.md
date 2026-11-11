@@ -1672,3 +1672,28 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
     把"总体看起来均衡、按域其实极端"这件事暴露出来了。
 - 未完成 / 风险：`balance_loss_coeff` 仍是 1e-4，code/tool 的 0% 专家还在；
   改它需要单独一次实验（见 D88 末尾的判据）。
+
+### 2026-11-11 补：看板"双击即开" + 分域快照跨窗口累积
+
+- 用户问"能不能直接打开 HTML"。**不能**：浏览器不能开 SSH，必须有本地进程
+  把远端 `metrics.jsonl` 转成 HTTP。所以把那一步压到最小：
+  - `live_dashboard.py` 的每个参数都读环境变量
+    （`MINIDEEPSEEK_SSH_HOST/PORT/REMOTE_ROOT/STAGE/LOCAL_PORT`），
+    `--stage` 默认 curriculum 根目录（可跨 stage 跟着跑）；
+  - 新增 `--open/--no-open`，在 tty 上默认自动开浏览器；
+  - 新增 `scripts/live.command`（macOS 双击）：先试密钥，失败则**只问一次**
+    密码并缓存到 `~/.config/minideepseek/ssh_pass`（700 目录 + 600 文件，
+    仓库外，不会被提交），之后零交互；随后 exec 看板并自动开页；
+  - 页面在 bridge 不通时直接显示"双击 scripts/live.command"，
+    而不是只说 offline。
+- 分域快照改成**跨整个 `train.router_every` 窗口累积**（原来只累一个 step）。
+  原因：`tool` 只占 3%，一个 step 的 16 个 micro-batch 平均只有 ~0.5 个，
+  约 60% 的快照里根本没有 tool，四视图会时有时无。
+- 验证：`pytest -q` **317 passed / 2 skipped**，ruff 通过，`node --check`
+  校验页面 JS；重启后 step 5350/5400 的快照都同时含 code/general/overall/tool；
+  本地用 `scripts/live.command`（只设 `MINIDEEPSEEK_SSH_PASSWORD`）拉起，
+  `/data` 返回 550 行、step 5360、`error` 为空。
+- 顺带记录一个未采用的优化：`scripts/launch_curriculum.sh`（多卡启动器）
+  没有导出 `MINIDEEPSEEK_ROUTING_GPU=1`，而 `train_curriculum.sh`（单卡）有。
+  按 D72 的实测这会省掉每 micro-batch 21 次 D2H 同步（约 15–20% 吞吐）。
+  改成多卡路径需要一次重启做 A/B，本次没动。

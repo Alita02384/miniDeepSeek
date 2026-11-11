@@ -665,12 +665,15 @@ class Trainer:
                 if self._router_snapshot_due():
                     metrics.router_layers = layer_expert_counts(routing)
                     metrics.router.update(self._domain_specialization())
-            # Per-domain, per-layer expert counts over *every* micro-batch of a
-            # snapshot step.  ``router_layers`` above only sees the last
-            # micro-batch, which under ``data.lockstep=false`` is a single
-            # domain's corner of the step -- enough for a heatmap, useless as a
-            # "which experts does code actually use" view.
-            if domain_name and self._router_snapshot_due():
+            # Per-domain, per-layer expert counts, accumulated over *every*
+            # micro-batch since the previous snapshot.  ``router_layers`` above
+            # only sees the last micro-batch, which under
+            # ``data.lockstep=false`` is a single domain's corner of the step --
+            # enough for a heatmap, useless as a "which experts does code
+            # actually use" view.  Accumulating across the whole
+            # ``train.router_every`` window also keeps ``tool`` (3% of the mix,
+            # ~0.5 micro-batches per step) from vanishing from most snapshots.
+            if domain_name and self._router_window_open():
                 self._accumulate_layer_domains(domain_name, routing)
             return total, metrics
 
@@ -713,6 +716,10 @@ class Trainer:
         return metrics
 
     # -- one training step ----------------------------------------------------
+    def _router_window_open(self) -> bool:
+        """True while per-domain layer counts are worth collecting at all."""
+        return int(self.config.train.router_every) > 0
+
     def _router_snapshot_due(self) -> bool:
         every = int(self.config.train.router_every)
         return every > 0 and self.step % every == 0

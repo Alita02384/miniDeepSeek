@@ -605,11 +605,18 @@ async function poll() {
       `${data.file}  ·  ${(data.rows || []).length} points  ·  ` +
       `updated ${new Date().toLocaleTimeString()}`;
   } catch (err) {
-    setState(`offline · ${err.message} — is live_dashboard.py running?`, false);
-    if (lastGood) {
-      document.getElementById('foot').textContent =
-        `last successful update ${new Date(lastGood).toLocaleTimeString()}`;
-    }
+    setState(`offline · ${err.message}`, false);
+    // A browser cannot open an SSH connection, so this page only has data while
+    // the bridge process is running.  Say exactly what to start instead of
+    // leaving the reader to guess.
+    const how = location.protocol === 'file:'
+      ? 'this file needs the bridge running: double-click scripts/live.command ' +
+        '(or run scripts/live_dashboard.py)'
+      : 'the bridge is not answering on ' + DATA_URL + ' — restart scripts/live.command';
+    document.getElementById('foot').textContent =
+      how + (lastGood
+        ? ` · last successful update ${new Date(lastGood).toLocaleTimeString()}`
+        : '');
   }
 }
 poll();

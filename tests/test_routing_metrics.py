@@ -53,3 +53,55 @@ def test_domain_keys_are_not_cross_rank_reduced():
     assert _is_reducible("router_learned_expert_load_max_over_mean", 1.4)
     assert not _is_reducible("router_domain_code_js_vs_pooled", 0.3)
     assert not _is_reducible("router_domain_general_share_max", 0.4)
+
+
+def test_per_domain_layer_counts_accumulate_over_the_snapshot_window():
+    """``tool`` is 3% of the mix, so a single step often contains none.
+
+    The per-domain layer snapshot therefore has to span the whole
+    ``train.router_every`` window -- otherwise the dashboard's tool view is
+    empty for most snapshots even though the model is routing tool tokens.
+    """
+    from pathlib import Path
+
+    import torch
+
+    from minideepseek.config import TrainConfig, load_config
+    from minideepseek.train.trainer import Trainer
+
+    repo = Path(__file__).resolve().parents[1]
+    config = load_config(TrainConfig, repo / "configs" / "pretrain" / "pretrain_145m.yaml")
+    assert config.train.router_every > 0
+    trainer = Trainer.__new__(Trainer)
+    trainer.config = config
+    trainer.device = torch.device("cpu")
+    trainer._domain_layer_counts = {}
+
+    def fake_routing(seed: int):
+        generator = torch.Generator().manual_seed(seed)
+        ids = torch.randint(0, 6, (64, 2), generator=generator)
+        layer = type(
+            "Layer",
+            (),
+            {
+                "routing_map": torch.zeros(64, 6, dtype=torch.bool).scatter_(-1, ids, True),
+                "is_hash": False,
+            },
+        )()
+        return type("Record", (), {"layers": {"L0": layer}, "num_tokens": 64})()
+
+    # two steps of general + one step that happens to hold no tool tokens
+    trainer._accumulate_layer_domains("general", fake_routing(0))
+    trainer._accumulate_layer_domains("general", fake_routing(1))
+    trainer._accumulate_layer_domains("code", fake_routing(2))
+    snap = trainer._domain_layer_snapshot()
+
+    assert sorted(snap) == ["code", "general", "overall"]
+    total = lambda name: sum(snap[name]["L0"]["counts"])  # noqa: E731
+    # 64 tokens x top-2 slots per call, and a repeated expert id collapses in
+    # ``scatter_``, so each call contributes at most 128 routed slots.
+    assert 0 < total("general") <= 2 * 128
+    assert 0 < total("code") <= 128
+    assert total("overall") == total("general") + total("code")
+    # the window restarts after a snapshot
+    assert trainer._domain_layer_counts == {}
