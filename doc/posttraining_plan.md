@@ -35,14 +35,24 @@ base checkpoint (pretrain)
   └── sft_tool_145m    ──> grpo_tool_145m    ┘
 ```
 
-- **SFT**：response-only mask，领域数据 70–90% + general 10–30%，
-  `batch_tokens=8192`、`grad_accum=16`、120 步（general/code）/80 步（tool），
-  约 1 epoch；MTP loss 0.3→0.1，sequence-wise balance 1e-4，indexer top-k 64。
+- **SFT**：response-only mask，领域数据 70–90% + general 10–30%；
+  每个 opt step 8,192×16 = 131,072 input token。2026-11-11 用重建后的数据实测：
+  general 210 步（≈1.0 target epoch）、code 100 步（≈1.0）、tool 80 步
+  （≈1.8）。`scripts/sft_step_budget.py` 可复算。MTP loss 0.3→0.1，
+  sequence-wise balance 1e-4，indexer top-k 64。
+  **`data.sources` 的 weight 按 loss token 计**：实现里用每个源的
+  `target/input` 比例把 input 权重折算成 loss-token 权重，实测
+  general/code/tool 的 loss 份额为 0.900/0.744/0.723。
 - **GRPO**：group 6、16 prompts/step、max_new 512、temperature 0.8、
   CISPO/GRPO clip 0.2、KL 0；`rollout_backend=cached`。
+  **注意**：`recompute_old_logprobs=true` 时 old logprob 由 actor 重算，ratio
+  恒为 1，clip 实际不生效，等价于 on-policy REINFORCE + group baseline；
+  不要把 `clip=0.2` 当成有效 trust region。
 - **OPD**：student 自己采样，三个 teacher 对同一轨迹算 **full-vocabulary
   reverse KL**（6400 词表），按 `teacher_key` 路由，权重 1/3 each；
-  student 不做 GRPO（与 V4 一致）。
+  student 不做 GRPO（与 V4 一致）。loss 的分母是**固定** `Σw_i`，某步缺
+  teacher 不会放大剩余权重；老师和学生都用 T=0.8 采样，实际最小化的是
+  `KL(π_s^T‖π_t^T)`，不是 untempered KL。
 
 ---
 
@@ -127,10 +137,12 @@ bash scripts/build_pretrain_packs.sh          # 已有 2K/4K/8K pack 时跳过
 from minideepseek.data.sft import build_sft_dataset
 from minideepseek.tokenizer import load_tokenizer
 tok = load_tokenizer()
+# 全量扫描 -> 会话去重 -> 按唯一记录数比例分配 -> seed 打乱行号
 for domain, n in [("general", 50000), ("code", 30000), ("tool", 8000)]:
     build_sft_dataset([f"data/sft_{domain}.jsonl"],
                       f"data/tokenization/sft_{domain}.npz",
-                      tokenizer=tok, seq_len=4096, max_records=n)
+                      tokenizer=tok, seq_len=4096, max_records=n, seed=1234)
+# 等价的 CLI：python -m minideepseek.data.prepare sft --input ... --output ...
 PY
 
 # 2) 三个 specialist SFT（顺序跑，单卡约 30–40 min/个）

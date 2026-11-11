@@ -1815,3 +1815,38 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
   的最早/最晚 step），`chart()` 用它当 x 范围。指标本身出现得晚的图，左侧就是
   空白——空着比悄悄缩放诚实。
 - 实测：普通记录 90..5870、路由序列 100..5870 → 共用轴 90..5870。
+
+## 2026-11-11 后训练审计修复（P0/P1/P2 主体）
+
+- commit: `e7e952c` fix: tool continuation uses eval mode, context budget, recorded open_thinking
+- commit: `c9e4484` fix: reward clip no longer erases good groups; tool gt/unfinished semantics
+- commit: `f68f256` fix: eval uses the training reward dispatch and maps eval_code tests
+- commit: `f468295` fix: scale SFT gradients by the global target-token count
+- commit: `97badd7` fix: HCA decode uses the same most-recent window as the packed forward
+- commit: `6387a90` fix: SFT data samples/dedups across the whole corpus and weights by loss tokens
+- commit: `5c7f545` fix: SFT tokenizer CLI builds code too, with per-domain sample budgets
+- commit: `9615123` fix: align pipeline budgets/preflight with the 145M run layout
+- commit: `47d6728` fix: GRPO/OPD multi-rank normalization, fixed teacher weights, resume and metrics
+- commit: `98245f6` fix: SFT auto-resume precedence and measured step counts
+- commit: `2fff243` fix: lazy RM load, masked flat_logprobs, stored SFT positions, RL resume hash
+
+- 做了什么: 按 `doc/posttraining_audit_2026-11-11.md` 修 P0/P1 与核心 P2；
+  另修了实测发现的 `TrainSettings.stage_index`、`flat_logprobs` 多轮错位、
+  `code_reward` components/total 不一致等新 bug。详见
+  `doc/posttraining_fixes_2026-11-11.md`。
+- 实现了什么:
+  - 2 进程 SFT 梯度缩放回归：DDP/FSDP2 不同 target 数，一步后权重最大差
+    `0.000e+00`（修复前审计复现为 2.127e-5）。
+  - hn01 重建 SFT 数据：general 50k/21.63M target，code 30k/5.69M，
+    tool 8k/1.93M；实测 loss-token 份额 0.900/0.744/0.723。
+  - SFT steps 210/100/80（≈1.0/1.0/1.8 target epoch）。
+  - tool continuation 的 eval 模式、context 预算、open_thinking、max_turns
+    都有回归测试。
+  - eval general/tool 走训练同一套 reward；eval_code 的 tests 正确映射。
+  - HCA `max_context>seq_len` 的 decode/packed logits 差从 0.134 降到 <1e-5。
+- 验证: 本地后训练 39 passed；trainer 30 passed / distributed 57 passed；
+  pipeline/data/eval/resume 定向测试全过；全量 pytest 见下一条记录；
+  hn01 上的数据重建与 `sft_step_budget.py` 已跑通。
+- 未完成 / 风险: 没有在 hb01 上 pull（pretrain job 正在跑）；SFT base 仍是
+  2K step_001015，等预训练落盘；SFT validation、多轮 tool eval、温度/clip
+  语义、RPO（确认为笔误）见修复文档 §4。

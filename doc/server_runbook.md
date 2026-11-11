@@ -41,7 +41,13 @@ PY
 ls data/pretrain_t2t.jsonl data/sft_general.jsonl data/grpo_tool_train.jsonl
 ```
 
-## 2. 一键流水线
+## 2. 一键流水线（145M 模板，按需使用）
+
+> 当前 3B 预训练与 145M 后训练都以单阶段脚本为准；pipeline 是整理好的
+> 145M 模板。`--dry-run` 会检查 pretrain/SFT 输入、GRPO resume、OPD data 和
+> teacher checkpoint，缺一个就失败。
+>
+> **不要把它当成 3B 预训练的入口**；hb01 的 pretrain job 不要用 pipeline 重启。
 
 ```bash
 NPROC_PER_NODE=4 bash scripts/run_pipeline.sh \
@@ -69,15 +75,17 @@ tokenize pretrain 2K/4K/8K + sft_general/sft_tool
 
 ## 3. 数据与预算
 
-- pretrain：`pretrain_t2t.jsonl`，tokenize 后实际 token 数写入
-  `data/tokenization/pretrain_*.json`；pipeline 按 2K/4K/8K = 15%/55%/30% 分配，
+- pretrain：分域 `pretrain_{general,code,tool}.jsonl`，tokenize 后实际 token 数写入
+  `data/tokenization/pretrain_{domain}_{2k,4k,8k}.json`；pipeline 按
+  2K/4K/8K = 15%/55%/30% 分配，并读取 base config 的 `grad_accum`（16）：
   `step = tokens / (batch_tokens_final × grad_accum)`，不写死 6B。
 - SFT general：`sft_general.jsonl`（约 6 亿 token），默认 1 epoch。
 - SFT tool：`sft_tool.jsonl`（tool 子集约 5400 万 + general 约 1360 万 input token）。
 - GRPO tool：`grpo_tool_train.jsonl`，约 3.5 万条多轮工具 prompt；每 step
   4 组 × 16 prompt，rollout 成本比 general 高。
-- OPD：`opd_prompts_mixed.jsonl`，general 17k + tool 20k；teacher 为
-  `checkpoints/grpo_general_145m/final`、`checkpoints/grpo_tool_145m/final`。
+- OPD：2-teacher 用 `opd_prompts_mixed.jsonl`（general 17k + tool 20k），
+  3-teacher 用 `opd_prompts_three.jsonl`（+ code 3.1k）；teacher 为
+  `checkpoints/grpo_{general,tool,code}_145m/final`。
 
 磁盘：2K/4K/8K 三份 tokenized 约 20 GB/份（完整语料）；checkpoint 另计。
 内存：tokenize 串行跑，单进程约 20 GB 量级；不要三份并行。

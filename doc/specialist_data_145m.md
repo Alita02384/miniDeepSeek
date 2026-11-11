@@ -92,11 +92,20 @@ code 只放 2% 则更多是**工程现实**：
 
 SFT 预算 = `steps × batch_tokens × grad_accum`（`batch_tokens` 是全局 micro-batch，
 一个 optimizer step 要跑 `grad_accum` 次）。当前 `configs/sft/*.yaml` 是
-500 × 32,768 × 8 = **131M token / 专家**。
+8,192 × 16 = **131,072 input token / step**，三个专家分别 210 / 100 / 80 步。
 
-这比下面表里的 15–20M token 数据大 8 倍，等于要把 60k 条数据看 8 遍。
-**两条路选一条**：把 `steps` 降到 60–80（推荐），或把数据扩到 ~40 万条。
-**SFT 超过 1–2 epoch 就是浪费**，所以默认建议前者。
+2026-11-11 重建数据后实测（seed=1234，全量扫描 + 去重 + 随机抽样）：
+
+| 专家 | 抽样条数 | input token | target token | 步数 | target epoch |
+|---|---:|---:|---:|---:|---:|
+| general | 50,000 | 25.59M | 21.63M | 210 | ≈1.0 |
+| code | 30,000 | 12.31M | 5.69M | 100 | ≈1.0 |
+| tool | 8,000 | 5.41M | 1.93M | 80 | ≈1.8 |
+
+旧的 500×32,768×8=131M/专家 是早期草稿，和现在的 145M 配置不一致；旧的
+“取文件前 N 条”预算（general 120 / code 90 / tool 80）实际只有
+0.59 / 0.94 / 1.84 epoch。**SFT 超过 1–2 epoch 就是浪费**；
+`scripts/sft_step_budget.py` 可以在数据/混料变化后重新算。
 
 ### 3.2 甜点表
 

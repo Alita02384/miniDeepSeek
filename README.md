@@ -247,8 +247,11 @@ flowchart LR
 | OPD | student 采样，多 teacher full-vocab reverse KL | `scripts/train_opd.sh` | `checkpoints/opd_three_teacher_145m/final` |
 | 评估/导出 | 领域 rubric、可选 lm-eval、HF 格式 | `scripts/eval.sh` / `scripts/export_hf.py` | 报告 / `hf/` |
 
-`configs/pipeline/` 下有一个薄编排器，会按实际 token 数计算 step，并跳过已经产出
-`final/` 的 stage。当前 3B 分域 pack 流程以 `train_curriculum.sh` + 单阶段脚本为准。
+`configs/pipeline/` 下有一个薄编排器，会按实际 token 数计算 step、检查 prereq，
+并跳过已经产出 `final/` 的 stage。它是 **145M 模板**，不是当前 3B 分域 pack 的
+唯一入口：3B 预训练以 `train_curriculum.sh` 为准，后训练以 `scripts/train_sft.sh`
+/ `train_grpo.sh` / `train_opd.sh` + 单阶段 config 为准。pipeline 的
+`--dry-run` 现在会对缺失的 data/resume/teacher checkpoint 直接失败。
 
 ### 实测数字
 
