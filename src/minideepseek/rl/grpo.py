@@ -16,7 +16,6 @@ consistency invariants are testable on CPU with the V4 debug model.
 from __future__ import annotations
 
 import math
-import random
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +51,7 @@ from ..train.trainer import (
 from .agent_rollout import ToolRolloutEngine
 from .reward import RewardResult, group_advantages
 from .rollout import RolloutGroup, RolloutSample, TorchRolloutEngine
+from .sampling import EpochPromptSampler
 
 
 @dataclass
@@ -148,7 +148,7 @@ class GRPOTrainer:
         self.logger = (
             MetricsLogger(config.train.out_dir) if self.dist.is_main else None
         )
-        self.rng = random.Random(config.model.seed)
+        self.prompt_sampler = EpochPromptSampler(len(self.records), seed=config.model.seed)
         self.step_index = 0
         self.run_name = run_name or Path(config.train.out_dir).name
         set_seed(config.model.seed)
@@ -161,9 +161,7 @@ class GRPOTrainer:
         count = min(
             max(int(self.config.rl.prompts_per_step) // world, 1), len(self.records)
         )
-        indices = list(range(len(self.records)))
-        self.rng.shuffle(indices)
-        return [self.records[index] for index in indices[:count]]
+        return [self.records[index] for index in self.prompt_sampler.take(count)]
 
     def _flatten(self, groups: list[RolloutGroup]) -> list[RolloutSample]:
         return [sample for group in groups for sample in group.samples]

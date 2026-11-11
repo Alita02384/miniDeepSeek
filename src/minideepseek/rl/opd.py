@@ -56,6 +56,7 @@ from ..train.trainer import (
 )
 from .agent_rollout import ToolRolloutEngine
 from .rollout import RolloutSample, TorchRolloutEngine
+from .sampling import EpochPromptSampler
 
 
 @dataclass
@@ -222,21 +223,19 @@ class OPDTrainer:
         self.logger = (
             MetricsLogger(config.train.out_dir) if self.dist.is_main else None
         )
+        self.prompt_sampler = EpochPromptSampler(
+            len(self.prompts), seed=config.model.seed
+        )
         self.step_index = 0
         set_seed(config.model.seed)
 
     def _sample_prompts(self) -> list[OPDPrompt]:
-        import random
-
-        rng = random.Random(self.config.model.seed + self.step_index)
         # Global prompt budget split across DP ranks; unchanged at world=1.
         world = max(int(self.dist.world_size), 1)
         count = min(
             max(int(self.config.rl.prompts_per_step) // world, 1), len(self.prompts)
         )
-        indices = list(range(len(self.prompts)))
-        rng.shuffle(indices)
-        return [self.prompts[index] for index in indices[:count]]
+        return [self.prompts[index] for index in self.prompt_sampler.take(count)]
 
     def _rollout(self) -> list[RolloutSample]:
         prompts = self._sample_prompts()
