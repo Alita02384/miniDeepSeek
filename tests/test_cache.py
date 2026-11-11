@@ -124,3 +124,39 @@ def test_cached_engine_respects_max_new_tokens_and_stop():
     groups = engine.rollout([record], group_size=3, max_new_tokens=2, seed=1)
     for sample in groups[0].samples:
         assert 1 <= len(sample.response_ids) <= 2
+
+
+def test_hca_decode_matches_packed_when_max_context_exceeds_seq_len():
+    """Decode must use the same most-recent HCA window as the packed forward.
+
+    With ``seq_len=256`` the packed HCA window is 2 compressed blocks
+    (ceil(256/128)); a 640-token prompt has 5 completed blocks in a 1024-token
+    cache.  The old decode path saw all 5, the packed path only the first 2,
+    and logits differed by ~0.13.
+    """
+    torch.manual_seed(0)
+    model = build_model(
+        "debugmodel",
+        seq_len=256,
+        max_context=1024,
+        device="cpu",
+        dtype="float32",
+    )
+    model.eval()
+    prompt = list(range(100, 740))
+    cache = RolloutCache.from_model(model, num_slots=1, max_context=1024)
+    model.prefill(prompt, cache, 0)
+    hca = [layer for layer in cache.layers.values() if layer.compress_ratio == 128]
+    assert hca and int(hca[0].n_comp[0]) == len(prompt) // 128
+    sequence = list(prompt)
+    for step in range(3):
+        token = 900 + step
+        sequence.append(token)
+        decoded = model.decode_step(
+            torch.tensor([token]),
+            torch.tensor([len(sequence) - 1]),
+            cache,
+            torch.tensor([0]),
+        )
+        reference = _full_logits(model, sequence)
+        assert _diff(decoded[0], reference[-1]) < 1e-5

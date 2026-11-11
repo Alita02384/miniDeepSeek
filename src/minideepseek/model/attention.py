@@ -389,26 +389,34 @@ class DeepSeekV4Attention(nn.Module):
         if self.indexer is not None:
             self.indexer.init_weights()
 
+    def _hca_width(self) -> int:
+        """Static HCA window: the most recent ``width`` compressed blocks.
+
+        The kernel's top-k is a constexpr, so this must not depend on the
+        batch's actual document length (each packing layout would be a new
+        Triton specialization).  ``hca_topk_max`` caps the 8K case.
+        """
+        width = -(-int(self.max_doc_tokens) // self.compress_ratio)
+        if self.hca_topk_max is not None:
+            width = min(width, int(self.hca_topk_max))
+        return max(int(width), 0)
+
     def _hca_topk(self, tokens: int, cu_seqlens: torch.Tensor, device):
         positions = torch.arange(tokens, device=device, dtype=torch.int32)
         doc = torch.searchsorted(cu_seqlens[1:], positions, right=True, out_int32=True)
         local = positions - cu_seqlens[doc]
         limit = (local + 1) // self.compress_ratio
-        # Static bound, not ``limit.max()``: HCA's top-k is the kernel's TOPK
-        # constexpr, so deriving it from the batch makes every packing layout a
-        # new Triton specialization (minutes of compile *per layout*, repeatedly,
-        # mid-training) and costs a host sync per layer.  Documents shorter than
-        # the bound are masked by ``cmp < limit`` below.
-        width = -(-int(self.max_doc_tokens) // self.compress_ratio)
-        if self.hca_topk_max is not None:
-            # Kernel-side top-k is a constexpr and statically unrolled, so an
-            # uncapped 8K width (256) costs ~1 h to compile; keep the most
-            # recent entries instead (only the 8K stage is affected).
-            width = min(width, int(self.hca_topk_max))
+        width = self._hca_width()
         if width <= 0:
             return torch.empty(tokens, 0, dtype=torch.int32, device=device)
+        # Keep the *most recent* blocks, not the first ``width`` ones.  The
+        # decode path uses the same window; otherwise a prompt longer than
+        # ``width * ratio`` makes decode attend to blocks the packed forward
+        # never saw.
         cmp = torch.arange(width, device=device, dtype=torch.int32)
-        return torch.where(cmp[None, :] < limit[:, None], cmp[None, :], -1)
+        start = (limit - width).clamp(min=0)
+        selected = start[:, None] + cmp[None, :]
+        return torch.where(selected < limit[:, None], selected, -1).to(torch.int32)
 
     def forward(
         self,
@@ -561,9 +569,17 @@ class DeepSeekV4Attention(nn.Module):
             selected = scores.topk(k, dim=-1).indices
             valid = selected < n_comp[:, None]
             return torch.where(valid, selected, -1).long(), valid
-        # HCA: every compressed entry up to the current position is visible.
-        k = max_comp
-        selected = torch.arange(k, device=device)[None, :].expand(batch, k)
+        # HCA: the most recent ``width`` compressed entries are visible.  The
+        # packed forward caps at the same width, so decode and training agree
+        # even when ``max_context > seq_len``.
+        k = min(self._hca_width(), max_comp)
+        if k <= 0:
+            return torch.empty((batch, 0), dtype=torch.long, device=device), torch.zeros(
+                (batch, 0), dtype=torch.bool, device=device
+            )
+        columns = torch.arange(k, device=device)
+        start = (n_comp - k).clamp(min=0)
+        selected = start[:, None] + columns[None, :]
         valid = selected < n_comp[:, None]
         return torch.where(valid, selected, -1).long(), valid
 
