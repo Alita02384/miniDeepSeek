@@ -1568,3 +1568,14 @@
   - LR 峰值是否仍偏高未做 A/B；看点：step 2400→2900 的 general 分域
     loss 斜率与 router min-share；
   - `balance_loss_coeff` 仍是 1e-4，code/tool 上的极端路由大概率还会存在。
+
+### 2026-11-11 补充：口径统一的跨 checkpoint 复测（更正 plateau 结论）
+
+- 同一评测代码（CPU fp32、同一批 3 个 micro-batch）在 step 2200 / 2393 上复测：
+  general train 2.3034→2.2844、val 2.1660→2.1315、code train 1.4350→1.3428、
+  code val 1.5289→1.4351。**三个域都在下降**，不是停滞。详见 D88。
+- 训练侧数字比 fp32 实测高 ~0.24 nats（bf16 autocast + `full_packs` 重切 pack），
+  所以控制台 train loss 不能与 val loss 直接比；这本身是既有的口径问题，
+  已在 D88 记录，暂不改（改 `full_packs` 会动数据管线）。
+- 报告侧已改为以 LM(main) loss 为主线并新增分域训练/验证面板（commit de65ccb），
+  服务器上用 `scripts/plot_training.py` 重渲染确认三面板各 3 条曲线。
