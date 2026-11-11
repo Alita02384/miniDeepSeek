@@ -1085,7 +1085,14 @@ class Trainer:
         record["tokens"] = int(
             round(global_tokens if global_tokens is not None else tokens * world)
         )
-        record["tokens_seen"] = int(round(self._tokens_seen_global))
+        if global_tokens is None:
+            # Direct ``_globalize`` callers pass a record with a per-rank
+            # tokens_seen; the training path passes the all-reduced count.
+            record["tokens_seen"] = int(
+                round(float(record.get("tokens_seen") or 0.0) * world)
+            )
+        else:
+            record["tokens_seen"] = int(round(self._tokens_seen_global))
         # Sorted: dict order is insertion order, which differs between ranks
         # (whichever domain showed up first), and an all-reduce over
         # differently-ordered vectors mixes unrelated values.
