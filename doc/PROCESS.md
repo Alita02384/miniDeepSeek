@@ -1697,3 +1697,19 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
   没有导出 `MINIDEEPSEEK_ROUTING_GPU=1`，而 `train_curriculum.sh`（单卡）有。
   按 D72 的实测这会省掉每 micro-batch 21 次 D2H 同步（约 15–20% 吞吐）。
   改成多卡路径需要一次重启做 A/B，本次没动。
+
+### 2026-11-11 补：按用户要求撤掉双击启动器
+
+- 用户明确要求"改回之前的 Python 文件版本"，已撤掉 `scripts/live.command`、
+  `live_dashboard.py` 的环境变量默认值与 `--open/--no-open`，恢复成
+  `--host` 必填的纯命令行脚本。
+- **保留**的两个改动（与本条无关，且是修 bug）：
+  - 分域路由快照跨 `router_every` 窗口累积（否则 tool 视图 60% 的快照为空）；
+  - `--stage` 默认值指向 curriculum 根目录（旧默认 `stage_00_seq2048` 已经跑完，
+    照抄会显示一个死掉的 stage）。
+- 顺带把"为什么必须有本地进程"测实了：从外网探 `hb01-ssh.gpuhome.cc` 的
+  8080/8888/3000/8765，**TCP 都能连上但 HTTP 一律空响应**（NAT 网关假接受），
+  也就是说训练机没有任何可达的 HTTP 口，页面不可能自己去取数据。
+- 验证：`pytest -q` 317 passed / 2 skipped；`node --check` 页面 JS；
+  纯命令行方式起 bridge（`--local-port 8801`）拉 `/data`：559 行、step 5440、
+  四视图 code/general/overall/tool 齐全、`error` 为空。

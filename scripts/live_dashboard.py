@@ -11,6 +11,8 @@ things on ``127.0.0.1``:
 
 Open either ``http://127.0.0.1:8765`` or the HTML file directly -- the page
 polls ``http://127.0.0.1:8765/data`` either way and redraws every few seconds.
+The HTML alone shows nothing: a browser cannot open an SSH connection, so this
+process has to be running for the page to have data.
 
     python scripts/live_dashboard.py \
         --host hb01-ssh.gpuhome.cc --port 30136 \
@@ -30,7 +32,6 @@ import subprocess
 import sys
 import threading
 import time
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -310,49 +311,18 @@ class Handler(BaseHTTPRequestHandler):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    # Every flag also reads an environment variable so a launcher (or a
-    # double-clickable ``.command``) can start the bridge with no arguments.
-    parser.add_argument("--host", default=os.environ.get("MINIDEEPSEEK_SSH_HOST"))
-    parser.add_argument(
-        "--port", type=int, default=int(os.environ.get("MINIDEEPSEEK_SSH_PORT", "22"))
-    )
-    parser.add_argument(
-        "--remote-root",
-        default=os.environ.get(
-            "MINIDEEPSEEK_REMOTE_ROOT", "/root/rivermind-data/miniDeepSeek"
-        ),
-    )
+    parser.add_argument("--host", required=True)
+    parser.add_argument("--port", type=int, default=22)
+    parser.add_argument("--remote-root", default="/root/rivermind-data/miniDeepSeek")
     parser.add_argument(
         "--stage",
-        default=os.environ.get("MINIDEEPSEEK_STAGE", "checkpoints/curriculum_145m_3b"),
+        default="checkpoints/curriculum_145m_3b",
         help="curriculum root or one stage directory, relative to --remote-root; "
-        "the curriculum root follows the run across stage boundaries",
+        "the curriculum root keeps following the run across stage boundaries",
     )
-    parser.add_argument(
-        "--local-port",
-        type=int,
-        default=int(os.environ.get("MINIDEEPSEEK_LOCAL_PORT", "8765")),
-    )
+    parser.add_argument("--local-port", type=int, default=8765)
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between polls")
-    parser.add_argument(
-        "--open",
-        dest="open_browser",
-        action="store_true",
-        default=None,
-        help="open the dashboard in a browser (default: yes on a tty)",
-    )
-    parser.add_argument(
-        "--no-open", dest="open_browser", action="store_false",
-        help="do not open a browser",
-    )
     args = parser.parse_args(argv)
-    if not args.host:
-        parser.error("--host (or MINIDEEPSEEK_SSH_HOST) is required: there is no "
-                     "default training host")
-    if args.open_browser is None:
-        args.open_browser = (
-            sys.stdout.isatty() and os.environ.get("MINIDEEPSEEK_NO_BROWSER") != "1"
-        )
 
     remote = Remote(args.host, args.port, args.remote_root, args.stage)
     print(
@@ -377,8 +347,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[live] dashboard: {url}", flush=True)
     print(f"[live] raw data : {url}data", flush=True)
     print("[live] the page polls every 5 s; leave this process running", flush=True)
-    if args.open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
