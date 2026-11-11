@@ -4,11 +4,14 @@
 # tokens per optimizer step (batch_tokens 16384 x grad_accum 16):
 #   2K stage:  1717 steps x 262144 = 0.450B   (general 369M / code 67.5M / tool 13.5M)
 #   4K stage:  6294 steps x 262144 = 1.650B   (general 1353M / code 247.5M / tool 49.5M)
-#   8K stage:  3433 steps x 262144 = 0.900B   (general 738M / code 135M / tool 26M)
+#   8K stage:  3433 steps x 262144 = 0.900B   (general 698M / code 119M / tool 20M)
+#             -- the remaining 40M/16M/6M of each 8K range is the held-out
+#             validation tail (val_*_*_v2.npz), carved by make_val_split.py.
 # The 8K stage warms the CSA index from dense-over-compressed (2048) to sparse
 # top-k 64 over its first 10% (~343 steps), then stays sparse for the rest.
 # Stage ranges are disjoint in the source files (skip_tokens), so the model
-# never sees the same tokens twice.
+# never sees the same tokens twice.  The validation tails are cut out of the
+# 8K range, which is why the 8K *training* budget is smaller than the 8K range.
 # Every step count is cumulative; the trainer stops at `until_step`, so
 # re-running this command resumes where the previous run stopped.
 base_config: configs/pretrain/pretrain_145m.yaml
@@ -37,10 +40,12 @@ stages:
       - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
       - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_4k.npz, weight: 0.03, domain: tool}
+    # Held-out tails of each corpus (D87), carved out of the 8K stage's pool by
+    # scripts/make_val_split.py so they are disjoint from every training range.
     val_sources:
-      - {path: data/tokenization/val_general_4k.npz, weight: 1.0, domain: general}
-      - {path: data/tokenization/val_code_4k.npz, weight: 1.0, domain: code}
-      - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
+      - {path: data/tokenization/val_general_4k_v2.npz, weight: 1.0, domain: general}
+      - {path: data/tokenization/val_code_4k_v2.npz, weight: 1.0, domain: code}
+      - {path: data/tokenization/val_tool_4k_v2.npz, weight: 1.0, domain: tool}
   - seq_len: 8192
     until_step: 11444
     # One 8K pack per rank; 24 GB needs per-block recompute at this length.
@@ -58,6 +63,6 @@ stages:
       - {path: data/tokenization/pretrain_code_8k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_8k.npz, weight: 0.03, domain: tool}
     val_sources:
-      - {path: data/tokenization/val_general_8k.npz, weight: 1.0, domain: general}
-      - {path: data/tokenization/val_code_8k.npz, weight: 1.0, domain: code}
-      - {path: data/tokenization/val_tool_8k.npz, weight: 1.0, domain: tool}
+      - {path: data/tokenization/val_general_8k_v2.npz, weight: 1.0, domain: general}
+      - {path: data/tokenization/val_code_8k_v2.npz, weight: 1.0, domain: code}
+      - {path: data/tokenization/val_tool_8k_v2.npz, weight: 1.0, domain: tool}

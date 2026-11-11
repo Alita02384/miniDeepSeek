@@ -78,7 +78,7 @@ from .metrics import (
     memory_stats,
     swiglu_monitor,
 )
-from .optimizer import build_optimizer
+from .optimizer import HybridOptimizer, build_optimizer
 from .scheduler import IndexTopKSchedule, WarmupDecaySchedule
 from .spike import RollbackSnapshot, SpikeDetector, restore, snapshot
 
@@ -239,7 +239,16 @@ _TOKEN_WEIGHTED_KEYS = (
 )
 
 #: Diagnostic rates/ratios that follow the same token weighting as the losses.
-_STAT_PREFIXES = ("router_", "swiglu_")
+#: ``train_`` carries the per-domain training losses (see
+#: ``Trainer._update_domain_loss_ema``): every rank follows the same domain
+#: schedule, so a token-weighted mean across ranks is the whole-job value.
+_STAT_PREFIXES = ("router_", "swiglu_", "train_")
+
+#: Smoothing for the headline and per-domain training-loss EMAs.  Matches the
+#: long-standing ``loss_ema`` decay so the curves stay comparable; the head
+#: line used to be the only one and is what operators watch during a run.
+_LOSS_EMA_DECAY = 0.98
+_DOMAIN_LOSS_EMA_DECAY = 0.9
 
 #: Allocator readings: the maximum across ranks is the binding constraint.
 _MEMORY_KEYS = ("mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb")
@@ -371,6 +380,16 @@ class Trainer:
         self._first_loss: float | None = None
         self._last_loss: float | None = None
         self._loss_ema: float | None = None
+        #: EMA of the *main-head* loss.  ``loss`` above also carries the MTP and
+        #: indexer terms, so it sits ~0.85 nats above the language-modelling
+        #: number and moves for reasons that have nothing to do with the LM.
+        self._main_loss_ema: float | None = None
+        #: Per-source EMAs of the training loss.  With ``data.lockstep=false``
+        #: one optimizer step mixes domains at micro-batch granularity, so the
+        #: step-level loss is a blend whose level depends on how many code/tool
+        #: micro-batches it happened to draw; these separate the three curves.
+        self._domain_loss_ema: dict[str, float] = {}
+        self._domain_main_ema: dict[str, float] = {}
         self._step_times: deque[float] = deque(maxlen=50)
         self.best_val_loss: float = float("inf")
         self._best_val_step: int | None = None
@@ -554,6 +573,10 @@ class Trainer:
     ) -> StepMetrics:
         batch = batch.to(self.device)
         metrics = StepMetrics(mtp_weight=mtp_weight)
+        # Carried per micro-batch so ``train_step`` can attribute the loss to
+        # the source that produced it; ``data.lockstep=false`` mixes domains
+        # *within* a step, so the step has no single domain of its own.
+        metrics.domain_name = domain_name
 
         def run_forward() -> tuple[Tensor, StepMetrics]:
             context = (
@@ -737,6 +760,11 @@ class Trainer:
         mtp_weight = self._mtp_weight()
         step_domain = -1
         step_domain_name = ""
+        # Under ``data.lockstep`` every micro-batch shares one source and the
+        # last one seen *is* the step's domain.  Without lockstep a step draws
+        # 16 consecutive slots of a shuffled batch-level schedule, so it mixes
+        # domains and only the per-domain accumulators below are meaningful.
+        domains_seen: set[str] = set()
         for micro in range(accum):
             batch, routing_record = self._next_training_batch()
             current = getattr(self._batch_iter, "current_index", None)
@@ -745,6 +773,7 @@ class Trainer:
             source = getattr(self._batch_iter, "current_source", None)
             if source is not None:
                 step_domain_name = str(source)
+                domains_seen.add(step_domain_name)
             with self._gradient_sync(micro == accum - 1):
                 micro_metrics.append(
                     self._forward_backward(
@@ -797,8 +826,10 @@ class Trainer:
             mtp_losses=mtp_losses,
             router=_merge_dicts([m.router for m in micro_metrics]),
             swiglu=_merge_dicts([m.swiglu for m in micro_metrics]),
-            domain_id=step_domain,
-            domain_name=step_domain_name,
+            # Only a domain-homogeneous step has a domain of its own; a mixed
+            # step reports -1/"" so nothing downstream averages across domains.
+            domain_id=step_domain if len(domains_seen) == 1 else -1,
+            domain_name=step_domain_name if len(domains_seen) == 1 else "",
         )
         if self._router_snapshot_due():
             # Read after ``update_expert_biases`` above so the logged bias is
@@ -826,18 +857,113 @@ class Trainer:
         record = averaged.as_dict()
         record["entropy"] = self._entropy_value
         record["top1_prob"] = self._top1_value
+        self._update_domain_loss_ema(micro_metrics)
+        record.update(self._domain_loss_record())
         record = self._globalize(record, tokens=averaged.tokens)
         self._loss_ema = (
             record["loss"]
             if self._loss_ema is None
-            else 0.98 * self._loss_ema + 0.02 * record["loss"]
+            else _LOSS_EMA_DECAY * self._loss_ema + (1.0 - _LOSS_EMA_DECAY) * record["loss"]
         )
         record["loss_ema"] = self._loss_ema
+        self._main_loss_ema = (
+            record["main_loss"]
+            if self._main_loss_ema is None
+            else _LOSS_EMA_DECAY * self._main_loss_ema
+            + (1.0 - _LOSS_EMA_DECAY) * record["main_loss"]
+        )
+        record["main_loss_ema"] = self._main_loss_ema
         self._last_loss = record["loss"]
         record["index_topk"] = float(self.model.current_index_topk() or 0)
         record["lr_factor"] = lr_factor
         record.update(self._handle_spike(record["loss"]))
         return record
+
+    # -- per-domain training loss ---------------------------------------------
+    @staticmethod
+    def _domain_means(micro_metrics: list[StepMetrics]) -> dict[str, tuple[float, float]]:
+        """Token-weighted ``(loss, main_loss)`` per source domain for one step.
+
+        Token weighted inside the domain, not across it: a step may draw a
+        different number of micro-batches from each source, and the packed
+        batches have slightly different token counts after masking.
+        """
+        sums: dict[str, list[float]] = {}
+        for metric in micro_metrics:
+            name = metric.domain_name or "all"
+            tokens = float(metric.tokens)
+            if tokens <= 0:
+                continue
+            entry = sums.setdefault(name, [0.0, 0.0, 0.0])
+            entry[0] += float(metric.loss) * tokens
+            entry[1] += float(metric.main_loss) * tokens
+            entry[2] += tokens
+        return {
+            name: (loss / tokens, main / tokens)
+            for name, (loss, main, tokens) in sums.items()
+            if tokens > 0
+        }
+
+    def _update_domain_loss_ema(self, micro_metrics: list[StepMetrics]) -> None:
+        """Fold this step's per-domain means into the smoothed curves.
+
+        Every rank follows the same domain schedule, so the key set is identical
+        across ranks -- which is what ``_globalize``'s all-reduce needs.
+        """
+        for name, (loss, main) in self._domain_means(micro_metrics).items():
+            if name in self._domain_loss_ema:
+                self._domain_loss_ema[name] = (
+                    _DOMAIN_LOSS_EMA_DECAY * self._domain_loss_ema[name]
+                    + (1.0 - _DOMAIN_LOSS_EMA_DECAY) * loss
+                )
+                self._domain_main_ema[name] = (
+                    _DOMAIN_LOSS_EMA_DECAY * self._domain_main_ema[name]
+                    + (1.0 - _DOMAIN_LOSS_EMA_DECAY) * main
+                )
+            else:
+                self._domain_loss_ema[name] = loss
+                self._domain_main_ema[name] = main
+
+    def _domain_loss_record(self) -> dict[str, float]:
+        record = {
+            f"train_main_loss_{name}": value
+            for name, value in self._domain_main_ema.items()
+        }
+        record.update(
+            {f"train_loss_{name}": value for name, value in self._domain_loss_ema.items()}
+        )
+        return record
+
+    def _apply_config_learning_rates(self) -> None:
+        """Make ``config.optim`` authoritative after a resume.
+
+        ``load_optimizer_state_dict`` restores the saved ``param_groups``, which
+        carries ``base_lr``; the scheduler multiplies that, so a checkpoint
+        would silently override any LR an operator changed in the config.  That
+        makes every LR experiment look like a no-op on a resumed run.
+        """
+        optim = self.config.optim
+        muon_lr = float(optim.muon_lr if optim.muon_lr is not None else optim.lr)
+        adamw_lr = float(optim.adamw_lr if optim.adamw_lr is not None else optim.lr)
+        if isinstance(self.optimizer, HybridOptimizer):
+            groups = []
+            if self.optimizer.muon is not None:
+                groups.extend((group, muon_lr) for group in self.optimizer.muon.param_groups)
+            if self.optimizer.adamw is not None:
+                groups.extend((group, adamw_lr) for group in self.optimizer.adamw.param_groups)
+        else:
+            groups = [(group, float(optim.lr)) for group in self.optimizer.param_groups]
+        changed = []
+        for group, base_lr in groups:
+            previous = group.get("base_lr")
+            if previous is not None and abs(float(previous) - base_lr) > 1e-12:
+                changed.append((float(previous), base_lr))
+            group["base_lr"] = base_lr
+        if changed:
+            self._say(
+                "[trainer] config LR overrides the checkpoint: "
+                + ", ".join(f"{old:.3e} -> {new:.3e}" for old, new in changed)
+            )
 
     def _globalize(self, record: dict[str, Any], *, tokens: float) -> dict[str, Any]:
         """Rewrite per-rank fields of one metrics record as whole-job figures.
@@ -1297,6 +1423,9 @@ class Trainer:
             # the EMA and the cumulative token counter would otherwise restart
             # from the first post-resume step and put a knee in every plot.
             "loss_ema": self._loss_ema,
+            "main_loss_ema": self._main_loss_ema,
+            "domain_loss_ema": dict(self._domain_loss_ema),
+            "domain_main_ema": dict(self._domain_main_ema),
             "tokens_seen": self._tokens_seen,
             "best_val_loss": (
                 self.best_val_loss if math.isfinite(self.best_val_loss) else None
@@ -1414,8 +1543,17 @@ class Trainer:
         if self.config.train.resume_optimizer:
             if saved_extra.get("loss_ema") is not None:
                 self._loss_ema = float(saved_extra["loss_ema"])
+            if saved_extra.get("main_loss_ema") is not None:
+                self._main_loss_ema = float(saved_extra["main_loss_ema"])
+            for name, value in (saved_extra.get("domain_loss_ema") or {}).items():
+                self._domain_loss_ema[str(name)] = float(value)
+            for name, value in (saved_extra.get("domain_main_ema") or {}).items():
+                self._domain_main_ema[str(name)] = float(value)
             if saved_extra.get("tokens_seen") is not None:
                 self._tokens_seen = int(saved_extra["tokens_seen"])
+        # Must run after the optimizer state is loaded: that state restores the
+        # saved ``base_lr`` and would otherwise make a config LR edit a no-op.
+        self._apply_config_learning_rates()
         best_val = saved_extra.get("best_val_loss")
         if best_val is not None:
             self.best_val_loss = float(best_val)

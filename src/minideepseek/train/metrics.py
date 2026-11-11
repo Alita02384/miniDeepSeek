@@ -82,29 +82,74 @@ def format_duration(seconds: float) -> str:
     return f"{seconds / 86400:.1f}d"
 
 
+#: Console order for the three pretraining domains.  Sorted alphabetically they
+#: would read ``code general tool``, which hides that ``general`` is 82% of the
+#: mix and is the curve to judge the run by.
+_DOMAIN_ORDER = ("general", "code", "tool")
+
+#: Preference order for the domain the operator cares about; anything else
+#: (a specialist corpus, ``all`` for a single-source run) goes after these.
+_OTHER_DOMAIN_RANK = len(_DOMAIN_ORDER)
+
+
+def _display_domains(record: dict[str, Any], prefix: str) -> list[tuple[str, float]]:
+    found = []
+    for key in record:
+        if not key.startswith(prefix):
+            continue
+        name = key[len(prefix) :]
+        value = record[key]
+        if not name or isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        found.append((name, float(value)))
+    found.sort(
+        key=lambda item: (
+            _DOMAIN_ORDER.index(item[0]) if item[0] in _DOMAIN_ORDER else _OTHER_DOMAIN_RANK,
+            item[0],
+        )
+    )
+    return found
+
+
 def format_metrics(step: int, record: dict[str, Any]) -> str:
     """One compact, human-first line per log record.
 
-    The JSONL file keeps every field for post-hoc analysis; the console line
-    only surfaces the values an operator actually watches during a run.
+    The JSONL file keeps every field for post-hoc analysis.  The console line
+    leads with the **main-head** loss: ``loss`` also folds in the MTP and
+    indexer terms (``main + 0.3 * mtp``), which sit ~0.85 nats higher and move
+    on their own, so watching ``loss`` makes a healthy run look flat.  Under
+    ``data.lockstep=false`` the step loss is also a blend of domains with very
+    different levels, hence the per-domain columns.
     """
     parts = [f"step {step:>6d}"]
-    if (loss := record.get("loss")) is not None:
-        text = f"loss {loss:.4f}"
-        if (ema := record.get("loss_ema")) is not None:
+    if (main := record.get("main_loss")) is not None:
+        text = f"lm {main:.4f}"
+        if (ema := record.get("main_loss_ema")) is not None:
             text += f" (ema {ema:.4f})"
         parts.append(text)
-    if (val := record.get("val_loss")) is not None:
-        text = f"val {val:.4f}"
+    domains = _display_domains(record, "train_main_loss_")
+    if domains:
+        parts.append(" ".join(f"{name} {value:.4f}" for name, value in domains))
+    if (main := record.get("val_main_loss")) is not None:
+        text = f"VAL lm {main:.4f}"
         if (ppl := record.get("val_ppl")) is not None:
-            text += f" ppl {ppl:.1f}"
+            text += f" ppl {ppl:.2f}"
         parts.append(text)
-    if (main := record.get("main_loss")) is not None:
-        parts.append(f"main {main:.4f}")
-    if (mtp := record.get("mtp_loss")) is not None and mtp:
-        parts.append(f"mtp {mtp:.4f}")
+        val_domains = _display_domains(record, "val_main_loss_")
+        if val_domains:
+            parts.append(" ".join(f"{name} {value:.4f}" for name, value in val_domains))
+    if (loss := record.get("loss")) is not None:
+        text = f"total {loss:.4f}"
+        weight = record.get("mtp_weight")
+        if (mtp := record.get("mtp_loss")) is not None and mtp and weight is not None:
+            text += f" (mtp {mtp:.4f} x{weight:g})"
+        parts.append(text)
     if (lr := record.get("lr")) is not None:
-        parts.append(f"lr {lr:.2e}")
+        text = f"lr {lr:.2e}"
+        factor = record.get("lr_factor")
+        if factor is not None and factor != 1.0:
+            text += f" x{factor:.3f}"
+        parts.append(text)
     if (grad := record.get("grad_norm")) is not None:
         parts.append(f"|g| {grad:.3f}")
     if (rate := record.get("tokens_per_sec")) is not None:

@@ -20,15 +20,25 @@ def test_format_count_and_duration():
     assert format_duration(7200) == "2.0h"
 
 
-def test_format_metrics_is_human_readable():
+def test_format_metrics_leads_with_the_main_head_loss():
+    """``loss`` folds in MTP; the console line must lead with the LM loss.
+
+    ``loss = main + 0.3 * mtp``, so a step whose MTP head is doing badly shows a
+    headline ~0.85 nats above the language-modelling number and moving for
+    reasons that have nothing to do with the LM.  Watching it made a healthy
+    run look flat.
+    """
     line = format_metrics(
         12,
         {
             "loss": 3.4219,
             "loss_ema": 3.5,
-            "val_loss": 3.1,
-            "val_ppl": 22.2,
+            "main_loss": 2.5567,
+            "main_loss_ema": 2.61,
+            "mtp_loss": 2.8840,
+            "mtp_weight": 0.3,
             "lr": 2.4e-4,
+            "lr_factor": 0.5,
             "grad_norm": 0.83,
             "tokens_per_sec": 12_345,
             "mem_peak_mb": 2048,
@@ -36,13 +46,42 @@ def test_format_metrics_is_human_readable():
         },
     )
     assert "step" in line
-    assert "loss 3.4219" in line
-    assert "ema 3.5000" in line
-    assert "val 3.1000" in line
-    assert "ppl 22.2" in line
+    assert line.startswith("step     12 | lm 2.5567 (ema 2.6100)")
+    assert "total 3.4219 (mtp 2.8840 x0.3)" in line
+    assert "lr 2.40e-04 x0.500" in line
     assert "12.35k tok/s" in line
     assert "2.0 GiB peak" in line
     assert "ETA 2.0h" in line
+
+
+def test_format_metrics_shows_per_domain_training_losses_in_mix_order():
+    line = format_metrics(
+        7,
+        {
+            "main_loss": 2.4,
+            "train_main_loss_general": 2.5512,
+            "train_main_loss_code": 1.4803,
+            "train_main_loss_tool": 1.0211,
+        },
+    )
+    # general is 82% of the mix and must not sort behind code.
+    assert "general 2.5512 code 1.4803 tool 1.0211" in line
+
+
+def test_format_metrics_shows_per_domain_validation():
+    line = format_metrics(
+        2400,
+        {
+            "val_loss": 3.46,
+            "val_main_loss": 1.8402,
+            "val_ppl": 6.30,
+            "val_main_loss_general": 2.5901,
+            "val_main_loss_code": 1.4402,
+            "val_main_loss_tool": 1.1801,
+        },
+    )
+    assert "VAL lm 1.8402 ppl 6.30" in line
+    assert "general 2.5901 code 1.4402 tool 1.1801" in line
 
 
 def test_metrics_logger_writes_jsonl_and_echo(tmp_path, capsys):
@@ -53,7 +92,7 @@ def test_metrics_logger_writes_jsonl_and_echo(tmp_path, capsys):
     assert payload["loss"] == 1.5
     output = capsys.readouterr().out
     assert "step      3" in output
-    assert "loss 1.5000" in output
+    assert "total 1.5000" in output
     assert "1.00k tok/s" in output
 
 

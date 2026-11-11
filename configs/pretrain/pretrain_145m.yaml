@@ -5,8 +5,12 @@
 # Batch: batch_tokens is the global micro-batch (4 GPUs x 4096); grad_accum 16
 #   gives 262,144 tokens per optimizer step, so 3B tokens = 11,444 steps.
 #   Memory is set by the micro-batch, not by the effective batch.
-# Domains: lockstep=true keeps every step on a single domain so the per-step
-#   router metrics in metrics.jsonl ("domain_id") are already per-domain.
+# Domains: lockstep=false mixes domains at micro-batch granularity.  With
+#   lockstep=true one optimizer step was 262,144 tokens of a *single* domain,
+#   so the step loss swung 1.9 <-> 3.9 depending on which domain the schedule
+#   landed on, the EMA never converged, and the per-domain routers were pushed
+#   to opposite extremes (one expert got 0.0% of code tokens).  The console now
+#   prints the three training losses separately; see doc/decisions.md D85.
 model_file: configs/model/mini_145m_a60m.yaml
 model:
   flavor: mini_145m_a60m
@@ -27,7 +31,11 @@ schedule:
   warmup_steps: 300
   decay: cosine
   min_lr_ratio: 0.1
-  decay_start_ratio: 0.8
+  # D86: cosine used to hold the 6e-4 peak until 80% of the run, which left
+  # the 4K stage at constant peak LR while its val loss rose.  0.2 puts the
+  # decay start at step 2,288 of 11,444 -- i.e. right where the run was when
+  # this was changed -- so the remaining 9,150 steps anneal to 6e-5.
+  decay_start_ratio: 0.2
 data:
   # Global (all-rank) micro-batch: 4 GPUs x 4096 tokens = one 4K pack each.
   batch_tokens: 16384
@@ -35,7 +43,7 @@ data:
   batch_warmup_ratio: 0.0
   shuffle: true
   seed: 1234
-  lockstep: true
+  lockstep: false
   sources:
     - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
     - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
@@ -62,14 +70,19 @@ train:
   balance_loss_coeff: 0.0001
   index_topk_final: 64
   index_topk_warmup_ratio: 0.05
-  # Per-domain validation: one 1M-token pack per domain, logged as
-  # val_loss_<domain> in metrics.jsonl next to the aggregate val_loss.
+  # Per-domain validation, logged as val_main_loss_<domain> next to the
+  # aggregate.  The <...>_v2 sets are held-out *tails* of each corpus (general
+  # 40M / code 16M / tool 6M tokens) carved with scripts/make_val_split.py; the
+  # original 1M-token head-of-corpus sets were not representative (routers put
+  # 0.8% of one layer's tokens on an expert there vs 17.2% on the train stream).
+  # val_steps must go up with the set: each step is one 16k micro-batch, so 10
+  # sampled 0.4% of the old 1M set and would sample 0.02% of the new one.
   val_every: 200
-  val_steps: 10
+  val_steps: 64
   val_sources:
-    - {path: data/tokenization/val_general_4k.npz, weight: 1.0, domain: general}
-    - {path: data/tokenization/val_code_4k.npz, weight: 1.0, domain: code}
-    - {path: data/tokenization/val_tool_4k.npz, weight: 1.0, domain: tool}
+    - {path: data/tokenization/val_general_4k_v2.npz, weight: 1.0, domain: general}
+    - {path: data/tokenization/val_code_4k_v2.npz, weight: 1.0, domain: code}
+    - {path: data/tokenization/val_tool_4k_v2.npz, weight: 1.0, domain: tool}
   # 2K/4K fit 24 GB without recompute; the 8K stage turns this on.
   activation_checkpointing: false
   # Re-running the same command continues from the newest final/step_* instead

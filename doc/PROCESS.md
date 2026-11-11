@@ -1517,3 +1517,54 @@
   - 10 step GRPO 不足以提升 reward，code/tool specialist 仍弱；
   - OPD 20 step KL 未收敛，需 200+ step 与 lr 扫描；
   - 多卡仍只有 CPU 2-proc DDP smoke，没有真实 2-GPU 实跑。
+
+## 2026-11-11（145M 训练 plateau 诊断：混料/衰减/验证集三处改动）
+
+- 背景: 2×4090D 上 145M curriculum 跑到 step 2200+，用户报"loss 很久不降"。
+  诊断结论（见 D85–D87 + 下方事故记录）：
+  - 日志 headline `loss = main + 0.3·mtp`，比 LM loss 高 ~0.85 nats，且被
+    域级整步切换放大成 1.47↔3.85 的锯齿；
+  - general 的 train main loss 从 step ~1300 起压在 2.55，约 235M token
+    无进展；val main 1.996 @999 → 1.690 @1599 之后回退到 1.874 @2199；
+  - router 在 general 上的 min-share 14.2% → 10.4% → 9.3%（step
+    2000/2200/2393），code/tool 上有 0.0% 的专家；没有全局死专家。
+- 做了什么:
+  - `data.lockstep: true → false`（D85），新增 `train_main_loss_<domain>` /
+    `train_loss_<domain>` 分域 EMA，并把它们接进 `_globalize` 的
+    token 加权归约（`_STAT_PREFIXES` 加 `train_`）；
+  - `schedule.decay_start_ratio: 0.8 → 0.2`（D86），并修 `resume()` 让
+    配置 LR 覆盖 checkpoint 的 `base_lr`；
+  - 控制台以 `lm`（main head）为主线、附分域列与 `VAL lm`（D85/D87）；
+  - 新 val 集 general 40M / code 16M / tool 6M，`val_steps` 10 → 64（D87）。
+- 事故（必须记录）: `make_val_split.py --trim-source` 第一版用
+  `save_flat_dataset(source, ...)` 原地重写，`np.save` 的 `open("wb")`
+  在拷贝任何 token 之前就把正在被 memmap 读的
+  `pretrain_general_8k.input_ids.npy` 截断 → **738M token（2.95 GB）的
+  general 8K 区间丢失**，源 JSONL 早已按磁盘预算删除，无法重建。
+  现状：`pretrain_general_8k` 改由 `pretrain_general_4k` 的 token 流
+  （corpus [370M,1723M)）在 8192 打包替代（hardlink + 重写 meta），
+  即 8K 阶段的 general 会**第二次看到 4K 阶段的数据**；code/tool 的 8K
+  区间是真实区间。已在 `pretrain_general_8k.json` 的
+  `substituted_from` / `note` 字段里写明。修复后的 `trim_source` 改为
+  “暂存目录 + `os.replace`”，并加了 `np.array(..., copy=True)`；
+  `tests/test_make_val_split.py` 覆盖了"源文件不被改写"和"保留区逐字节不变"。
+- 验证:
+  - 本地 `pytest -q` → **313 passed, 2 skipped**；`ruff check` 通过；
+  - 服务器 `pytest -q` → 282 passed / 15 failed，15 个全是**既有**问题
+    （服务器代码比本地落后 23 个 commit：`test_trainer` 的 stub 不接受
+    `entropy=` 形参、`test_independence` 被 `._*` AppleDouble 文件
+    干扰、其余是 GRPO/consistency/generation 的新修复）；清掉 7 个
+    `._*` 后 `test_independence` 恢复；
+  - 18 个数据集逐个可加载（`PackedPretrainDataset` + 首 pack 校验）；
+  - 重启日志：`step 2400 | lm 2.2625 (ema 2.2685) | general 2.4153
+    code 1.3959 tool 0.9745 | total 3.0088 (mtp 2.4858 x0.3) |
+    lr 6.00e-04 x1.000 | |g| 0.331 | 28.89k tok/s`；
+    `step 2399 | VAL lm 1.5746 ppl 4.83 | general 2.1476 code 1.3509
+    tool 1.1813`。
+- 未完成 / 风险:
+  - **general 8K 数据是替代品**，8K 阶段（step 8011）会重复 4K 语料；
+    要恢复真区间只能重新下载 + 重新 dedup + 重新 tokenize 整个 2.46B
+    general 流（磁盘只剩 20 GB，暂时不可行）；
+  - LR 峰值是否仍偏高未做 A/B；看点：step 2400→2900 的 general 分域
+    loss 斜率与 router min-share；
+  - `balance_loss_coeff` 仍是 1e-4，code/tool 上的极端路由大概率还会存在。

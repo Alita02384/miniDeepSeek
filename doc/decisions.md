@@ -1226,3 +1226,72 @@
   - 数值上 reference 与 cache 解码的差异仍按 D83 处理（old logprob 重算）。
   - 若将来 RL 要走 attn_gym，需要按固定长度分桶 + 预编译，而不是按实际
     packed 长度。
+
+### D85. 预训练从 `lockstep: true` 改为 `false`：optimizer step 不再单领域（2026-11-11）
+
+- **原方案**：`data.lockstep: true`，每个 optimizer step（262,144 token = 16 个
+  micro-batch × 16384）**整步只取一个领域**，目的是让每步的 router 指标天然是
+  分域的。
+- **问题**（145M run step 2393 实测）：
+  - 日志里的 `loss` 在 **1.47 ↔ 3.85** 之间锯齿跳，`loss_ema` 永远收敛不到
+    一条线上：它只是"这一步抽到了哪个领域"的加权，不是模型质量；
+  - Muon 动量 0.95 有 ~20 步记忆，而领域块平均只有 ~11 步（82/15/3），
+    动量把上一个领域的梯度方向拖进下一个领域的更新里——这解释了
+    "权重 RMS 每 130 步移动 19%、loss 却不动"；
+  - router 被逼成按步特化：在 code token 上 layer.2 的分布是
+    `[9.6, 40.1, 33.9, 0.2, 16.2, 0.0]`，两个专家 0.0%/0.2%；
+  - 连主领域的路由也在退化：general 上的 per-layer min-share
+    step 2000 → 2200 → 2393 依次是 **14.2% → 10.4% → 9.3%**，
+    max-share 18.9% → 22.4% → 23.3%。
+- **新方案**：`lockstep: false`，调度按 **micro-batch** 建表并打乱，一个
+  optimizer step 的 16 个 micro-batch 按 82/15/3 混合。
+- **代价 / 取舍**：
+  - 每步的领域构成会浮动（13/3/0 或 14/2/0），所以步级 loss 仍有方差，
+    这就是新增分域 EMA（`train_main_loss_<domain>`）的原因；
+  - `domain_id` / `domain_name` 只在**整步同域**时才写，混合步写 -1/""；
+  - 路由特化本身是 MoE 想要的，混合不会消灭它（routing 是逐 token 的），
+    只是去掉了"强制交替"这个放大器。要让 code/tool 的极端化收敛，还得
+    调 `balance_loss_coeff`（现在是 1e-4，见 D88 的观察项）。
+- **验证**：重启后 `step 2400 | lm 2.2625 | general 2.4153 code 1.3959
+  tool 0.9745`，三个曲线同时可读，且都低于改造前的 running mean。
+
+### D86. cosine 衰减从 80% 提前到 20%（2026-11-11）
+
+- **原方案**：`decay_start_ratio: 0.8` → 峰值 6e-4 一直保持到 step 9,155
+  （全程 11,444 步的 80%），只有最后 20% 才衰减。
+- **问题**：4K 阶段全程跑在峰值 LR 上，而 step ~1,300 起 general 的
+  train main loss 就压在 2.55 不动、验证集三域同时抬升
+  （tool 0.909 @1599 → 1.295 @2199）。权重每 130 步移动 19% RMS 却不降
+  loss，是"高 LR 噪声地板"的典型特征。
+- **新方案**：`decay_start_ratio: 0.2` → 衰减起点正好落在 step 2,288 =
+  当前进度，剩余 9,155 步 cosine 从 6e-4 退到 6e-5。
+- **同时修的坑**：`resume()` 会从 checkpoint 恢复 optimizer 的
+  `param_groups`，连带恢复 `base_lr`，于是**改配置里的 `optim.lr`
+  在续训时是静默无效的**。新增 `Trainer._apply_config_learning_rates()`，
+  在恢复后让配置覆盖 checkpoint，并打印 `config LR overrides ...`。
+  否则 D86 这类实验会看起来毫无效果。
+- **未验证**：没有做 6e-4 vs 2e-4 的单变量 A/B（2×4090D 显存只剩 ~1 GB，
+  训练期间无法并行跑对照）。峰值是否仍然偏高，要看接下来 500–1000 步
+  分域 loss 的斜率再判断。
+
+### D87. 重建验证集：40M/16M/6M 的独立尾部切片（2026-11-11）
+
+- **原方案**：每个领域从语料**开头**取 1M token 当 val（`skip_tokens: 0`）。
+- **问题**：1M token 是 general 语料的 0.07%，而且不具代表性——在
+  `val_general_4k` 上 layer.3 的某个专家只拿到 0.8% 的 token，同样的权重
+  在训练流上拿 17.2%。`val_steps: 10` 只抽 10 个 micro-batch（~160k
+  token），比"打包长度"带来的差异还小，曲线基本是噪声。
+- **新方案**：从三个 8K 训练区间的**尾部**切出 general 40M / code 16M /
+  tool 6M 作为 held-out（`scripts/make_val_split.py`），并把它们从 8K
+  训练区间里裁掉，保证与所有训练区间不相交；`val_steps` 10 → 64。
+- **为什么从 8K 区间切**：8K 阶段（step 8011 起）还没开始，裁它的尾部
+  不会动到已经消费过的数据；4K 区间正在被消费，改它会让续训的 token
+  偏移对不上。
+- **配套**：`make_val_split.py` 的三条安全约束——只切尾部、`trim` 先写
+  暂存目录再 `os.replace`（同一个 inode 上的 memmap 会被 `np.save` 的
+  `open("wb")` 直接截断，这个坑真的踩了，见 PROCESS 2026-11-11）、
+  文档长度 > `seq_len` 时显式打印被裁掉的 token 比例。
+- **验证**：新旧 val 在同一 checkpoint（step 2393）上
+  general 2.148 / code 1.351 / tool 1.181（新）vs 2.619 / 1.439 / 1.295
+  （旧，step 2199）。数值不可比（不同文本），但新集合内部一致、且每域
+  都有 3.9k–9.8k 个 pack 可选。
