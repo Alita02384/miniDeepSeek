@@ -1,0 +1,85 @@
+# End-to-end post-training from the existing 145M pretrain checkpoint:
+# SFT (general/code/tool) -> GRPO (general/code/tool) -> 3-teacher OPD.
+#
+# Fresh output tree under checkpoints/posttrain_e2e_145m so the previous
+# ad-hoc runs are not overwritten.  SFT step budgets are the measured
+# 280/115/95 (~1.04/1.14/1.97 target epoch, doc/specialist_data_145m.md);
+# GRPO/OPD steps are the shipped config budgets.  Run with --to/--from to
+# split the chain; preflight accepts checkpoints produced by earlier stages.
+name: posttrain_e2e_145m
+nproc: 1
+data_dir: data
+tokenization_dir: data/tokenization
+run_dir: runs/posttrain_e2e_145m
+stages:
+  - id: sft_general
+    kind: sft
+    name: general
+    config: configs/sft/general.yaml
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    epochs: 1.0
+    steps: 280
+    out_dir: checkpoints/posttrain_e2e_145m/sft_general
+  - id: sft_code
+    kind: sft
+    name: code
+    config: configs/sft/code.yaml
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    epochs: 1.0
+    steps: 115
+    out_dir: checkpoints/posttrain_e2e_145m/sft_code
+  - id: sft_tool
+    kind: sft
+    name: tool
+    config: configs/sft/tool.yaml
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    epochs: 2.0
+    steps: 95
+    out_dir: checkpoints/posttrain_e2e_145m/sft_tool
+  - id: grpo_general
+    kind: grpo
+    config: configs/grpo/general.yaml
+    data: data/grpo_general_train.jsonl
+    resume: checkpoints/posttrain_e2e_145m/sft_general/final
+    out_dir: checkpoints/posttrain_e2e_145m/grpo_general
+    steps: 50
+  - id: grpo_code
+    kind: grpo
+    config: configs/grpo/code.yaml
+    data: data/grpo_code_train.jsonl
+    resume: checkpoints/posttrain_e2e_145m/sft_code/final
+    out_dir: checkpoints/posttrain_e2e_145m/grpo_code
+    steps: 200
+  - id: grpo_tool
+    kind: grpo
+    config: configs/grpo/tool.yaml
+    data: data/grpo_tool_train.jsonl
+    resume: checkpoints/posttrain_e2e_145m/sft_tool/final
+    out_dir: checkpoints/posttrain_e2e_145m/grpo_tool
+    steps: 400
+  - id: opd_three_teacher
+    kind: opd
+    config: configs/opd/three_teacher.yaml
+    data: data/opd_prompts_three.jsonl
+    resume: checkpoints/posttrain_e2e_145m/sft_general/final
+    out_dir: checkpoints/posttrain_e2e_145m/opd_three_teacher
+    steps: 100
+    teachers:
+      - name: general_teacher
+        key: general
+        checkpoint: checkpoints/posttrain_e2e_145m/grpo_general/final
+        flavor: mini_145m_a60m
+        seq_len: 4096
+        weight: 0.3333333333
+      - name: tool_teacher
+        key: tool
+        checkpoint: checkpoints/posttrain_e2e_145m/grpo_tool/final
+        flavor: mini_145m_a60m
+        seq_len: 4096
+        weight: 0.3333333333
+      - name: code_teacher
+        key: code
+        checkpoint: checkpoints/posttrain_e2e_145m/grpo_code/final
+        flavor: mini_145m_a60m
+        seq_len: 4096
+        weight: 0.3333333334

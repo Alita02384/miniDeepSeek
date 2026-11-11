@@ -51,6 +51,23 @@ def _checkpoint_done(path: str | Path) -> bool:
     return (Path(path) / "final" / "meta.json").exists()
 
 
+def _dataset_exists(path: str | Path) -> bool:
+    """Whether a logical dataset path has either an archive or sidecars.
+
+    ``save_flat_dataset`` keeps the config-visible ``<name>.npz`` path but
+    writes ``<name>.input_ids.npy`` sidecars plus ``<name>.json``; checking
+    ``Path.exists(path)`` alone rejects every dataset produced by the current
+    pipeline.
+    """
+    path = Path(path)
+    if path.exists():
+        return True
+    names = ("input_ids", "positions", "target_mask", "offsets")
+    return path.with_suffix(".json").exists() and all(
+        path.with_suffix(f".{name}.npy").exists() for name in names
+    )
+
+
 def _sft_step_plan(
     config_data: dict[str, Any],
     *,
@@ -331,12 +348,16 @@ def _sft_stage(
     config_data = load_yaml(stage["config"])
     data_cfg = config_data.get("data", {}) or {}
     epochs = float(stage.get("epochs", 1.0))
-    steps, primary_targets, per_step = _sft_step_plan(
+    planned_steps, primary_targets, per_step = _sft_step_plan(
         config_data,
         stage_name=str(stage["name"]),
         epochs=epochs,
         tokenization_dir=tokenization_dir,
     )
+    # An explicit stage ``steps`` wins: the audited 280/115/95 budgets are
+    # measured from the real mixer, while ``_sft_step_plan`` is an ideal-mixture
+    # estimate that undercounts the packed-batch underfill by ~7%.
+    steps = max(int(stage["steps"]), 1) if stage.get("steps") is not None else planned_steps
     overrides: dict[str, Any] = {
         "train": {
             "steps": steps,
@@ -357,7 +378,8 @@ def _sft_stage(
     )
     print(
         f"sft {stage['name']}: primary target {primary_targets / 1e6:.1f}M tokens, "
-        f"~{per_step} target/step x {epochs} epoch(s) -> {steps} steps"
+        f"~{per_step} target/step -> {steps} steps "
+        f"(~{steps * per_step / max(primary_targets, 1):.3f} target epoch)"
     )
     _run(
         _torchrun(
@@ -372,13 +394,13 @@ def _sft_stage(
 
 def _rl_stage(stage: dict[str, Any], *, run_dir: Path, nproc: int, dry_run: bool) -> None:
     method = stage["kind"]
-    overrides = {
-        "data": {"path": stage["data"]},
-        "train": {
-            "resume": stage.get("resume"),
-            "out_dir": stage.get("out_dir", f"checkpoints/{stage['id']}"),
-        },
+    train_overrides: dict[str, Any] = {
+        "resume": stage.get("resume"),
+        "out_dir": stage.get("out_dir", f"checkpoints/{stage['id']}"),
     }
+    if stage.get("steps") is not None:
+        train_overrides["steps"] = max(int(stage["steps"]), 1)
+    overrides: dict[str, Any] = {"data": {"path": stage["data"]}, "train": train_overrides}
     if stage.get("teachers"):
         overrides["teachers"] = stage["teachers"]
     target = _resolve_config(stage["config"], overrides, run_dir / "configs" / f"{stage['id']}.yaml")
@@ -438,21 +460,45 @@ def _stage_done(stage: dict[str, Any], *, tokenization_dir: Path) -> bool:
 
 
 
-def _preflight(spec: dict[str, Any], data_dir: Path, *, dry_run: bool) -> None:
+def _preflight(
+    spec: dict[str, Any],
+    data_dir: Path,
+    *,
+    dry_run: bool,
+    start: str | None = None,
+    stop: str | None = None,
+) -> None:
     """Fail before a long stage if any input/resume/checkpoint is missing.
 
-    A dry run checks the same paths: a plan that cannot run is not a useful
-    plan.  Outputs produced by earlier stages are still checked, which is why
-    ``--from`` after a completed tokenize/pretrain is the normal entry point.
+    Checkpoints produced by an earlier stage in the same run are allowed to be
+    missing: a fresh SFT -> GRPO -> OPD chain necessarily has GRPO resumes and
+    OPD teachers that do not exist yet.  ``start``/``stop`` limit the check to
+    the stages that will actually run.
     """
     tokenization_dir = Path(spec.get("tokenization_dir", data_dir / "tokenization"))
     missing: list[str] = []
+    outputs: list[Path] = []
+    active = start is None
 
-    def need(path: str | Path) -> None:
-        if not Path(path).exists():
-            missing.append(str(path))
+    def need(path: str | Path, *, dataset: bool = False) -> None:
+        target = Path(path)
+        found = _dataset_exists(target) if dataset else target.exists()
+        if found:
+            return
+        # A path under an earlier stage's ``out_dir/final`` is this run's own
+        # output, not a pre-existing input.
+        if any(target == output or output in target.parents for output in outputs):
+            return
+        missing.append(str(target))
 
     for stage in spec.get("stages", []):
+        stage_id = str(stage["id"])
+        if start is not None and stage_id == start:
+            active = True
+        if not active:
+            continue
+        if stop is not None and stage_id == stop:
+            active = False
         kind = stage["kind"]
         if kind == "tokenize":
             for domain in stage.get("data_domains", ["general"]):
@@ -464,18 +510,18 @@ def _preflight(spec: dict[str, Any], data_dir: Path, *, dry_run: bool) -> None:
             source = load_yaml(stage["config"])
             for item in source.get("stages", []):
                 for entry in item.get("sources", []):
-                    need(entry["path"])
+                    need(entry["path"], dataset=True)
                 for entry in item.get("val_sources", []):
-                    need(entry["path"])
+                    need(entry["path"], dataset=True)
         elif kind == "sft":
             need(stage["config"])
             config_data = load_yaml(stage["config"])
             data_cfg = config_data.get("data", {}) or {}
             if data_cfg.get("sources"):
                 for entry in data_cfg["sources"]:
-                    need(entry["path"])
+                    need(entry["path"], dataset=True)
             else:
-                need(tokenization_dir / f"sft_{stage['name']}.npz")
+                need(tokenization_dir / f"sft_{stage['name']}.npz", dataset=True)
             if stage.get("resume"):
                 need(stage["resume"])
         elif kind in {"grpo", "opd"}:
@@ -485,8 +531,12 @@ def _preflight(spec: dict[str, Any], data_dir: Path, *, dry_run: bool) -> None:
             if stage.get("resume"):
                 need(stage["resume"])
             if kind == "opd":
-                config_data = load_yaml(stage["config"])
-                for teacher in config_data.get("teachers", []):
+                # ``_rl_stage`` can replace the teacher list from the stage;
+                # preflight must check the same list it will actually load.
+                teachers = stage.get("teachers")
+                if teachers is None:
+                    teachers = load_yaml(stage["config"]).get("teachers", [])
+                for teacher in teachers:
                     need(teacher["checkpoint"])
         elif kind == "eval":
             need(stage["config"])
@@ -494,6 +544,10 @@ def _preflight(spec: dict[str, Any], data_dir: Path, *, dry_run: bool) -> None:
                 need(stage["data"])
             if stage.get("checkpoint"):
                 need(stage["checkpoint"])
+        if kind in {"sft", "grpo", "opd"}:
+            outputs.append(
+                Path(stage.get("out_dir", f"checkpoints/{stage_id}")) / "final"
+            )
     if not missing:
         return
     message = "pipeline preflight missing paths:\n" + "\n".join(
@@ -512,7 +566,7 @@ def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str |
     data_dir = Path(spec.get("data_dir", "data"))
     tokenization_dir = Path(spec.get("tokenization_dir", data_dir / "tokenization"))
     nproc = int(os.environ.get("NPROC_PER_NODE", spec.get("nproc", 1)))
-    _preflight(spec, data_dir, dry_run=dry_run)
+    _preflight(spec, data_dir, dry_run=dry_run, start=start, stop=stop)
     state: dict[str, Any] = {"name": name, "stages": {}}
     active = start is None
     for stage in spec.get("stages", []):
