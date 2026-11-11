@@ -1541,10 +1541,9 @@
   在拷贝任何 token 之前就把正在被 memmap 读的
   `pretrain_general_8k.input_ids.npy` 截断 → **738M token（2.95 GB）的
   general 8K 区间丢失**，源 JSONL 早已按磁盘预算删除，无法重建。
-  现状：`pretrain_general_8k` 改由 `pretrain_general_4k` 的 token 流
-  （corpus [370M,1723M)）在 8192 打包替代（hardlink + 重写 meta），
-  即 8K 阶段的 general 会**第二次看到 4K 阶段的数据**；code/tool 的 8K
-  区间是真实区间。已在 `pretrain_general_8k.json` 的
+  当时的临时处置：`pretrain_general_8k` 改由 `pretrain_general_4k` 的 token 流
+  （corpus [370M,1723M)）在 8192 打包替代（hardlink + 重写 meta）。
+  **已于同日恢复**（见下节"8K 数据恢复"），现在是真实区间。已在 `pretrain_general_8k.json` 的
   `substituted_from` / `note` 字段里写明。修复后的 `trim_source` 改为
   “暂存目录 + `os.replace`”，并加了 `np.array(..., copy=True)`；
   `tests/test_make_val_split.py` 覆盖了"源文件不被改写"和"保留区逐字节不变"。
@@ -1562,9 +1561,8 @@
     `step 2399 | VAL lm 1.5746 ppl 4.83 | general 2.1476 code 1.3509
     tool 1.1813`。
 - 未完成 / 风险:
-  - **general 8K 数据是替代品**，8K 阶段（step 8011）会重复 4K 语料；
-    要恢复真区间只能重新下载 + 重新 dedup + 重新 tokenize 整个 2.46B
-    general 流（磁盘只剩 20 GB，暂时不可行）；
+  - ~~general 8K 数据是替代品~~ → 已从本地工作区的 tokenization 备份完整恢复
+    （见下节），8K 阶段用的是真实区间 [1723M, 2461M)，不再重复 4K 语料；
   - LR 峰值是否仍偏高未做 A/B；看点：step 2400→2900 的 general 分域
     loss 斜率与 router min-share；
   - `balance_loss_coeff` 仍是 1e-4，code/tool 上的极端路由大概率还会存在。
@@ -1608,3 +1606,35 @@ step 8011 进 8K 阶段时会原地停顿约 1 小时（不报错，只是没输
 计划：下次因为别的原因停训练时，先跑
 `scripts/prewarm_attn.py --curriculum configs/pretrain/generated/curriculum_145m_g2.yaml`
 再启动；否则就接受 step 8011 处的一次性停顿。
+
+### 2026-11-11 8K 数据恢复（完全修复）
+
+本地工作区 `miniDeepSeek/data/tokenization/` 里存着**同一份**打包产物
+（Nov 9 18:24–18:28 构建，服务器是 10:02–10:28；两侧所有共享边车的字节数与
+md5 一致，见下），因此不需要重新下载语料就能整体还原。
+
+**先证明两侧是同一份数据**（字节级）：
+- `pretrain_general_2k.offsets.npy` / `pretrain_general_4k.offsets.npy` /
+  `pretrain_code_2k.offsets.npy` / `pretrain_general_2k.target_mask.npy`
+  的 md5 两侧逐项相同（offsets 对文档边界极敏感，撞不了）；
+- general_2k / general_4k 的 token 流前 1 MiB md5 相同
+  （`22228f76…` / `804aba6d…`）；
+- `pretrain_general_8k.json` 的 packs/tokens/target_tokens/documents_kept/
+  skip_tokens/max_tokens 六项与损坏前服务器上读到的一致。
+
+**传输与替换**：`gzip -1` 压缩后走 SSH（2.62× 压缩率、链路 6.9 MB/s），
+5 个文件 6.64 GB 原始体积、约 3 分钟传完，逐个过 md5。替换时**先 `rm` 掉
+hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 general_4k
+（当时两者 inode 相同、links=2）。替换后 general_4k 的 inode/links(2→1)/
+前缀 md5 均未变。
+
+**完整性判据**（关键）：`val_general_8k_v2` 是从**被毁前**的原文件切出来的。
+用恢复后的文件重新切同样的 40M 尾部，四个数组 md5 全部对上：
+`input_ids 576fc062…`、`positions 812b6707…`、`target_mask bfc6961f…`、
+`offsets 8dc163ab…`。这证明恢复是逐字节精确的，不是"看起来像"。
+
+**收尾**：再用修好的 `make_val_split.py --trim-only` 把 40M 验证尾部从训练
+文件里裁掉 → `pretrain_general_8k` = 698,000,234 token / 87,932 packs /
+`skip_tokens 1723000000`（真实区间），与 `curriculum_145m_4x4090.yaml`
+里写的 8K 阶段 698M general 预算一致。18 个数据集全部通过
+`PackedPretrainDataset` 加载校验，磁盘剩 14 GB，`.incoming/` 与暂存目录均已清空。

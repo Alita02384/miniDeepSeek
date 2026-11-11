@@ -1327,3 +1327,27 @@
 6e-4 对 145M/262k-token 步属于常规区间，"LR 过高"缺少直接证据。
 下一步的判据是 step 2599 / 2799 两个新验证点是否继续下降；若 general 的斜率
 在 400 步内明显转平，再考虑降到 3e-4（`base_lr` 覆盖已修，改配置即可生效）。
+
+### D89. 8K general 数据从本地备份完整恢复（2026-11-11）
+
+- **背景**：D87 的 `trim_source` 第一版原地重写 memmap 源文件，把
+  `pretrain_general_8k.input_ids.npy`（738M token / 2.95 GB）截断成 128 字节。
+  当时的临时处置是用 4K 的 token 流在 8192 打包替代，代价是 8K 阶段的
+  general 有约 55% 是 stage 1 已见过的 token（原估 35% 是错的：stage 1 正好
+  消耗完 4K 区间一整遍，699M/1353M = 55%）。
+- **恢复来源**：本地工作区 `data/tokenization/` 存着同一份打包产物。
+  先证明同一性：4 个共享边车（含对文档边界极敏感的 `offsets.npy`）md5 逐项
+  相同、两个 token 流前 1 MiB md5 相同、general_8k 的 6 项元数据与损坏前一致。
+- **恢复判据**：`val_general_8k_v2` 是损坏**前**从原文件切出的，用恢复后的
+  文件重切同样的 40M 尾部，四个数组 md5 全部一致 —— 逐字节精确。
+- **替换方式**：`gzip -1` + SSH（2.62×、6.9 MB/s、6.64 GB / 约 3 分钟）传到
+  `.incoming/`，校验 md5 后**先 `rm` hardlink 再 `mv`**。当时 general_8k 与
+  general_4k 是同一 inode（links=2），用 `cat >` 写穿会连带毁掉正在使用的
+  4K 数据；替换后 4K 的 inode/links/前缀 md5 均未变。
+- **结果**：`pretrain_general_8k` = 698,000,234 token / 87,932 packs，
+  `skip_tokens` 回到真实的 1,723,000,000，与 curriculum 里 8K 阶段的
+  698M general 预算一致。18 个数据集全部可加载。
+- **教训**：任何"就地重写数据集"的路径都不允许存在——包括看起来安全的
+  `rm`+`mv`（必须先确认目标不是别人的 hardlink）。数据集产物应留一份
+  校验和清单，且**源语料不要在同一块盘上删到只剩一份**：这次的恢复完全
+  依赖本地那份备份。
