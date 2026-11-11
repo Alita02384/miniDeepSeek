@@ -19,6 +19,8 @@ data:
   domain: math
 train:
   steps: 1
+  keep_last_ckpt: 2
+  auto_resume: true
   log_every: 1
   resume: checkpoints/debug_sft/final
   resume_step: false

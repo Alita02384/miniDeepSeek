@@ -467,3 +467,21 @@ def test_grpo_cispo_one_step(tmp_path, stub_tokenizer):
     metrics = trainer.step()
     assert torch.isfinite(torch.tensor(metrics["loss"]))
     assert metrics["clip_fraction"] >= 0.0
+
+
+def test_grpo_reports_stop_and_max_new_rates(tmp_path, stub_tokenizer):
+    from minideepseek.model import build_model
+    from minideepseek.rl.rollout import TorchRolloutEngine
+
+    torch.manual_seed(0)
+    model = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
+    records = [GRPORecord(prompt=[{"role": "user", "content": "q"}], domain="math")]
+    config = _rl_config(tmp_path)
+    engine = TorchRolloutEngine(model, stub_tokenizer, thinking_ratio=0.0)
+    trainer = GRPOTrainer(
+        config, model, stub_tokenizer, records, lambda text, _record: RewardResult(total=0.0), engine=engine
+    )
+    metrics = trainer.step()
+    assert 0.0 <= metrics["finished_rate"] <= 1.0
+    assert 0.0 <= metrics["max_new_hit_rate"] <= 1.0
+    assert metrics["samples"] > 0

@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
+from pathlib import Path
 
 # RL batches have many distinct packed lengths; the fused attn_gym kernel
 # specializes on every layout and would recompile mid-step (OPD teacher
@@ -18,9 +21,44 @@ from ..data.grpo import load_records
 from ..data.opd import load_opd_prompts
 from ..tokenizer import load_tokenizer
 from ..train.distributed import init_distributed
+from ..train.trainer import latest_checkpoint
 from .grpo import build_grpo_trainer
 from .opd import build_opd_trainer
 from .reward import make_reward_fn
+
+
+def _resume_path(config: RLConfig) -> str | None:
+    """Prefer the newest checkpoint in out_dir when auto_resume is on.
+
+    RL configs also set ``resume`` to the SFT/pretrain base, so the old
+    ``if resume is None`` test made auto_resume dead code.  A checkpoint in
+    out_dir is a crash-recovery checkpoint: resume it and restore its step.
+    """
+    resume = config.train.resume
+    if config.train.auto_resume:
+        found = latest_checkpoint(config.train.out_dir)
+        if found is not None:
+            config.train.resume_step = True
+            return str(found)
+    return resume
+
+
+def _prune_checkpoints(out_dir: str, keep: int) -> None:
+    if keep <= 0:
+        return
+    directory = Path(out_dir)
+    if not directory.is_dir():
+        return
+    periodic = sorted(
+        (
+            child
+            for child in directory.iterdir()
+            if child.is_dir() and re.fullmatch(r"step_\d+", child.name)
+        ),
+        key=lambda path: int(path.name.split("_")[1]),
+    )
+    for old in periodic[:-keep]:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def run_grpo(config: RLConfig) -> dict:
@@ -34,8 +72,12 @@ def run_grpo(config: RLConfig) -> dict:
         trainer, model = build_grpo_trainer(
             config, records, reward_fn, tokenizer=tokenizer, distributed=context
         )
+        resume = _resume_path(config)
+        if resume:
+            trainer.resume(resume)
         summary = trainer.train()
-        checkpoint = trainer.save("final")
+        checkpoint = Path(config.train.out_dir) / "final"
+        _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
         return {
             "method": "grpo",
             "records": len(records),
@@ -62,8 +104,12 @@ def run_opd(config: RLConfig) -> dict:
         trainer, student = build_opd_trainer(
             config, prompts, tokenizer=tokenizer, distributed=context
         )
+        resume = _resume_path(config)
+        if resume:
+            trainer.resume(resume)
         summary = trainer.train()
-        checkpoint = trainer.save("final")
+        checkpoint = Path(config.train.out_dir) / "final"
+        _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
         return {
             "method": "opd",
             "prompts": len(prompts),

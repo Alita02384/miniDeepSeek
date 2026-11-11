@@ -166,3 +166,30 @@ def test_load_teacher_ignores_mtp_and_uses_runtime_topk(tmp_path):
             source.forward(batch, use_mtp=False)[0],
             loaded.forward(batch, use_mtp=False)[0],
         )
+
+
+def test_opd_uses_fixed_teacher_weight_denominator(tmp_path, stub_tokenizer, monkeypatch):
+    """A step that only sees one teacher must not scale its loss up 2x."""
+    student = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    teacher = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu")
+    prompts = [
+        OPDPrompt(prompt=[{"role": "user", "content": "m"}], teacher_key="math", domain="math")
+    ]
+    config = _opd_config(tmp_path)
+    trainer = OPDTrainer(
+        config,
+        student,
+        stub_tokenizer,
+        prompts,
+        {"math": teacher},
+        teacher_weights={"math": 0.5, "code": 0.5},
+    )
+
+    def fake_kl(group, key):
+        del group, key
+        return torch.tensor(1.0, requires_grad=True), 1.0, 4
+
+    monkeypatch.setattr(trainer, "_kl_for_group", fake_kl)
+    metrics = trainer.step()
+    # KL=1, present weight=0.5, fixed weights sum=1.0 -> 0.5 (not 1.0).
+    assert abs(metrics["loss"] - 0.5) < 1e-6

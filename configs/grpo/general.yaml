@@ -30,6 +30,8 @@ train:
   activation_checkpointing: true
   log_every: 1
   ckpt_every: 25
+  keep_last_ckpt: 2
+  auto_resume: true
   resume: checkpoints/sft_general_145m/final
   resume_step: false
   out_dir: checkpoints/grpo_general_145m

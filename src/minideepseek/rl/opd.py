@@ -64,6 +64,10 @@ class OPDStepStats:
     lr: float = 0.0
     rollout_weight_version: int = 0
     weight_sync_logprob_diff: float = 0.0
+    samples: int = 0
+    teacher_tokens: dict[str, int] = field(default_factory=dict)
+    finished_rate: float = 0.0
+    max_new_hit_rate: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         record = {
@@ -75,10 +79,70 @@ class OPDStepStats:
             "lr": self.lr,
             "rollout_weight_version": self.rollout_weight_version,
             "weight_sync_logprob_diff": self.weight_sync_logprob_diff,
+            "samples": float(self.samples),
+            "finished_rate": self.finished_rate,
+            "max_new_hit_rate": self.max_new_hit_rate,
         }
         for key, value in self.kl_by_teacher.items():
             record[f"kl_{key}"] = value
         return record
+
+
+def _merge_opd_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Combine per-rank OPD metrics (same rationale as GRPO's merger)."""
+    if len(records) <= 1:
+        return records[0]
+    merged = dict(records[0])
+    samples = sum(float(record.get("samples", 0.0)) for record in records)
+    tokens = sum(float(record.get("response_tokens", 0.0)) for record in records)
+    merged["samples"] = samples
+    merged["response_tokens"] = tokens
+
+    def weighted(key: str, weight_key: str) -> float:
+        denominator = sum(float(record.get(weight_key, 0.0)) for record in records)
+        if denominator <= 0:
+            return 0.0
+        return (
+            sum(
+                float(record.get(key, 0.0)) * float(record.get(weight_key, 0.0))
+                for record in records
+            )
+            / denominator
+        )
+
+    for key in ("loss", "kl_total"):
+        merged[key] = weighted(key, "response_tokens")
+    for key in ("response_length_mean", "finished_rate", "max_new_hit_rate"):
+        merged[key] = weighted(key, "samples")
+    teacher_tokens: dict[str, int] = {}
+    for record in records:
+        for key, value in (record.get("teacher_tokens") or {}).items():
+            teacher_tokens[key] = teacher_tokens.get(key, 0) + int(value)
+    for key in {key for record in records for key in record if key.startswith("kl_")}:
+        # KL is a token mean per teacher; weight by that teacher's tokens.
+        per_teacher = [
+            (
+                float(record.get(key, 0.0)),
+                float((record.get("teacher_tokens") or {}).get(key[3:], 0.0)),
+            )
+            for record in records
+        ]
+        denominator = sum(weight for _value, weight in per_teacher)
+        merged[key] = (
+            sum(value * weight for value, weight in per_teacher) / denominator
+            if denominator > 0
+            else 0.0
+        )
+    merged.pop("teacher_tokens", None)
+    merged["grad_norm"] = max(float(record.get("grad_norm", 0.0)) for record in records)
+    merged["weight_sync_logprob_diff"] = max(
+        float(record.get("weight_sync_logprob_diff", 0.0)) for record in records
+    )
+    merged["rollout_weight_version"] = max(
+        int(record.get("rollout_weight_version", 0)) for record in records
+    )
+    merged["lr"] = records[0].get("lr", 0.0)
+    return merged
 
 
 class OPDTrainer:
@@ -234,24 +298,39 @@ class OPDTrainer:
             raise RuntimeError("rollout produced no samples")
         self.optimizer.zero_grad(set_to_none=True)
         loss_total = torch.zeros((), device=self.student.device)
-        weight_sum = 0.0
         kl_by_teacher: dict[str, float] = {}
+        teacher_tokens: dict[str, int] = {}
         token_count = 0
+        world = float(self.dist.world_size) if self.dist.enabled else 1.0
+        # Fixed denominator: the intended objective is Σ w_i E[KL_i].  Dividing
+        # by only the teachers that happened to appear in this step silently
+        # rescales the loss (e.g. 0.5 -> 1.0 when only one of two teachers is
+        # present).
+        fixed_weight_sum = sum(float(value) for value in self.teacher_weights.values())
         for key, group in _group_by_teacher(samples).items():
             if key not in self.teachers:
                 raise KeyError(
                     f"no teacher for key {key!r}; available={sorted(self.teachers)}"
                 )
             kl, kl_value, tokens = self._kl_for_group(group, key)
+            if self.dist.enabled and tokens > 0:
+                count = torch.tensor(
+                    float(tokens), device=self.student.device, dtype=torch.float32
+                )
+                self.dist.all_reduce_sum(count)
+                global_tokens = int(round(float(count.item())))
+                # DDP averages rank-local token means; undo that with
+                # world * local/global so the result is the global token mean.
+                kl = kl * (world * tokens / max(global_tokens, 1))
             weight = float(self.teacher_weights.get(key, 1.0))
             loss_total = loss_total + kl * weight
-            weight_sum += weight
             token_count += tokens
+            teacher_tokens[key] = int(tokens)
             kl_by_teacher[key] = kl_value
         if token_count == 0:
             raise RuntimeError("no response tokens in OPD batch")
-        if weight_sum > 0:
-            loss_total = loss_total / weight_sum
+        if fixed_weight_sum > 0:
+            loss_total = loss_total / fixed_weight_sum
         if not torch.isfinite(loss_total):
             raise RuntimeError(f"non-finite OPD loss at step {self.step_index}")
         loss_total.backward()
@@ -273,8 +352,18 @@ class OPDTrainer:
             lr=float(self.optimizer.param_groups[0]["lr"]),
             rollout_weight_version=rollout_version,
             weight_sync_logprob_diff=sync_diff,
+            samples=len(samples),
+            teacher_tokens=teacher_tokens,
+            finished_rate=sum(1.0 for sample in samples if sample.finished)
+            / len(samples),
+            max_new_hit_rate=sum(1.0 for sample in samples if sample.max_new_hit)
+            / len(samples),
         )
-        return stats.as_dict()
+        record = stats.as_dict()
+        record["teacher_tokens"] = dict(teacher_tokens)
+        if self.dist.enabled:
+            record = _merge_opd_records(self.dist.all_gather_object(record))
+        return record
 
     def train(self, steps: int | None = None) -> dict[str, Any]:
         total = int(steps if steps is not None else self.config.train.steps)

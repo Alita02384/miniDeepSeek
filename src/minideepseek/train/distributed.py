@@ -72,6 +72,14 @@ class DistributedContext:
             dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
         return tensor
 
+    def all_gather_object(self, obj: Any) -> list[Any]:
+        """Gather one picklable object per rank (CPU/Gloo and NCCL)."""
+        if not self.enabled or not dist.is_initialized():
+            return [obj]
+        gathered: list[Any] = [None for _ in range(self.world_size)]
+        dist.all_gather_object(gathered, obj)
+        return gathered
+
     def broadcast_object(self, obj: Any, *, src: int = 0) -> Any:
         if not self.enabled or not dist.is_initialized():
             return obj

@@ -64,6 +64,9 @@ class GRPOStepStats:
     lr: float = 0.0
     rollout_weight_version: int = 0
     weight_sync_logprob_diff: float = 0.0
+    samples: int = 0
+    finished_rate: float = 0.0
+    max_new_hit_rate: float = 0.0
     routing: dict[str, float] = field(default_factory=dict)
     components: dict[str, float] = field(default_factory=dict)
 
@@ -82,6 +85,9 @@ class GRPOStepStats:
             "lr": self.lr,
             "rollout_weight_version": self.rollout_weight_version,
             "weight_sync_logprob_diff": self.weight_sync_logprob_diff,
+            "samples": float(self.samples),
+            "finished_rate": self.finished_rate,
+            "max_new_hit_rate": self.max_new_hit_rate,
             **{f"routing_{key}": value for key, value in self.routing.items()},
             **{f"reward_{key}": value for key, value in self.components.items()},
         }
@@ -177,6 +183,7 @@ class GRPOTrainer:
         advantages: Sequence[float],
         *,
         total_tokens: int,
+        dist_scale: float = 1.0,
     ) -> tuple[Tensor, GRPOStepStats]:
         """Loss on one actor micro-batch, normalised by the *global* token count.
 
@@ -255,11 +262,15 @@ class GRPOTrainer:
             ).detach()
             policy_loss = -(
                 clamped_ratio * advantage_tensor * actor_logprobs
-            ).sum() / max(total_tokens, 1)
+            ).sum() / max(total_tokens, 1) * dist_scale
         else:
             unclipped = ratio * advantage_tensor
             clipped = torch.clamp(ratio, 1.0 - clip_low, 1.0 + clip_high) * advantage_tensor
-            policy_loss = -torch.minimum(unclipped, clipped).sum() / max(total_tokens, 1)
+            policy_loss = (
+                -torch.minimum(unclipped, clipped).sum()
+                / max(total_tokens, 1)
+                * dist_scale
+            )
         with torch.no_grad():
             clip_fraction = (
                 ((ratio < 1.0 - clip_low) | (ratio > 1.0 + clip_high)).float().mean()
@@ -289,6 +300,13 @@ class GRPOTrainer:
         loss, stats = self._loss_chunk(
             flat_samples, advantages, total_tokens=total_tokens
         )
+        stats.samples = len(flat_samples)
+        stats.finished_rate = sum(
+            1.0 for sample in flat_samples if sample.finished
+        ) / len(flat_samples)
+        stats.max_new_hit_rate = sum(
+            1.0 for sample in flat_samples if sample.max_new_hit
+        ) / len(flat_samples)
         stats.reward_mean = sum(flat_rewards) / len(flat_rewards)
         stats.reward_std = _std(flat_rewards)
         stats.advantage_abs_mean = sum(abs(value) for value in advantages) / len(advantages)
@@ -319,6 +337,7 @@ class GRPOTrainer:
                 routing[key] = routing.get(key, 0.0) + value * stat.response_tokens
         routing = {key: value / total for key, value in routing.items()}
         lengths = sum(stat.response_length_mean * stat.response_tokens for stat in chunks)
+        samples = sum(stat.samples for stat in chunks)
         return GRPOStepStats(
             loss=sum(stat.loss for stat in chunks),
             response_tokens=int(total),
@@ -326,6 +345,15 @@ class GRPOTrainer:
             clip_fraction=weighted("clip_fraction"),
             ratio_mean=weighted("ratio_mean"),
             approx_kl=weighted("approx_kl"),
+            samples=samples,
+            finished_rate=(
+                sum(stat.finished_rate * stat.samples for stat in chunks)
+                / max(samples, 1)
+            ),
+            max_new_hit_rate=(
+                sum(stat.max_new_hit_rate * stat.samples for stat in chunks)
+                / max(samples, 1)
+            ),
             routing=routing,
         )
 
@@ -370,9 +398,18 @@ class GRPOTrainer:
                     f"> {self.config.rl.weight_sync_threshold:.1e}"
                 )
         flat_samples, advantages, flat_rewards = self._flatten_advantages(groups, rewards)
-        total_tokens = sum(sample.num_loss_tokens for sample in flat_samples)
-        if total_tokens == 0:
+        local_tokens = sum(sample.num_loss_tokens for sample in flat_samples)
+        if local_tokens == 0:
             raise RuntimeError("all sampled responses are empty")
+        if self.dist.enabled:
+            count = torch.tensor(
+                float(local_tokens), device=self.model.device, dtype=torch.float32
+            )
+            self.dist.all_reduce_sum(count)
+            total_tokens = int(round(float(count.item())))
+        else:
+            total_tokens = local_tokens
+        dist_scale = float(self.dist.world_size) if self.dist.enabled else 1.0
         mini = int(self.config.rl.ppo_mini_batch_size)
         if mini <= 0 or mini >= len(flat_samples):
             chunks = [(flat_samples, advantages)]
@@ -384,13 +421,30 @@ class GRPOTrainer:
         chunk_stats: list[GRPOStepStats] = []
         for chunk_samples, chunk_advantages in chunks:
             loss, chunk_stat = self._loss_chunk(
-                chunk_samples, chunk_advantages, total_tokens=total_tokens
+                chunk_samples,
+                chunk_advantages,
+                total_tokens=total_tokens,
+                dist_scale=dist_scale,
             )
             if not torch.isfinite(loss):
                 raise RuntimeError(f"non-finite GRPO loss at step {self.step_index}")
             loss.backward()
             chunk_stats.append(chunk_stat)
         stats = self._merge_stats(chunk_stats)
+        stats.samples = len(flat_samples)
+        stats.finished_rate = sum(
+            1.0 for sample in flat_samples if sample.finished
+        ) / len(flat_samples)
+        stats.max_new_hit_rate = sum(
+            1.0 for sample in flat_samples if sample.max_new_hit
+        ) / len(flat_samples)
+        stats.samples = len(flat_samples)
+        stats.finished_rate = sum(
+            1.0 for sample in flat_samples if sample.finished
+        ) / len(flat_samples)
+        stats.max_new_hit_rate = sum(
+            1.0 for sample in flat_samples if sample.max_new_hit
+        ) / len(flat_samples)
         stats.reward_mean = sum(flat_rewards) / len(flat_rewards)
         stats.reward_std = _std(flat_rewards)
         stats.advantage_abs_mean = sum(abs(value) for value in advantages) / len(advantages)
@@ -417,7 +471,10 @@ class GRPOTrainer:
             self.model.state_dict()
         )
         stats.lr = float(self.optimizer.param_groups[0]["lr"])
-        return stats.as_dict()
+        record = stats.as_dict()
+        if self.dist.enabled:
+            record = _merge_grpo_records(self.dist.all_gather_object(record))
+        return record
 
     def train(self, steps: int | None = None) -> dict[str, Any]:
         total = int(steps if steps is not None else self.config.train.steps)
@@ -629,6 +686,73 @@ def _validate_rl_settings(config: RLConfig) -> None:
         raise ValueError("GRPO does not implement gradient accumulation")
     if config.train.val_path:
         raise ValueError("GRPO does not implement a validation split")
+
+
+
+def _merge_grpo_records(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Combine per-rank GRPO metrics into whole-job figures.
+
+    Means are weighted by samples (reward/length/stop rates) or response tokens
+    (loss/KL/ratio); std is combined from the per-rank means and variances.
+    Only rank 0 logs, so without this a 2-GPU run reports one rank's half.
+    """
+    if len(records) <= 1:
+        return records[0]
+    merged = dict(records[0])
+    samples = sum(float(record.get("samples", 0.0)) for record in records)
+    tokens = sum(float(record.get("response_tokens", 0.0)) for record in records)
+    merged["samples"] = samples
+    merged["response_tokens"] = tokens
+
+    def weighted(key: str, weight_key: str) -> float:
+        denominator = sum(float(record.get(weight_key, 0.0)) for record in records)
+        if denominator <= 0:
+            return 0.0
+        return (
+            sum(
+                float(record.get(key, 0.0)) * float(record.get(weight_key, 0.0))
+                for record in records
+            )
+            / denominator
+        )
+
+    for key in (
+        "reward_mean",
+        "advantage_abs_mean",
+        "finished_rate",
+        "max_new_hit_rate",
+        "response_length_mean",
+    ):
+        merged[key] = weighted(key, "samples")
+    for key in ("clip_fraction", "ratio_mean", "approx_kl", "loss"):
+        merged[key] = weighted(key, "response_tokens")
+    if samples > 0:
+        mean = weighted("reward_mean", "samples")
+        second = sum(
+            float(record.get("samples", 0.0))
+            * (
+                float(record.get("reward_std", 0.0)) ** 2
+                + float(record.get("reward_mean", 0.0)) ** 2
+            )
+            for record in records
+        ) / samples
+        merged["reward_std"] = math.sqrt(max(second - mean * mean, 0.0))
+    for key in {key for record in records for key in record}:
+        if key in {"reward_mean", "reward_std", "response_tokens", "samples", "loss", "grad_norm", "lr"}:
+            continue
+        if key.startswith("reward_"):
+            merged[key] = weighted(key, "samples")
+        elif key.startswith("routing_"):
+            merged[key] = weighted(key, "response_tokens")
+    merged["grad_norm"] = max(float(record.get("grad_norm", 0.0)) for record in records)
+    merged["weight_sync_logprob_diff"] = max(
+        float(record.get("weight_sync_logprob_diff", 0.0)) for record in records
+    )
+    merged["rollout_weight_version"] = max(
+        int(record.get("rollout_weight_version", 0)) for record in records
+    )
+    merged["lr"] = records[0].get("lr", 0.0)
+    return merged
 
 
 def _std(values: list[float]) -> float:
