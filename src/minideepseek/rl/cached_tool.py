@@ -160,6 +160,21 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
                 logits = self.model.decode_step(ids, positions, cache, slots)
         return logits
 
+    def _execute_calls(self, messages: list[dict], calls: list[dict]) -> None:
+        for call in calls:
+            name = str(call.get("name", ""))
+            args = normalize_tool_args(call)
+            result = execute_tool(name, args)
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": json.dumps(
+                        result if result is not None else {"error": "tool not found"},
+                        ensure_ascii=False,
+                    )[:2048],
+                }
+            )
+
     def _continue_tool(
         self,
         record: GRPORecord,
@@ -195,25 +210,7 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
             calls = parse_tool_calls(final_text)[: self.max_tool_calls]
             if not calls:
                 break
-            for call in calls:
-                name = str(call.get("name", ""))
-                args = normalize_tool_args(call)
-                result = execute_tool(name, args)
-                messages.append(
-                    {
-                        "role": "tool",
-                        "content": json.dumps(
-                            result if result is not None else {"error": "tool not found"},
-                            ensure_ascii=False,
-                        )[:2048],
-                    }
-                )
-            if turn >= self.max_turns - 1:
-                # The reference engine executes this turn's tools and marks the
-                # trajectory unfinished without feeding the observation back.
-                unfinished = True
-                last_stopped = False
-                break
+            self._execute_calls(messages, calls)
             prefix = sample.prompt_ids + responses
             # Re-render with the flag the prompt was actually built with.  The
             # two scaffolds differ only in the generation tail, so matching the
@@ -291,6 +288,15 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
                 # The assistant turn was cut off mid-generation.  Do not parse
                 # a partial tool call as if it were complete.
                 unfinished = True
+                break
+            if turn >= self.max_turns - 1:
+                # Last assistant turn: execute its calls but do not feed another
+                # observation.  The reference engine does the same, so both
+                # paths produce ``max_turns`` assistant turns.
+                last_calls = parse_tool_calls(final_text)[: self.max_tool_calls]
+                if last_calls:
+                    self._execute_calls(messages, last_calls)
+                    unfinished = True
                 break
 
         record_copy = dataclasses.replace(

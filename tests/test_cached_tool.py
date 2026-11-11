@@ -69,25 +69,46 @@ class _ToolTokenizer:
     def __init__(self) -> None:
         self.render_calls: list[bool] = []
 
+    @staticmethod
+    def _assistant_text(content: str) -> str:
+        """Render an assistant message the way the ChatML template does.
+
+        The template always wraps assistant content in the closed scaffold; a
+        response that already contains ``</think>`` is treated as having a
+        reasoning prefix.  This makes a re-render reproduce the original
+        prompt for *both* thinking flags -- the ambiguity the continuation must
+        not rely on.
+        """
+        if "</think>" in content:
+            reasoning, content = content.split("</think>", 1)
+            reasoning = reasoning.split("<think>")[-1].strip("\n")
+            content = content.lstrip("\n")
+            return f"<think>\n{reasoning}\n</think>\n\n{content}"
+        return f"<think>\n\n</think>\n\n{content}"
+
     def render_chat(self, messages, *, add_generation_prompt=False, tools=None, open_thinking=False):
         del tools
         self.render_calls.append(bool(open_thinking))
-        text = "".join(f"<|{m.get('role')}|>{m.get('content', '')}" for m in messages)
+        text = ""
+        for message in messages:
+            role = str(message.get("role", ""))
+            content = str(message.get("content", ""))
+            if role == "assistant":
+                text += "<|assistant|>" + self._assistant_text(content)
+            else:
+                text += f"<|{role}|>{content}"
         if add_generation_prompt:
             text += "<|assistant|>"
-            # Only the *next* turn's generation prompt carries the marker; the
-            # first prompt must stay a prefix of the re-render.
-            if any(m.get("role") == "assistant" for m in messages):
-                text += "<think>" if open_thinking else "<think></think>"
+            text += "<think>\n" if open_thinking else "<think>\n\n</think>\n\n"
         return text
 
     def encode(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
         del add_special_tokens
-        return [3 + (ord(char) % 2044) for char in text] or [3]
+        return [ord(char) % 2048 for char in text] or [3]
 
     def decode(self, ids, *, skip_special_tokens: bool = False) -> str:
         del skip_special_tokens
-        return "".join(chr((int(value) - 3) % 2044) for value in ids)
+        return "".join(chr(int(value)) for value in ids)
 
 
 def _tool_record() -> GRPORecord:
@@ -164,7 +185,7 @@ def test_continuation_runs_in_eval_and_does_not_touch_expert_usage(monkeypatch):
         use_cuda_graph=False,
         max_turns=3,
         thinking_ratio=0.0,
-        max_context=64,
+        max_context=128,
     )
     _patch_continuation(monkeypatch)
     reset_expert_usage(model.model)
@@ -185,7 +206,7 @@ def test_continuation_preserves_the_recorded_open_thinking(monkeypatch):
         use_cuda_graph=False,
         max_turns=3,
         thinking_ratio=0.0,  # always closed thinking
-        max_context=64,
+        max_context=128,
     )
     _patch_continuation(monkeypatch)
     group = engine.rollout([_tool_record()], group_size=1, max_new_tokens=4, seed=1)[0]
@@ -209,7 +230,7 @@ def test_continuation_stops_before_writing_past_max_context(monkeypatch):
         use_cuda_graph=False,
         max_turns=3,
         thinking_ratio=0.0,
-        max_context=40,
+        max_context=60,
     )
     _patch_continuation(monkeypatch)
     long_result = {"payload": "x" * 200}
@@ -223,7 +244,7 @@ def test_continuation_stops_before_writing_past_max_context(monkeypatch):
 
 def test_continuation_reaches_max_turns_like_the_reference(monkeypatch):
     torch.manual_seed(0)
-    model = build_model("debugmodel", device="cpu", dtype="float32")
+    model = build_model("debugmodel", seq_len=256, device="cpu", dtype="float32")
     tokenizer = _ToolTokenizer()
     engine = CachedToolRolloutEngine(
         model,
@@ -232,7 +253,7 @@ def test_continuation_reaches_max_turns_like_the_reference(monkeypatch):
         use_cuda_graph=False,
         max_turns=3,
         thinking_ratio=0.0,
-        max_context=64,
+        max_context=256,
     )
     _patch_continuation(monkeypatch)
     group = engine.rollout([_tool_record()], group_size=1, max_new_tokens=4, seed=1)[0]
