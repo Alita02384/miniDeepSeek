@@ -306,7 +306,8 @@ miniDeepSeek/
 | 哪些代码来自上游、改了什么 | [`doc/sources.md`](doc/sources.md) |
 | 每个阶段的开发日志与验证命令 | [`doc/PROCESS.md`](doc/PROCESS.md) |
 | 测试策略与一致性门禁 | [`doc/testing.md`](doc/testing.md) |
-| 下载模型 / 数据 | [ModelScope 模型](https://modelscope.cn/models/Alita0429/miniDeepSeek)、[数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek) || 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
+| 下载模型 / 数据 | [ModelScope 模型](https://modelscope.cn/models/Alita0429/miniDeepSeek)、[数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek) |
+| 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
 | 145M 上线、迁移、packs 传输 | [`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md)、[`doc/server_runbook.md`](doc/server_runbook.md) |
 | SFT / GRPO / OPD 的后训练细节 | [`doc/posttraining_plan.md`](doc/posttraining_plan.md) |
 | 显存、吞吐、batching 预算 | [`doc/hardware_budget.md`](doc/hardware_budget.md)、[`doc/batching.md`](doc/batching.md) |
