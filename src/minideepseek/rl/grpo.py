@@ -285,6 +285,7 @@ class GRPOTrainer:
         stats = GRPOStepStats(
             loss=float(policy_loss.detach()),
             response_tokens=int(length),
+            samples=len(flat_samples),
             response_length_mean=sum(sample.response_length for sample in flat_samples)
             / len(flat_samples),
             clip_fraction=float(clip_fraction),

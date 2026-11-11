@@ -485,6 +485,7 @@ def test_grpo_reports_stop_and_max_new_rates(tmp_path, stub_tokenizer):
     assert 0.0 <= metrics["finished_rate"] <= 1.0
     assert 0.0 <= metrics["max_new_hit_rate"] <= 1.0
     assert metrics["samples"] > 0
+    assert metrics["response_length_mean"] > 0
 
 
 def test_merge_stats_weights_response_length_by_sample_count():
