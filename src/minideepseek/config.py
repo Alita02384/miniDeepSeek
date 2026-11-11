@@ -360,6 +360,11 @@ class DistributedSettings(BaseConfig):
 
 @dataclass
 class TrainSettings(BaseConfig):
+    #: Curriculum stage index stamped on every metrics row.  ``None`` for a
+    #: standalone SFT/RL run.  ``_stamp`` reads ``config.train.stage_index``;
+    #: keeping the field here (not only on ``TrainConfig``) is what makes a
+    #: standalone run work instead of raising AttributeError on step 1.
+    stage_index: int | None = None
     steps: int = 10
     grad_accum: int = 1
     log_every: int = 1
@@ -425,6 +430,10 @@ class TrainSettings(BaseConfig):
 
 @dataclass
 class TrainConfig(BaseConfig):
+    #: Curriculum stage this run belongs to (0-based), stamped on every metrics
+    #: record so ``scripts/merge_metrics.py`` does not have to infer it from a
+    #: directory name.  ``None`` for a single-stage run.
+    stage_index: int | None = None
     #: Optional path to a model YAML; inline ``model`` values override it.
     model_file: str | None = None
     model: ModelSettings = field(default_factory=ModelSettings)

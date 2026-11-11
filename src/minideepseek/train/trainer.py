@@ -842,15 +842,32 @@ class Trainer:
         self._tokens_seen += sum(m.tokens for m in micro_metrics)
         # θ_t is still current here; prefetch step t+1's batches with it.
         self._prefetch_step(accum)
+        # Gradients currently hold the sum of per-micro-batch token losses.
+        # Both DDP (all_reduce_gradients below) and FSDP2 (backward) reduce with
+        # AVG, so the post-reduce gradient is (1/W) * sum_r S_r.  The correct
+        # token-weighted global mean is (1/T_global) * sum_r S_r.  Scaling by
+        # W / T_global therefore needs the *global* target count; using a
+        # rank-local count here makes each rank multiply the same reduced
+        # gradient by a different factor and the weights diverge after one step
+        # (SFT's response-only mask makes T_r genuinely unequal).
+        local_target_tokens = sum(int(metric.tokens) for metric in micro_metrics)
+        if self.dist.enabled:
+            count = torch.tensor(
+                float(local_target_tokens), device=self.device, dtype=torch.float32
+            )
+            self.dist.all_reduce_sum(count)
+            global_target_tokens = float(count.item())
+        else:
+            global_target_tokens = float(local_target_tokens)
         if self.dist.enabled and self.dist.mode == "ddp":
             all_reduce_gradients(self.model.model, self.dist.world_size)
-        # Gradients currently hold the sum of per-micro-batch token losses.
-        # Divide once by the step's target tokens to get the token-weighted
-        # mean.  Under equal per-rank token counts (packed batches) this equals
-        # the global token mean, matching the DDP average above.
-        target_tokens = sum(int(metric.tokens) for metric in micro_metrics)
-        if target_tokens > 0:
-            scale_gradients(self.model.model, 1.0 / target_tokens)
+        if global_target_tokens > 0:
+            factor = (
+                self.dist.world_size / global_target_tokens
+                if self.dist.enabled
+                else 1.0 / global_target_tokens
+            )
+            scale_gradients(self.model.model, factor)
         grad_norm = clip_grad_norm(self.model.model, self.config.optim.grad_clip)
         self._sync_expert_usage()
         update_expert_biases(self.model.model)
@@ -910,6 +927,7 @@ class Trainer:
             setattr(averaged, key, value)
 
         record = averaged.as_dict()
+        self._stamp(record)
         record["entropy"] = self._entropy_value
         record["top1_prob"] = self._top1_value
         self._update_domain_loss_ema(micro_metrics)
@@ -1019,6 +1037,18 @@ class Trainer:
                 "[trainer] config LR overrides the checkpoint: "
                 + ", ".join(f"{old:.3e} -> {new:.3e}" for old, new in changed)
             )
+
+    def _stamp(self, record: dict[str, Any]) -> None:
+        """Tag a record with what a merged file cannot recover from context.
+
+        ``stage`` / ``seq_len`` say which curriculum stage produced the row, so
+        ``scripts/merge_metrics.py`` does not have to guess from a directory
+        name; ``wall_clock`` (unix seconds) orders rows across a resume, which
+        ``elapsed_s`` cannot because it restarts with every launch.
+        """
+        record.setdefault("stage", self.config.train.stage_index)
+        record["seq_len"] = int(self.config.model.seq_len)
+        record["wall_clock"] = round(time.time(), 3)
 
     def _globalize(self, record: dict[str, Any], *, tokens: float) -> dict[str, Any]:
         """Rewrite per-rank fields of one metrics record as whole-job figures.
@@ -1242,6 +1272,7 @@ class Trainer:
                     val_record[f"val_loss_{name}"] = per["loss"]
                     val_record[f"val_main_loss_{name}"] = per["main_loss"]
                     val_record[f"val_tokens_{name}"] = per["tokens"]
+                self._stamp(val_record)
                 if self.logger is not None:
                     self.logger.log(self.step, val_record, echo=True)
                 self._maybe_save_best(val["loss"])
