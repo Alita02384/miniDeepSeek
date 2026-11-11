@@ -16,6 +16,7 @@ consistency invariants are testable on CPU with the V4 debug model.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -440,19 +441,8 @@ class GRPOTrainer:
             chunk_stats.append(chunk_stat)
         stats = self._merge_stats(chunk_stats)
         stats.samples = len(flat_samples)
-        # finished is set for stop and max_new exhaustion alike; the useful
-        # signal is the *stop* rate.
-        stats.finished_rate = sum(
-            1.0
-            for sample in flat_samples
-            if sample.finished and not sample.max_new_hit
-        ) / len(flat_samples)
-        stats.max_new_hit_rate = sum(
-            1.0 for sample in flat_samples if sample.max_new_hit
-        ) / len(flat_samples)
-        stats.samples = len(flat_samples)
-        # finished is set for stop and max_new exhaustion alike; the useful
-        # signal is the *stop* rate.
+        # ``finished`` is also set when max_new is exhausted; the useful signal
+        # is the *stop* rate, so exclude max_new hits from it.
         stats.finished_rate = sum(
             1.0
             for sample in flat_samples
@@ -495,7 +485,13 @@ class GRPOTrainer:
     def train(self, steps: int | None = None) -> dict[str, Any]:
         total = int(steps if steps is not None else self.config.train.steps)
         while self.step_index < total:
+            started = time.perf_counter()
             metrics = self.step()
+            step_time = time.perf_counter() - started
+            metrics["step_time_s"] = step_time
+            metrics["tokens_per_sec"] = float(metrics.get("response_tokens", 0.0)) / max(
+                step_time, 1e-9
+            )
             if (
                 self.logger is not None
                 and self.step_index % max(self.config.train.log_every, 1) == 0

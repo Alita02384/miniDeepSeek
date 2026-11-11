@@ -12,6 +12,7 @@ roadmap rejects verl's sampled-token k1/k3 estimators for this stage.
 from __future__ import annotations
 
 import dataclasses
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -413,7 +414,13 @@ class OPDTrainer:
     def train(self, steps: int | None = None) -> dict[str, Any]:
         total = int(steps if steps is not None else self.config.train.steps)
         while self.step_index < total:
+            started = time.perf_counter()
             metrics = self.step()
+            step_time = time.perf_counter() - started
+            metrics["step_time_s"] = step_time
+            metrics["tokens_per_sec"] = float(metrics.get("response_tokens", 0.0)) / max(
+                step_time, 1e-9
+            )
             if (
                 self.logger is not None
                 and self.step_index % max(self.config.train.log_every, 1) == 0
