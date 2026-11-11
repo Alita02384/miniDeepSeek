@@ -9,7 +9,6 @@
   <a href="https://modelscope.cn/models/Alita0429/miniDeepSeek"><img src="https://img.shields.io/badge/ModelScope-model-FF6A00?style=flat-square" alt="ModelScope model"></a>
   <a href="#五分钟先跑起来"><img src="https://img.shields.io/badge/tests-305%20passed-2EA44F?style=flat-square&logo=pytest&logoColor=white" alt="305 tests passed"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License"></a>
-  <a href="#现在跑到哪了"><img src="https://img.shields.io/badge/status-research%20preview-8B5CF6?style=flat-square" alt="Research preview"></a>
 </p>
 
 <h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
