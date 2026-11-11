@@ -350,7 +350,7 @@ class GRPOTrainer:
         return GRPOStepStats(
             loss=sum(stat.loss for stat in chunks),
             response_tokens=int(total),
-            response_length_mean=lengths / total,
+            response_length_mean=lengths / max(samples, 1),
             clip_fraction=weighted("clip_fraction"),
             ratio_mean=weighted("ratio_mean"),
             approx_kl=weighted("approx_kl"),
