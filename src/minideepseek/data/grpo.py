@@ -159,6 +159,22 @@ def _gt_from_record(record: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+def _rubric_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Keep rubric fields, including top-level eval-style ``tests``/``gt``.
+
+    ``data/eval_code.jsonl`` stores its unit tests at the top level; without
+    this mapping ``code_reward`` sees ``record.rubric == {}`` and every eval
+    pass_rate is zero regardless of the model.
+    """
+    rubric = dict(record.get("rubric") or {})
+    for key in ("tests", "test_code"):
+        if key in record and key not in rubric:
+            rubric[key] = record[key]
+    if "expected_calls" in record and "expected_calls" not in rubric:
+        rubric["expected_calls"] = record["expected_calls"]
+    return rubric
+
+
 def _reference_from_record(record: dict[str, Any], messages: list[dict[str, Any]]) -> str | None:
     for key in ("reference_answer", "answer", "gt", "target"):
         value = record.get(key)
@@ -187,12 +203,15 @@ def convert_record(
     prompt = _prompt_from_record(record, multi_turn=multi_turn)
     domain = str(record.get("domain") or default_domain)
     verifier = str(record.get("verifier") or default_verifier)
+    rubric = _rubric_from_record(record)
+    if verifier == "none" and (rubric.get("tests") or rubric.get("test_code")):
+        verifier = "unit_test"
     gt = _gt_from_record(record)
     return GRPORecord(
         prompt=prompt,
         domain=domain if domain in DOMAINS else default_domain,
         reference_answer=_reference_from_record(record, prompt) or (gt[0] if gt else None),
-        rubric=dict(record.get("rubric") or {}),
+        rubric=rubric,
         verifier=verifier if verifier in VERIFIERS else default_verifier,
         difficulty=str(record.get("difficulty") or "medium"),
         source=str(record.get("source") or source or "unknown"),
@@ -213,7 +232,7 @@ def load_records(path: str | Path) -> list[GRPORecord]:
                     prompt=normalize_conversation({"messages": item["prompt"]}),
                     domain=str(item.get("domain", "general")),
                     reference_answer=item.get("reference_answer"),
-                    rubric=dict(item.get("rubric") or {}),
+                    rubric=_rubric_from_record(item),
                     verifier=str(item.get("verifier", "none")),
                     difficulty=str(item.get("difficulty", "medium")),
                     source=str(item.get("source", "unknown")),

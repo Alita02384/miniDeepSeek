@@ -11,6 +11,7 @@ data_path: data/eval_general.jsonl
 domain: general
 max_new_tokens: 1024
 temperature: 0.0
+thinking_ratio: 0.9
 limit: 200
 out_path: reports/eval_general.json
 reward:

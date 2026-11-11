@@ -563,6 +563,10 @@ class EvalConfig(BaseConfig):
     domain: str = "math"
     max_new_tokens: int = 128
     temperature: float = 0.0
+    #: Fraction of eval prompts rendered with an open thinking scaffold.
+    #: Keep it equal to the RL config (general 0.9 / tool 0.1) so eval sees the
+    #: same distribution the specialist was trained on.
+    thinking_ratio: float = 1.0
     limit: int | None = None
     out_path: str | None = None
     reward: RewardSettings = field(default_factory=RewardSettings)

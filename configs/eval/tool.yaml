@@ -11,6 +11,7 @@ data_path: data/eval_tool.jsonl
 domain: tool
 max_new_tokens: 768
 temperature: 0.0
+thinking_ratio: 0.1
 limit: 200
 out_path: reports/eval_tool.json
 reward:

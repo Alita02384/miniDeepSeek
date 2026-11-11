@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import random
 import statistics
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -19,7 +20,11 @@ from ..config import EvalConfig, resolve_device
 from ..data.grpo import GRPORecord, load_records
 from ..model.checkpoint import load_checkpoint, read_metadata
 from ..model.wrapper import MiniDeepSeekModel, build_model
-from ..rl.reward import RewardResult, code_reward, math_reward, world_reward
+from ..rl.reward import (
+    RewardResult,
+    dispatch_reward,
+    make_reward_fn,
+)
 from ..tokenizer import MiniDeepSeekTokenizer, load_tokenizer
 
 
@@ -82,17 +87,20 @@ def _generate_responses(
     max_new_tokens: int,
     temperature: float,
     seed: int,
-) -> list[str]:
+    thinking_ratio: float = 1.0,
+) -> tuple[list[str], list[bool]]:
+    rng = random.Random(seed)
+    flags = [rng.random() < float(thinking_ratio) for _ in records]
     prompts = [
         tokenizer.encode(
             tokenizer.render_chat(
                 record.prompt,
                 add_generation_prompt=True,
                 tools=record.resolved_tools(),
-                open_thinking=True,
+                open_thinking=flag,
             )
         )
-        for record in records
+        for record, flag in zip(records, flags, strict=True)
     ]
     if temperature <= 0:
         output = model.generate(
@@ -110,7 +118,10 @@ def _generate_responses(
             stop_token_ids=tokenizer.stop_token_ids,
             seed=seed,
         )
-    return [tokenizer.decode(ids, skip_special_tokens=True) for ids in output.response_ids]
+    return (
+        [tokenizer.decode(ids, skip_special_tokens=True) for ids in output.response_ids],
+        flags,
+    )
 
 
 def evaluate(
@@ -118,6 +129,7 @@ def evaluate(
     *,
     judge: Callable[[str, GRPORecord], dict[str, float]] | None = None,
     tokenizer: MiniDeepSeekTokenizer | None = None,
+    reward_fn: Callable[[str, GRPORecord], RewardResult] | None = None,
 ) -> EvalReport:
     if not config.data_path:
         raise ValueError("EvalConfig.data_path is required")
@@ -126,27 +138,33 @@ def evaluate(
     records = load_records(config.data_path)
     if config.limit is not None:
         records = records[: config.limit]
-    responses = _generate_responses(
+    responses, thinking_flags = _generate_responses(
         model,
         tokenizer,
         records,
         max_new_tokens=config.max_new_tokens,
         temperature=config.temperature,
         seed=config.model.seed,
+        thinking_ratio=config.thinking_ratio,
     )
     settings = config.reward
     if judge is None and settings.world_judge == "http":
         from ..rl.judge import make_judge
 
         judge = make_judge(settings)
+    injected_reward = reward_fn is not None
+    if reward_fn is None:
+        # General needs the trained reward model; math/code/tool/world are
+        # dispatched from the same settings the GRPO run used.
+        if settings.kind in {"general", "rlaif"} or config.domain == "general":
+            reward_fn = make_reward_fn(settings, judge=judge)
+        else:
+            reward_fn = lambda response, record: dispatch_reward(  # noqa: E731
+                response, record, settings, judge=judge
+            )
     samples: list[EvalSample] = []
     for record, response in zip(records, responses, strict=True):
-        if config.domain == "math" or record.verifier == "math_exact_match":
-            result = math_reward(response, record, settings)
-        elif config.domain == "code" or record.verifier == "unit_test":
-            result = code_reward(response, record, settings)
-        else:
-            result = world_reward(response, record, settings, judge=judge)
+        result = reward_fn(response, record)
         samples.append(
             EvalSample(
                 prompt=record.prompt[-1].get("content", "") if record.prompt else "",
@@ -161,7 +179,16 @@ def evaluate(
         "flavor": config.model.flavor,
         "max_new_tokens": config.max_new_tokens,
         "temperature": config.temperature,
+        "thinking_ratio": config.thinking_ratio,
+        "reward_kind": settings.kind,
+        "reward_source": "injected" if injected_reward else "dispatched",
         "tokenizer_hash": tokenizer.sha256,
+        "tool_execution": False if config.domain == "tool" else None,
+        "thinking_rate": (
+            sum(1.0 for flag in thinking_flags if flag) / len(thinking_flags)
+            if thinking_flags
+            else 0.0
+        ),
     }
     return report
 
@@ -185,6 +212,26 @@ def _summarize(domain: str, samples: list[EvalSample]) -> EvalReport:
         metrics["format_rate"] = format_ok
     elif domain == "code":
         metrics["pass_rate"] = unit
+    elif domain == "tool":
+        metrics["tool_reward_mean"] = statistics.fmean(totals)
+        metrics["tool_alignment_mean"] = statistics.fmean(
+            sample.reward.components.get("tool_alignment", 0.0) for sample in samples
+        )
+        metrics["gt_match_mean"] = statistics.fmean(
+            sample.reward.components.get("gt_match", 0.0) for sample in samples
+        )
+        metrics["tool_call_rate"] = statistics.fmean(
+            1.0 if sample.reward.details.get("has_calls") else 0.0 for sample in samples
+        )
+        metrics["unfinished_rate"] = statistics.fmean(
+            1.0 if sample.reward.details.get("unfinished") else 0.0 for sample in samples
+        )
+        # Eval is single-turn and does not execute tools; the numbers above are
+        # format/answer proxies, not a full agentic evaluation.
+    elif domain == "general":
+        metrics["reward_model_mean"] = statistics.fmean(
+            sample.reward.components.get("reward_model", 0.0) for sample in samples
+        )
     else:
         component_names = sorted(
             {key for sample in samples for key in sample.reward.components}
