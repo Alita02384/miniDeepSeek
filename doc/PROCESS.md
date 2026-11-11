@@ -1713,3 +1713,14 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
 - 验证：`pytest -q` 317 passed / 2 skipped；`node --check` 页面 JS；
   纯命令行方式起 bridge（`--local-port 8801`）拉 `/data`：559 行、step 5440、
   四视图 code/general/overall/tool 齐全、`error` 为空。
+
+### 2026-11-11 补：更正——code/tool 的 0% 专家是领域分化（D89）
+
+- 用"富集比"复测：general 每层最强特化只有 1.02–1.23（无专属专家，它 82% 的流量
+  本身就是 pooled 分布）；code 2.20–2.83；tool 1.65–2.06。正向特化真实存在。
+- pooled 分布 8 层 min/mean 0.86–0.97 → 没有全局死专家，"0%" 只是 general 侧专家的反面。
+- JS 散度 2000→3000 步上升后平台化（code 0.118→0.135→0.141→0.135，
+  tool 0.069→0.092→0.088→0.082），不是持续塌缩。
+- **撤回"提高 balance_loss_coeff"的建议**：那会压制这里想要的分化，与项目目标相反。
+- 分化轴是 "general vs code+tool" 而非三个独立簇（L2 的 code 专家 e1/e2 同时是
+  tool 的专家）。tool 仅在 L5 的 e0 上显出独立偏好（1.56）。
