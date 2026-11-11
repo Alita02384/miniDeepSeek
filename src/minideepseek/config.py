@@ -391,6 +391,10 @@ class TrainSettings(BaseConfig):
     #: checkpoint in ``out_dir`` instead of starting from scratch.  This is what
     #: makes "re-run the same command" recover an interrupted run.
     auto_resume: bool = False
+    #: Allow a run whose out_dir already has final/ to overwrite it.  Without
+    #: this, an explicit ``resume`` that points outside out_dir is rejected so
+    #: a data/config change cannot silently continue the old checkpoint.
+    force_restart: bool = False
     resume: str | None = None
     # Skip already-consumed micro-batches when resuming the same dataset.  A
     # curriculum stage uses a different dataset, so it sets this to false.

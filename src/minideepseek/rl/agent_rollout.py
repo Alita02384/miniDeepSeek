@@ -129,13 +129,25 @@ class ToolRolloutEngine(TorchRolloutEngine):
         tool_turns: list[str] = []
         unfinished = False
         final_text = ""
+        last_stopped = False
         generator = self.generator or self.model
+        max_context = getattr(self.model, "max_context_length", None)
 
         for turn in range(self.max_turns):
             context_ids = prompt_ids + response_ids
+            turn_limit = int(max_new_tokens)
+            if max_context is not None:
+                remaining = int(max_context) - len(context_ids)
+                if remaining <= 0:
+                    unfinished = True
+                    break
+                turn_limit = min(turn_limit, remaining)
+            if turn_limit <= 0:
+                unfinished = True
+                break
             output = generator.generate(
                 [context_ids],
-                max_new_tokens=max_new_tokens,
+                max_new_tokens=turn_limit,
                 temperature=temperature,
                 top_k=top_k,
                 top_p=top_p,
@@ -151,6 +163,12 @@ class ToolRolloutEngine(TorchRolloutEngine):
             tool_turns.append(new_text)
             final_text = new_text
             messages.append({"role": "assistant", "content": new_text})
+            last_stopped = bool(output.finished[0]) if output.finished else False
+            if not last_stopped:
+                # A turn cut at max_new_tokens/context is not a finished
+                # trajectory; do not parse a partial tool call as complete.
+                unfinished = True
+                break
 
             calls = parse_tool_calls(new_text)[: self.max_tool_calls]
             if not calls:
@@ -184,10 +202,11 @@ class ToolRolloutEngine(TorchRolloutEngine):
             full_ids = self.tokenizer.encode(full_text)
             prefix = prompt_ids + response_ids
             if full_ids[: len(prefix)] != prefix:
-                raise RuntimeError(
-                    "multi-turn chat template is not prefix-stable; observation "
-                    "tokens cannot be aligned"
-                )
+                # Same normalisation issue as the cached engine (closed think
+                # scaffold, lstrip newlines, U+FFFD).  End the trajectory as
+                # unfinished instead of crashing the run.
+                unfinished = True
+                break
             observation_ids = full_ids[len(prefix) :]
             response_ids.extend(observation_ids)
             token_mask.extend([False] * len(observation_ids))
@@ -210,4 +229,6 @@ class ToolRolloutEngine(TorchRolloutEngine):
             prompt_text=prompt_text,
             response_text=final_text,
             token_mask=token_mask,
+            finished=bool(last_stopped and not unfinished),
+            max_new_hit=bool(unfinished or not last_stopped),
         )

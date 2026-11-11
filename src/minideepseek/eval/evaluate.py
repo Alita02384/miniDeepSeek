@@ -156,7 +156,13 @@ def evaluate(
     if reward_fn is None:
         # General needs the trained reward model; math/code/tool/world are
         # dispatched from the same settings the GRPO run used.
-        if settings.kind in {"general", "rlaif"} or config.domain == "general":
+        if (
+            settings.kind in {"general", "rlaif"}
+            or config.domain == "general"
+            or settings.reward_model_path
+        ):
+            # tool's no-call branch consults the RM; keep the same lazy loader
+            # as training instead of silently dropping reward_model_path.
             reward_fn = make_reward_fn(settings, judge=judge)
         else:
             reward_fn = lambda response, record: dispatch_reward(  # noqa: E731

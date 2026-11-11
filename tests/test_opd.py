@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from minideepseek.config import (
@@ -92,16 +93,22 @@ def test_opd_ddp_all_reduces_gradients(tmp_path, stub_tokenizer, monkeypatch):
 
 
 def test_opd_missing_teacher_raises(tmp_path, stub_tokenizer):
+    import pytest
+
     student = build_model("debugmodel", seq_len=128, n_mtp_layers=0, device="cpu", swiglu_limit=10.0)
     prompts = [OPDPrompt(prompt=[{"role": "user", "content": "x"}], teacher_key="world", domain="world")]
     config = _opd_config(tmp_path)
-    try:
-        trainer = OPDTrainer(config, student, stub_tokenizer, prompts, {"math": student}, teacher_weights={"math": 1.0})
-        trainer.step()
-    except KeyError as error:
-        assert "world" in str(error)
-    else:
-        raise AssertionError("expected KeyError for a missing teacher")
+    # Validated at construction so a missing teacher cannot make ranks call a
+    # different number of collectives later.
+    with pytest.raises(ValueError, match="without a model"):
+        OPDTrainer(
+            config,
+            student,
+            stub_tokenizer,
+            prompts,
+            {"math": student},
+            teacher_weights={"math": 1.0},
+        )
 
 
 def test_load_teacher_from_checkpoint(tmp_path):
@@ -193,3 +200,37 @@ def test_opd_uses_fixed_teacher_weight_denominator(tmp_path, stub_tokenizer, mon
     metrics = trainer.step()
     # KL=1, present weight=0.5, fixed weights sum=1.0 -> 0.5 (not 1.0).
     assert abs(metrics["loss"] - 0.5) < 1e-6
+
+
+def test_merge_opd_records_keeps_kl_total_and_per_teacher_means():
+    from minideepseek.rl.opd import _merge_opd_records
+
+    merged = _merge_opd_records(
+        [
+            {
+                "loss": 1.0,
+                "kl_total": 1.0,
+                "kl_math": 2.0,
+                "kl_code": 3.0,
+                "teacher_tokens": {"math": 10, "code": 0},
+                "response_tokens": 10.0,
+                "samples": 1.0,
+                "response_length_mean": 10.0,
+                "grad_norm": 1.0,
+            },
+            {
+                "loss": 1.0,
+                "kl_total": 1.0,
+                "kl_math": 4.0,
+                "kl_code": 3.0,
+                "teacher_tokens": {"math": 30, "code": 0},
+                "response_tokens": 30.0,
+                "samples": 3.0,
+                "response_length_mean": 20.0,
+                "grad_norm": 1.0,
+            },
+        ]
+    )
+    assert merged["kl_total"] == 1.0  # not zeroed by the kl_ prefix loop
+    assert merged["kl_math"] == pytest.approx(2.0 * 10 / 40 + 4.0 * 30 / 40)
+    assert merged["response_length_mean"] == pytest.approx(17.5)

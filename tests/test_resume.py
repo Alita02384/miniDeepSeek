@@ -76,6 +76,17 @@ def test_auto_resume_off_starts_fresh(tmp_path):
     assert fresh.step == 0
 
 
+def test_explicit_base_outside_out_dir_cannot_overwrite_final(tmp_path):
+    first, _ = build_trainer(_config(tmp_path), _batches())
+    first.train(2)
+    base = tmp_path / "base"
+    from minideepseek.model.checkpoint import save_checkpoint
+
+    save_checkpoint(base, first.model, step=0)
+    with pytest.raises(ValueError, match="points outside"):
+        build_trainer(_config(tmp_path, resume=str(base)), _batches())
+
+
 def test_stop_finishes_current_step_and_saves(tmp_path):
     trainer, _ = build_trainer(_config(tmp_path, steps=10, ckpt_every=100), _batches())
     original = trainer.train_step

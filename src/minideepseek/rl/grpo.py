@@ -44,6 +44,11 @@ from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
+from ..train.trainer import (
+    check_out_dir_overwrite,
+    latest_checkpoint,
+    prune_checkpoints,
+)
 from .agent_rollout import ToolRolloutEngine
 from .reward import RewardResult, group_advantages
 from .rollout import RolloutGroup, RolloutSample, TorchRolloutEngine
@@ -301,8 +306,12 @@ class GRPOTrainer:
             flat_samples, advantages, total_tokens=total_tokens
         )
         stats.samples = len(flat_samples)
+        # finished is set for stop and max_new exhaustion alike; the useful
+        # signal is the *stop* rate.
         stats.finished_rate = sum(
-            1.0 for sample in flat_samples if sample.finished
+            1.0
+            for sample in flat_samples
+            if sample.finished and not sample.max_new_hit
         ) / len(flat_samples)
         stats.max_new_hit_rate = sum(
             1.0 for sample in flat_samples if sample.max_new_hit
@@ -432,15 +441,23 @@ class GRPOTrainer:
             chunk_stats.append(chunk_stat)
         stats = self._merge_stats(chunk_stats)
         stats.samples = len(flat_samples)
+        # finished is set for stop and max_new exhaustion alike; the useful
+        # signal is the *stop* rate.
         stats.finished_rate = sum(
-            1.0 for sample in flat_samples if sample.finished
+            1.0
+            for sample in flat_samples
+            if sample.finished and not sample.max_new_hit
         ) / len(flat_samples)
         stats.max_new_hit_rate = sum(
             1.0 for sample in flat_samples if sample.max_new_hit
         ) / len(flat_samples)
         stats.samples = len(flat_samples)
+        # finished is set for stop and max_new exhaustion alike; the useful
+        # signal is the *stop* rate.
         stats.finished_rate = sum(
-            1.0 for sample in flat_samples if sample.finished
+            1.0
+            for sample in flat_samples
+            if sample.finished and not sample.max_new_hit
         ) / len(flat_samples)
         stats.max_new_hit_rate = sum(
             1.0 for sample in flat_samples if sample.max_new_hit
@@ -490,6 +507,14 @@ class GRPOTrainer:
                 and (self.step_index + 1) % self.config.train.ckpt_every == 0
             ):
                 self.save(f"step_{self.step_index + 1:06d}", step=self.step_index + 1)
+                if self.config.train.keep_last_ckpt > 0:
+                    if self.dist.is_main:
+                        prune_checkpoints(
+                            self.config.train.out_dir,
+                            int(self.config.train.keep_last_ckpt),
+                        )
+                    if self.dist.enabled:
+                        self.dist.barrier()
             self.step_index += 1
         self.save("final")
         summary = self.logger.summary() if self.logger is not None else {}
@@ -655,8 +680,20 @@ def build_grpo_trainer(
         engine=engine,
         distributed=context,
     )
-    if config.train.resume:
-        meta = trainer.resume(config.train.resume)
+    resume_path = config.train.resume
+    if resume_path is None and config.train.auto_resume:
+        found = latest_checkpoint(config.train.out_dir)
+        if found is not None:
+            resume_path = str(found)
+            config.train.resume_step = True
+            config.train.resume_data = True
+    check_out_dir_overwrite(
+        config.train.out_dir,
+        resume_path,
+        force_restart=bool(config.train.force_restart),
+    )
+    if resume_path:
+        meta = trainer.resume(resume_path)
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError("GRPO resume checkpoint tokenizer hash mismatch")
@@ -734,8 +771,11 @@ def _merge_grpo_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         "response_length_mean",
     ):
         merged[key] = weighted(key, "samples")
-    for key in ("clip_fraction", "ratio_mean", "approx_kl", "loss"):
+    for key in ("clip_fraction", "ratio_mean", "approx_kl"):
         merged[key] = weighted(key, "response_tokens")
+    # Each rank's loss is already the global objective (token scaling applied),
+    # and DDP averages it uniformly across ranks.
+    merged["loss"] = sum(float(record.get("loss", 0.0)) for record in records) / len(records)
     if samples > 0:
         mean = weighted("reward_mean", "samples")
         second = sum(

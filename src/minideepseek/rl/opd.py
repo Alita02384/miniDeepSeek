@@ -49,6 +49,11 @@ from ..train.losses import iter_moe_layers, update_expert_biases
 from ..train.metrics import MetricsLogger
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
+from ..train.trainer import (
+    check_out_dir_overwrite,
+    latest_checkpoint,
+    prune_checkpoints,
+)
 from .agent_rollout import ToolRolloutEngine
 from .rollout import RolloutSample, TorchRolloutEngine
 
@@ -111,14 +116,20 @@ def _merge_opd_records(records: list[dict[str, Any]]) -> dict[str, Any]:
         )
 
     for key in ("loss", "kl_total"):
-        merged[key] = weighted(key, "response_tokens")
+        # Both are already rank-normalized objectives; DDP averages uniformly.
+        merged[key] = sum(float(record.get(key, 0.0)) for record in records) / len(records)
     for key in ("response_length_mean", "finished_rate", "max_new_hit_rate"):
         merged[key] = weighted(key, "samples")
     teacher_tokens: dict[str, int] = {}
     for record in records:
         for key, value in (record.get("teacher_tokens") or {}).items():
             teacher_tokens[key] = teacher_tokens.get(key, 0) + int(value)
-    for key in {key for record in records for key in record if key.startswith("kl_")}:
+    for key in {
+        key
+        for record in records
+        for key in record
+        if key.startswith("kl_") and key != "kl_total"
+    }:
         # KL is a token mean per teacher; weight by that teacher's tokens.
         per_teacher = [
             (
@@ -201,6 +212,13 @@ class OPDTrainer:
         missing = set(teachers) - set(self.teacher_weights)
         if missing:
             raise ValueError(f"teachers without weights: {sorted(missing)}")
+        prompt_keys = {prompt.teacher_key for prompt in prompts if prompt.teacher_key}
+        unknown_prompt_keys = prompt_keys - set(teachers)
+        if unknown_prompt_keys:
+            raise ValueError(
+                "OPD prompts reference teachers without a model: "
+                f"{sorted(unknown_prompt_keys)}; available={sorted(teachers)}"
+            )
         self.logger = (
             MetricsLogger(config.train.out_dir) if self.dist.is_main else None
         )
@@ -307,21 +325,45 @@ class OPDTrainer:
         # rescales the loss (e.g. 0.5 -> 1.0 when only one of two teachers is
         # present).
         fixed_weight_sum = sum(float(value) for value in self.teacher_weights.values())
-        for key, group in _group_by_teacher(samples).items():
-            if key not in self.teachers:
-                raise KeyError(
-                    f"no teacher for key {key!r}; available={sorted(self.teachers)}"
-                )
+        groups = _group_by_teacher(samples)
+        unknown = set(groups) - set(self.teachers)
+        if unknown:
+            raise KeyError(
+                f"no teacher for keys {sorted(unknown)}; available={sorted(self.teachers)}"
+            )
+        teacher_order = sorted(self.teacher_weights)
+        local_tokens = {
+            key: sum(sample.num_loss_tokens for sample in group)
+            for key, group in groups.items()
+        }
+        # One fixed-shape collective for every configured teacher.  The number
+        # and order of collectives must not depend on which teachers this rank
+        # happened to sample, or the next gradient all-reduce pairs with a
+        # pending scalar all-reduce and NCCL hangs / mixes counts.
+        if self.dist.enabled:
+            counts = torch.tensor(
+                [float(local_tokens.get(key, 0)) for key in teacher_order],
+                device=self.student.device,
+                dtype=torch.float32,
+            )
+            self.dist.all_reduce_sum(counts)
+            global_tokens = {
+                key: int(round(float(counts[index].item())))
+                for index, key in enumerate(teacher_order)
+            }
+        else:
+            global_tokens = {
+                key: int(local_tokens.get(key, 0)) for key in teacher_order
+            }
+        for key in teacher_order:
+            group = groups.get(key)
+            if not group:
+                continue
             kl, kl_value, tokens = self._kl_for_group(group, key)
             if self.dist.enabled and tokens > 0:
-                count = torch.tensor(
-                    float(tokens), device=self.student.device, dtype=torch.float32
-                )
-                self.dist.all_reduce_sum(count)
-                global_tokens = int(round(float(count.item())))
                 # DDP averages rank-local token means; undo that with
                 # world * local/global so the result is the global token mean.
-                kl = kl * (world * tokens / max(global_tokens, 1))
+                kl = kl * (world * tokens / max(global_tokens[key], 1))
             weight = float(self.teacher_weights.get(key, 1.0))
             loss_total = loss_total + kl * weight
             token_count += tokens
@@ -354,7 +396,11 @@ class OPDTrainer:
             weight_sync_logprob_diff=sync_diff,
             samples=len(samples),
             teacher_tokens=teacher_tokens,
-            finished_rate=sum(1.0 for sample in samples if sample.finished)
+            finished_rate=sum(
+                1.0
+                for sample in samples
+                if sample.finished and not sample.max_new_hit
+            )
             / len(samples),
             max_new_hit_rate=sum(1.0 for sample in samples if sample.max_new_hit)
             / len(samples),
@@ -379,6 +425,14 @@ class OPDTrainer:
                 and (self.step_index + 1) % self.config.train.ckpt_every == 0
             ):
                 self.save(f"step_{self.step_index + 1:06d}", step=self.step_index + 1)
+                if self.config.train.keep_last_ckpt > 0:
+                    if self.dist.is_main:
+                        prune_checkpoints(
+                            self.config.train.out_dir,
+                            int(self.config.train.keep_last_ckpt),
+                        )
+                    if self.dist.enabled:
+                        self.dist.barrier()
             self.step_index += 1
         self.save("final")
         summary = self.logger.summary() if self.logger is not None else {}
@@ -623,8 +677,20 @@ def build_opd_trainer(
         engine=engine,
         distributed=context,
     )
-    if config.train.resume:
-        meta = trainer.resume(config.train.resume)
+    resume_path = config.train.resume
+    if resume_path is None and config.train.auto_resume:
+        found = latest_checkpoint(config.train.out_dir)
+        if found is not None:
+            resume_path = str(found)
+            config.train.resume_step = True
+            config.train.resume_data = True
+    check_out_dir_overwrite(
+        config.train.out_dir,
+        resume_path,
+        force_restart=bool(config.train.force_restart),
+    )
+    if resume_path:
+        meta = trainer.resume(resume_path)
         expected = meta.get("tokenizer_hash")
         if expected and expected != tokenizer.sha256:
             raise ValueError("OPD student checkpoint tokenizer hash mismatch")

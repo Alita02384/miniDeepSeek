@@ -205,6 +205,7 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
             generator = torch.Generator(device=self.model.device)
             generator.manual_seed(int(seed))
         open_thinking = bool(sample.open_thinking)
+        record_mismatch = False
 
         for turn in range(1, self.max_turns):
             calls = parse_tool_calls(final_text)[: self.max_tool_calls]
@@ -223,10 +224,16 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
             )
             full_ids = self.tokenizer.encode(full_text)
             if full_ids[: len(prefix)] != prefix:
-                raise RuntimeError(
-                    "multi-turn chat template is not prefix-stable; observation "
-                    "tokens cannot be aligned"
-                )
+                # The ChatML template normalizes assistant content (it always
+                # re-renders the closed think scaffold, strips leading
+                # newlines, and U+FFFD pieces cannot round-trip).  A legitimate
+                # open-thinking turn therefore need not be prefix-stable.  Do
+                # not kill the whole GRPO run: keep the sampled trajectory and
+                # mark it unfinished instead of feeding a misaligned suffix.
+                unfinished = True
+                last_stopped = False
+                record_mismatch = True
+                break
             observation_ids = full_ids[len(prefix) :]
             cache_len = int(cache.length[slot].item())
             if cache_len > len(prefix):
@@ -299,10 +306,10 @@ class CachedToolRolloutEngine(CachedRolloutEngine):
                     unfinished = True
                 break
 
-        record_copy = dataclasses.replace(
-            record,
-            rubric={**record.rubric, "tool_turns": tool_turns, "unfinished": unfinished},
-        )
+        rubric = {**record.rubric, "tool_turns": tool_turns, "unfinished": unfinished}
+        if record_mismatch:
+            rubric["continuation_render_mismatch"] = True
+        record_copy = dataclasses.replace(record, rubric=rubric)
         return RolloutSample(
             prompt_ids=list(sample.prompt_ids),
             response_ids=responses,

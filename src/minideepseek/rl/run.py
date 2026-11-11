@@ -21,26 +21,9 @@ from ..data.grpo import load_records
 from ..data.opd import load_opd_prompts
 from ..tokenizer import load_tokenizer
 from ..train.distributed import init_distributed
-from ..train.trainer import latest_checkpoint
 from .grpo import build_grpo_trainer
 from .opd import build_opd_trainer
 from .reward import make_reward_fn
-
-
-def _resume_path(config: RLConfig) -> str | None:
-    """Prefer the newest checkpoint in out_dir when auto_resume is on.
-
-    RL configs also set ``resume`` to the SFT/pretrain base, so the old
-    ``if resume is None`` test made auto_resume dead code.  A checkpoint in
-    out_dir is a crash-recovery checkpoint: resume it and restore its step.
-    """
-    resume = config.train.resume
-    if config.train.auto_resume:
-        found = latest_checkpoint(config.train.out_dir)
-        if found is not None:
-            config.train.resume_step = True
-            return str(found)
-    return resume
 
 
 def _prune_checkpoints(out_dir: str, keep: int) -> None:
@@ -74,12 +57,11 @@ def run_grpo(config: RLConfig) -> dict:
         trainer, model = build_grpo_trainer(
             config, records, reward_fn, tokenizer=tokenizer, distributed=context
         )
-        resume = _resume_path(config)
-        if resume:
-            trainer.resume(resume)
         summary = trainer.train()
         checkpoint = Path(config.train.out_dir) / "final"
-        _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
+        if context.is_main:
+            _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
+        context.barrier()
         return {
             "method": "grpo",
             "records": len(records),
@@ -108,12 +90,11 @@ def run_opd(config: RLConfig) -> dict:
         trainer, student = build_opd_trainer(
             config, prompts, tokenizer=tokenizer, distributed=context
         )
-        resume = _resume_path(config)
-        if resume:
-            trainer.resume(resume)
         summary = trainer.train()
         checkpoint = Path(config.train.out_dir) / "final"
-        _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
+        if context.is_main:
+            _prune_checkpoints(config.train.out_dir, int(config.train.keep_last_ckpt))
+        context.barrier()
         return {
             "method": "opd",
             "prompts": len(prompts),

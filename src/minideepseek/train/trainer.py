@@ -344,6 +344,10 @@ class Trainer:
         self._batch_iter: Iterator[PackedBatch] = iter(self._batch_factory())
         self._batches_consumed = 0
         self._tokens_seen = 0
+        #: Whole-job main-head target tokens (all ranks); differs from
+        #: ``_tokens_seen * world`` when response masks make rank token counts
+        #: unequal.
+        self._tokens_seen_global = 0
         # Global (all-rank) tokens pulled from the loader, padding included.
         # This is the data position a resume has to restore: unlike
         # ``_batches_consumed`` it does not change meaning when the GPU count
@@ -651,11 +655,10 @@ class Trainer:
             # ``tokens`` is the LM token budget (main head only); MTP targets
             # are auxiliary prediction slots, not corpus tokens.
             metrics.tokens = loss_output.main_token_count
-            if metrics.tokens <= 0:
-                raise ValueError(
-                    "micro-batch has zero target tokens; the response mask or "
-                    "packed data is broken (loss and gradients would be empty)"
-                )
+            # A zero-target *SFT* pack is rejected by run.py's dataset
+            # validation.  Do not raise here: pretrain's full_packs can emit a
+            # one-token tail pack with no targets, and a hard error would turn
+            # that into a crash at an epoch boundary.
             # Diagnostics cost a reduction + a host sync per router layer per
             # micro-batch (32 of them per optimizer step).  The step-level
             # value is an average anyway, so only the last micro-batch pays for
@@ -873,6 +876,7 @@ class Trainer:
                 else 1.0 / global_target_tokens
             )
             scale_gradients(self.model.model, factor)
+        self._tokens_seen_global += int(round(global_target_tokens))
         grad_norm = clip_grad_norm(self.model.model, self.config.optim.grad_clip)
         self._sync_expert_usage()
         update_expert_biases(self.model.model)
@@ -926,7 +930,9 @@ class Trainer:
         averaged.step_time_s = elapsed
         # ``averaged.tokens`` is this rank's share; the rate has always been a
         # whole-job figure (x world), which is what the ETA is derived from.
-        averaged.tokens_per_sec = (averaged.tokens * world / elapsed) if elapsed > 0 else 0.0
+        averaged.tokens_per_sec = (
+            global_target_tokens / elapsed if elapsed > 0 else 0.0
+        )
         averaged.eta_seconds = mean_step * remaining
         for key, value in memory_stats(self.device).items():
             setattr(averaged, key, value)
@@ -937,7 +943,9 @@ class Trainer:
         record["top1_prob"] = self._top1_value
         self._update_domain_loss_ema(micro_metrics)
         record.update(self._domain_loss_record())
-        record = self._globalize(record, tokens=averaged.tokens)
+        record = self._globalize(
+            record, tokens=averaged.tokens, global_tokens=global_target_tokens
+        )
         self._loss_ema = (
             record["loss"]
             if self._loss_ema is None
@@ -1055,7 +1063,13 @@ class Trainer:
         record["seq_len"] = int(self.config.model.seq_len)
         record["wall_clock"] = round(time.time(), 3)
 
-    def _globalize(self, record: dict[str, Any], *, tokens: float) -> dict[str, Any]:
+    def _globalize(
+        self,
+        record: dict[str, Any],
+        *,
+        tokens: float,
+        global_tokens: float | None = None,
+    ) -> dict[str, Any]:
         """Rewrite per-rank fields of one metrics record as whole-job figures.
 
         Without this a 2-GPU log reports half the tokens and a rank-local loss,
@@ -1068,8 +1082,10 @@ class Trainer:
         world = int(self.dist.world_size) if self.dist.enabled else 1
         if world <= 1:
             return record
-        record["tokens"] = int(round(tokens * world))
-        record["tokens_seen"] = int(round(float(record.get("tokens_seen") or 0.0) * world))
+        record["tokens"] = int(
+            round(global_tokens if global_tokens is not None else tokens * world)
+        )
+        record["tokens_seen"] = int(round(self._tokens_seen_global))
         # Sorted: dict order is insertion order, which differs between ranks
         # (whichever domain showed up first), and an all-reduce over
         # differently-ordered vectors mixes unrelated values.
@@ -1213,8 +1229,7 @@ class Trainer:
                 "first_loss": self._first_loss,
                 "last_loss": self._last_loss,
                 "wall_seconds": round(time.time() - started, 3),
-                "tokens": self._tokens_seen
-                * (int(self.dist.world_size) if self.dist.enabled else 1),
+                "tokens": self._tokens_seen_global,
                 "interrupted": bool(self._stop_requested),
                 "best_val_loss": (
                     self.best_val_loss if math.isfinite(self.best_val_loss) else None
@@ -1479,19 +1494,7 @@ class Trainer:
         keep = int(self.config.train.keep_last_ckpt)
         if keep <= 0 or not self.dist.is_main:
             return
-        out_dir = Path(self.config.train.out_dir)
-        if not out_dir.is_dir():
-            return
-        periodic = sorted(
-            (
-                child
-                for child in out_dir.iterdir()
-                if child.is_dir() and re.fullmatch(r"step_\d+", child.name)
-            ),
-            key=lambda path: int(path.name.split("_")[1]),
-        )
-        for old in periodic[:-keep]:
-            shutil.rmtree(old, ignore_errors=True)
+        prune_checkpoints(self.config.train.out_dir, keep)
 
     # -- checkpoints ----------------------------------------------------------
     def save(
@@ -1642,6 +1645,9 @@ class Trainer:
                 self._domain_main_ema[str(name)] = float(value)
             if saved_extra.get("tokens_seen") is not None:
                 self._tokens_seen = int(saved_extra["tokens_seen"])
+                self._tokens_seen_global = self._tokens_seen * (
+                    int(self.dist.world_size) if self.dist.enabled else 1
+                )
         # Must run after the optimizer state is loaded: that state restores the
         # saved ``base_lr`` and would otherwise make a config LR edit a no-op.
         self._apply_config_learning_rates()
@@ -1661,6 +1667,55 @@ class Trainer:
 
     def close(self) -> dict[str, Any]:
         return self.logger.summary() if self.logger is not None else {}
+
+
+def prune_checkpoints(out_dir: str | Path, keep: int) -> None:
+    """Keep the newest ``keep`` periodic ``step_*`` checkpoints."""
+    if keep <= 0:
+        return
+    directory = Path(out_dir)
+    if not directory.is_dir():
+        return
+    periodic = sorted(
+        (
+            child
+            for child in directory.iterdir()
+            if child.is_dir() and re.fullmatch(r"step_\d+", child.name)
+        ),
+        key=lambda path: int(path.name.split("_")[1]),
+    )
+    for old in periodic[:-keep]:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def check_out_dir_overwrite(
+    out_dir: str | Path,
+    resume_path: str | Path | None,
+    *,
+    force_restart: bool = False,
+) -> None:
+    """Refuse to overwrite ``out_dir/final`` from a different base checkpoint.
+
+    A rerun with the same config used to start from the configured stage base
+    and overwrite ``final`` without warning.  Resume from a checkpoint *inside*
+    out_dir (crash recovery) is still allowed; set ``train.force_restart`` to
+    deliberately write into a non-empty out_dir.
+    """
+    final = Path(out_dir) / "final"
+    if force_restart or not (final / "meta.json").exists():
+        return
+    if resume_path is None:
+        # A fresh run with no resume is an explicit overwrite; only an
+        # explicit *base* checkpoint that is outside out_dir is dangerous.
+        return
+    resolved = Path(resume_path).resolve()
+    directory = Path(out_dir).resolve()
+    if resolved == final.resolve() or resolved.is_relative_to(directory):
+        return
+    raise ValueError(
+        f"{out_dir} already has final/ but train.resume points outside it "
+        f"({resume_path}); use a new out_dir or set train.force_restart=true"
+    )
 
 
 def build_trainer(
@@ -1696,18 +1751,20 @@ def build_trainer(
         distributed=context,
     )
     resume_path = config.train.resume
-    if config.train.auto_resume:
-        # A checkpoint in out_dir is a crash-recovery checkpoint and takes
-        # precedence over the configured stage base (SFT configs point
-        # ``resume`` at the pretrain checkpoint).  The old code only looked at
-        # auto_resume when ``resume`` was None, so the flag was dead and a
-        # rerun overwrote ``final`` from the pretrain base.
+    if resume_path is None and config.train.auto_resume:
+        # auto_resume only fills a missing resume; an explicit stage base must
+        # not be silently replaced by an old checkpoint in out_dir.
         found = latest_checkpoint(config.train.out_dir)
         if found is not None:
             resume_path = str(found)
             config.train.resume_step = True
             config.train.resume_data = True
             trainer._say(f"[trainer] auto-resume from {resume_path}")
+    check_out_dir_overwrite(
+        config.train.out_dir,
+        resume_path,
+        force_restart=bool(config.train.force_restart),
+    )
     if resume_path:
         trainer.resume(resume_path)
     return trainer, model

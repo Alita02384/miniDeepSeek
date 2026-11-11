@@ -277,3 +277,61 @@ def test_feed_rejects_out_of_context_positions():
         assert "max_context" in str(error)
     else:  # pragma: no cover - the assertion is the test
         raise AssertionError("out-of-context feed must raise RuntimeError")
+
+
+def test_continuation_prefix_mismatch_marks_unfinished_instead_of_crashing(monkeypatch):
+    """Open-thinking turns need not be prefix-stable under ChatML.
+
+    The template always re-renders the closed think scaffold, so a response that
+    does not contain ``</think>`` changes the prefix.  A legitimate sample must
+    end as unfinished, not kill the GRPO run.
+    """
+    import minideepseek.rl.cached_tool as module
+    from minideepseek.rl.rollout import RolloutSample
+    from minideepseek.tokenizer import load_tokenizer
+
+    torch.manual_seed(0)
+    model = build_model("debugmodel", device="cpu", dtype="float32")
+    tokenizer = load_tokenizer(vocab_limit=VOCAB_LIMIT)
+    engine = CachedToolRolloutEngine(
+        model,
+        tokenizer,
+        max_slots=2,
+        use_cuda_graph=False,
+        max_turns=3,
+        thinking_ratio=1.0,
+        max_context=2048,
+    )
+    record = _tool_record()
+    prompt = engine.encode_prompt(record, open_thinking=True)
+    cache = engine._ensure_cache(1)
+    model.eval()
+    model.prefill(prompt, cache, 0)
+    response_text = "1"  # no </think>; real template re-renders the closed block
+    response_ids = tokenizer.encode(response_text)
+    sample = RolloutSample(
+        prompt_ids=prompt,
+        response_ids=response_ids,
+        sampling_logprobs=[0.0] * len(response_ids),
+        record=record,
+        response_text=response_text,
+        open_thinking=True,
+    )
+    monkeypatch.setattr(
+        module,
+        "parse_tool_calls",
+        lambda text: [{"name": "calculate_math", "arguments": {"expression": "1+1"}}],
+    )
+    result = engine._continue_tool(
+        record,
+        sample,
+        0,
+        cache,
+        max_new_tokens=4,
+        temperature=1.0,
+        top_k=0,
+        top_p=1.0,
+        seed=1,
+    )
+    assert result.record.rubric["unfinished"] is True
+    assert result.record.rubric.get("continuation_render_mismatch") is True

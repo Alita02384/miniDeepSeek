@@ -124,8 +124,12 @@ def main(argv: list[str] | None = None) -> int:
         # ``--max-records`` overrides all three for smoke runs.
         sft_budgets = {"general": 50_000, "code": 30_000, "tool": 8_000}
         for name, default_budget in sft_budgets.items():
+            source = data_dir / f"sft_{name}.jsonl"
+            if not source.exists():
+                print(f"[tokenize] skip missing SFT source: {source}", flush=True)
+                continue
             report[f"sft_{name}"] = tokenize_sft(
-                data_dir / f"sft_{name}.jsonl",
+                source,
                 out_dir / f"sft_{name}.npz",
                 seq_len=args.sft_seq_len,
                 max_records=(

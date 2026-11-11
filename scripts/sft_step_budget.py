@@ -105,12 +105,20 @@ def main() -> int:
         print("primary source produced no batches in the sample; increase --steps")
         return 1
     grad_accum = max(int(config.train.grad_accum), 1)
-    # The mixer is sampled per micro-batch; an optimizer step consumes
-    # ``grad_accum`` of them.
-    primary_target_per_optimizer_step = primary_target_per_step * grad_accum
+    total_batches = sum(item["batches"] for item in totals.values())
+    primary_share = (
+        totals[primary_name]["batches"] / total_batches if total_batches else 0.0
+    )
+    # The mixer samples *micro-batches*; an optimizer step consumes
+    # ``grad_accum`` of them, and only ``primary_share`` of those come from the
+    # primary source.  Multiplying by grad_accum alone overstates the primary
+    # target/step by 1/primary_share (the old 203/96/44 numbers).
+    primary_target_per_optimizer_step = (
+        primary_target_per_step * grad_accum * primary_share
+    )
     primary_input_per_optimizer_step = (
         totals[primary_name]["input"] / max(totals[primary_name]["batches"], 1)
-    ) * grad_accum
+    ) * grad_accum * primary_share
     recommended = int(
         round(target_tokens * args.epochs / max(primary_target_per_optimizer_step, 1e-9))
     )
@@ -124,6 +132,7 @@ def main() -> int:
                 "primary_input_tokens": input_tokens,
                 "grad_accum": grad_accum,
                 "primary_target_per_microbatch": round(primary_target_per_step, 1),
+                "primary_batch_share": round(primary_share, 4),
                 "primary_target_per_step": round(primary_target_per_optimizer_step, 1),
                 "recommended_steps_target_epoch": recommended,
                 "recommended_steps_input_epoch": input_recommended,

@@ -222,3 +222,40 @@ def test_unit_converter_uses_affine_temperature_formulas():
     )
     assert celsius == {"result": 50.0}
     assert fahrenheit == {"result": -7.7778}
+
+
+def test_tool_rollout_marks_max_new_truncation_as_unfinished():
+    class _TruncatingGenerator(_Generator):
+        def generate(self, prompts, **kwargs):
+            del kwargs
+            self.calls += 1
+            text = (
+                '<tool_call>{"name": "calculate_math", "arguments": {"expression": "1+1"}}</tool_call>'
+                if self.calls == 1
+                else "partial answer"
+            )
+            ids = self.tokenizer.encode(text)
+            return GenerationOutput(
+                sequences=[list(prompts[0]) + ids],
+                prompt_lengths=[len(prompts[0])],
+                response_ids=[ids],
+                response_logprobs=[[-0.1] * len(ids)],
+                finished=[False],
+                temperature=1.0,
+            )
+
+    tokenizer = _Tokenizer()
+    engine = ToolRolloutEngine(
+        None,
+        tokenizer,
+        generator=_TruncatingGenerator(tokenizer),
+        max_turns=3,
+        thinking_ratio=0.0,
+    )
+    group = engine.rollout(
+        [_tool_record()], group_size=1, max_new_tokens=8, temperature=1.0, seed=1
+    )[0]
+    sample = group.samples[0]
+    assert sample.record.rubric["unfinished"] is True
+    assert sample.max_new_hit is True
+    assert sample.finished is False
