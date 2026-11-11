@@ -39,6 +39,17 @@ class RolloutSample:
     #: Per-response-token loss mask.  Multi-turn agent rollouts mark tool
     #: observations ``False`` so only assistant tokens contribute to loss.
     token_mask: list[bool] | None = None
+    #: The thinking scaffold the prompt was rendered with.  Multi-turn
+    #: continuation must re-render with the *same* flag; re-deriving it from
+    #: the token prefix is ambiguous because the two renders differ only in
+    #: the generation tail.
+    open_thinking: bool = True
+    #: Whether the trajectory ended on a stop token (``True``) or ran into a
+    #: length/context/turn budget (``False``).  Multi-turn rollouts overwrite
+    #: this with the last turn's status.
+    finished: bool = False
+    #: The response hit ``max_new_tokens`` (as opposed to a stop token).
+    max_new_hit: bool = False
 
     @property
     def sequence(self) -> list[int]:
@@ -121,12 +132,10 @@ class TorchRolloutEngine:
             raise ValueError("group_size must be >= 1")
         groups: list[RolloutGroup] = []
         rng = random.Random(seed) if seed is not None else random.Random()
+        thinking_flags = [rng.random() < self.thinking_ratio for _ in records]
         prompt_ids = [
-            self.encode_prompt(
-                record,
-                open_thinking=rng.random() < self.thinking_ratio,
-            )
-            for record in records
+            self.encode_prompt(record, open_thinking=flag)
+            for record, flag in zip(records, thinking_flags, strict=True)
         ]
         repeated = [ids for ids in prompt_ids for _ in range(group_size)]
         generator = self.generator or self.model
@@ -140,11 +149,12 @@ class TorchRolloutEngine:
             seed=seed,
         )
         cursor = 0
-        for record, prompt in zip(records, prompt_ids, strict=True):
+        for record, prompt, thinking in zip(records, prompt_ids, thinking_flags, strict=True):
             group = RolloutGroup(record=record)
             for _ in range(group_size):
                 response = output.response_ids[cursor]
                 logprobs = output.response_logprobs[cursor]
+                finished = bool(output.finished[cursor])
                 group.samples.append(
                     RolloutSample(
                         prompt_ids=list(prompt),
@@ -154,6 +164,11 @@ class TorchRolloutEngine:
                         record=record,
                         prompt_text=self.tokenizer.decode(prompt),
                         response_text=self.tokenizer.decode(response, skip_special_tokens=True),
+                        open_thinking=bool(thinking),
+                        finished=finished,
+                        max_new_hit=bool(
+                            not finished and len(response) >= max_new_tokens
+                        ),
                     )
                 )
                 cursor += 1

@@ -6,7 +6,7 @@ model:
   device: auto
   dtype: bfloat16
   seed: 1234
-checkpoint: checkpoints/grpo_code/final
+checkpoint: checkpoints/grpo_code_145m/final
 data_path: data/eval_code.jsonl
 domain: code
 max_new_tokens: 1024

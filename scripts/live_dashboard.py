@@ -220,7 +220,7 @@ class Remote:
                     self.domain_snapshots[-1] if self.domain_snapshots else None
                 ),
                 "best_val": _best_val(rows),
-                "router_series": _router_series(self.domain_snapshots),
+                "router_series": _router_series(self.domain_snapshots, rows),
                 "rows": [_slim(record) for record in _thin(rows)],
             }
 
@@ -230,42 +230,73 @@ class Remote:
 _MAX_TREND_POINTS = 4000
 
 
-def _router_series(snapshots: list[dict]) -> dict:
-    """Compact per-domain expert-share history for the trend panel.
+def _router_series(snapshots: list[dict], records: list[dict]) -> dict:
+    """Per-domain expert-share history for the trend panel and the scrubber.
 
-    Shares are integers in per-mille so the payload stays small: a snapshot
-    costs ``4 domains x 8 layers x 6 experts x 4 chars`` instead of ~3 KB of
-    counts.  The dashboard redraws from this instead of the raw counts because
-    it plots shares (comparable across layers and over time), never counts.
+    Two sources feed it, because the per-domain detail predates the key that
+    carries it:
+
+    * ``router_domain_layers`` -- per-domain x layer x expert counts accumulated
+      over a whole ``train.router_every`` window.  Only exists since the field
+      was added, so it covers the tail of the run.
+    * ``router_layers`` + ``domain_name`` -- one micro-batch's per-layer counts.
+      Before ``data.lockstep=false`` a step was domain-homogeneous, so every
+      such record *is* that domain's routing; that recovers samples back to a
+      few hundred steps.  They are logged as ``sampled`` so the page can say
+      which points are a single micro-batch rather than a window.
+
+    Shares are per-mille integers so the payload stays small; rows are aligned
+    to the union of snapshot steps, with ``[]`` where a domain had no tokens.
     """
-    steps: list[int] = []
-    layers: list[str] = []
-    domains: list[str] = []
-    shares: dict[str, dict[str, list[list[int]]]] = {}
-    seen_layers: dict[str, None] = {}
-    seen_domains: dict[str, None] = {}
+    windows: dict[int, dict[str, dict[str, list[int]]]] = {}
+    sampled: set[int] = set()
     for snapshot in snapshots:
-        steps.append(int(snapshot["step"]))
-        for domain, per_layer in snapshot["domains"].items():
-            seen_domains.setdefault(domain, None)
-            target = shares.setdefault(domain, {})
-            for layer, info in per_layer.items():
-                seen_layers.setdefault(layer, None)
-                counts = info.get("counts") or []
-                total = sum(counts) or 1
-                target.setdefault(layer, []).append(
-                    [round(value * 1000 / total) for value in counts]
+        windows[int(snapshot["step"])] = snapshot["domains"]
+    for record in records:
+        step = int(record["step"])
+        if step in windows:
+            continue  # a full window always wins over a single micro-batch
+        domain = record.get("domain_name")
+        layers = record.get("router_layers")
+        if not domain or not layers:
+            continue
+        windows[step] = {domain: layers}
+        sampled.add(step)
+
+    steps = sorted(windows)
+    layers_seen: dict[str, None] = {}
+    domains_seen: dict[str, None] = {}
+    for per_domain in windows.values():
+        for domain, per_layer in per_domain.items():
+            domains_seen.setdefault(domain, None)
+            for layer in per_layer:
+                layers_seen.setdefault(layer, None)
+
+    shares: dict[str, dict[str, list[list[int]]]] = {}
+    for domain in domains_seen:
+        per_layer_out: dict[str, list[list[int]]] = {}
+        for layer in layers_seen:
+            column: list[list[int]] = []
+            for step in steps:
+                info = windows[step].get(domain, {}).get(layer)
+                counts = (info or {}).get("counts") or []
+                total = sum(counts)
+                column.append(
+                    [round(value * 1000 / total) for value in counts] if total else []
                 )
-    layers = sorted(seen_layers)
-    domains = [name for name in ("overall", "general", "code", "tool") if name in seen_domains]
-    domains += sorted(name for name in seen_domains if name not in domains)
-    # A domain that had no tokens in a snapshot would be shorter than ``steps``;
-    # pad so the dashboard can index by snapshot position.
-    for per_layer in shares.values():
-        for rows in per_layer.values():
-            while len(rows) < len(steps):
-                rows.append([])
-    return {"steps": steps, "layers": layers, "domains": domains, "shares": shares}
+            per_layer_out[layer] = column
+        shares[domain] = per_layer_out
+
+    order = ("overall", "general", "code", "tool")
+    domains = [name for name in order if name in domains_seen]
+    domains += sorted(name for name in domains_seen if name not in domains)
+    return {
+        "steps": steps,
+        "layers": sorted(layers_seen),
+        "domains": domains,
+        "shares": shares,
+        "sampled": sorted(sampled),
+    }
 
 
 def _best_val(rows: list[dict]) -> dict | None:

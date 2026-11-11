@@ -6,7 +6,7 @@ model:
   device: auto
   dtype: bfloat16
   seed: 1234
-checkpoint: checkpoints/grpo_tool/final
+checkpoint: checkpoints/grpo_tool_145m/final
 data_path: data/eval_tool.jsonl
 domain: tool
 max_new_tokens: 768

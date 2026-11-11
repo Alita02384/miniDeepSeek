@@ -1785,3 +1785,23 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
   commit）；重启后快照 cadence 为 10 步（5660→5760），四域齐全；
   bridge 的 `/data` 里 `router_series` 19 个快照、8 层、四域、无长度错位、
   `error` 为空。
+
+### 2026-11-11 补：路由时间序列回溯到 step 100
+
+- 用户问"为什么是从 5300 步开始的，没有更早的吗"。`router_domain_layers` 是
+  今天新加的键，所以它只能从 5300 起；**但更早的每层明细藏在另一个键里**：
+  `router_layers` 是"单个 micro-batch 的每层计数"，而 `data.lockstep=false`
+  之前每个 step 是域同构的，所以凡是带 `domain_name` 的那条记录**就是该域的路由**。
+  全量扫下来有 **59 条，最早 step 100**。
+- 桥接端把两个来源合并进 `router_series`：
+  - `router_domain_layers`（窗口累积）优先；
+  - 缺口用 `router_layers` + `domain_name` 补，标进 `sampled` 列表。
+  结果是 **step 100 → 当前，82 个点**：general 74 点（最早 150）、code 35 点
+  （最早 100）、tool 29 点（最早 950）、overall 只有 5300 之后（跨域汇总早期不存在）。
+- UI 会把 `sampled` 的点标成「样本」，并在副标题写清"单个 micro-batch 样本 vs
+  整段窗口累积"——两者统计强度不同，不能当成等价的点。
+- **真正丢掉的那一段**：code 的早期样本只到 step 2000、tool 只到 1750，
+  从那里到 5300 之间没有每层明细（那是混合域时代，`domain_name` 为空，
+  `router_layers` 无法归域）。那段只能从 checkpoint 重算，而
+  `keep_last_ckpt: 3` 已经把当时的 checkpoint 裁掉了。
+- 从现在起每 10 步一个窗口点，会自己把后面填满。

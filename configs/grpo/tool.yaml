@@ -62,6 +62,6 @@ reward:
   tool_unfinished_penalty: 0.5
   tool_tag_penalty: 0.5
 distributed:
-  mode: fsdp2
+  mode: ddp
   param_dtype: bfloat16
   reduce_dtype: float32

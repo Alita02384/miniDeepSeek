@@ -155,8 +155,14 @@ def test_dashboard_slims_per_domain_training_losses_and_keeps_snapshots_out_of_r
     assert module._best_val([{"step": 1}]) is None
 
 
-def test_router_series_is_per_mille_and_padded_to_the_step_axis():
-    """The trend panel indexes every domain/layer by snapshot position."""
+def test_router_series_merges_windows_with_early_samples():
+    """Per-domain detail predates ``router_domain_layers``.
+
+    Before ``data.lockstep=false`` every step was domain-homogeneous, so a
+    ``router_layers`` record carrying ``domain_name`` *is* that domain's
+    routing.  Those samples are the only per-layer history before the new key
+    existed, and the page has to be able to tell them apart from a window.
+    """
     import importlib.util
     from pathlib import Path
 
@@ -167,27 +173,36 @@ def test_router_series_is_per_mille_and_padded_to_the_step_axis():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    def snapshot(step, counts_by_domain):
+    def window(step, counts_by_domain):
         return {
             "step": step,
             "domains": {
-                name: {"L2": {"counts": counts}}
-                for name, counts in counts_by_domain.items()
+                name: {"L2": {"counts": counts}} for name, counts in counts_by_domain.items()
             },
         }
 
-    series = module._router_series(
-        [
-            snapshot(100, {"general": [50, 50], "overall": [50, 50]}),
-            # ``tool`` is missing here on purpose: 3% of the mix means most
-            # single windows have none.
-            snapshot(150, {"general": [80, 20], "overall": [80, 20]}),
-        ]
-    )
-    assert series["steps"] == [100, 150]
-    assert series["domains"] == ["overall", "general"]
-    assert series["layers"] == ["L2"]
-    assert series["shares"]["general"]["L2"] == [[500, 500], [800, 200]]
+    snapshots = [
+        window(500, {"general": [50, 50], "overall": [50, 50]}),
+        window(510, {"general": [80, 20], "overall": [80, 20]}),
+    ]
+    records = [
+        # early uniformed-domain sample: a whole step of ``code``
+        {"step": 100, "domain_name": "code",
+         "router_layers": {"L2": {"hash": False, "counts": [90, 10]}}},
+        # mixed step: no single domain, so it must not be used as one
+        {"step": 400, "domain_name": "",
+         "router_layers": {"L2": {"hash": False, "counts": [1, 1]}}},
+        # a window already covers this step; the window wins
+        {"step": 500, "domain_name": "code",
+         "router_layers": {"L2": {"hash": False, "counts": [1, 99]}}},
+    ]
+    series = module._router_series(snapshots, records)
+
+    assert series["steps"] == [100, 500, 510]
+    assert series["sampled"] == [100]
+    assert series["domains"] == ["overall", "general", "code"]
+    assert series["shares"]["code"]["L2"] == [[900, 100], [], []]
+    assert series["shares"]["general"]["L2"] == [[], [500, 500], [800, 200]]
     for domain in series["shares"].values():
-        for rows in domain.values():
-            assert len(rows) == len(series["steps"])
+        for column in domain.values():
+            assert len(column) == len(series["steps"])

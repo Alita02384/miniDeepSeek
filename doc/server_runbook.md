@@ -77,7 +77,7 @@ tokenize pretrain 2K/4K/8K + sft_general/sft_tool
 - GRPO tool：`grpo_tool_train.jsonl`，约 3.5 万条多轮工具 prompt；每 step
   4 组 × 16 prompt，rollout 成本比 general 高。
 - OPD：`opd_prompts_mixed.jsonl`，general 17k + tool 20k；teacher 为
-  `checkpoints/grpo_general/final`、`checkpoints/grpo_tool/final`。
+  `checkpoints/grpo_general_145m/final`、`checkpoints/grpo_tool_145m/final`。
 
 磁盘：2K/4K/8K 三份 tokenized 约 20 GB/份（完整语料）；checkpoint 另计。
 内存：tokenize 串行跑，单进程约 20 GB 量级；不要三份并行。

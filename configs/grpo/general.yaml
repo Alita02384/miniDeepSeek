@@ -56,6 +56,6 @@ reward:
   repetition_penalty: 0.5
   reward_clip: 3.0
 distributed:
-  mode: fsdp2
+  mode: ddp
   param_dtype: bfloat16
   reduce_dtype: float32

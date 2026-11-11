@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# GRPO launcher. `torchrun` + FSDP2 when NPROC_PER_NODE>1 (CUDA target).
+# GRPO launcher. `torchrun` + manual DDP when NPROC_PER_NODE>1 (CUDA target).
+# Cached/KV rollout keeps one full model per rank, so FSDP2 is not supported
+# here: configs/grpo/*.yaml set distributed.mode=ddp.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

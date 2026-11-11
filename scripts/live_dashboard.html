@@ -569,8 +569,12 @@ function renderScrubber(data) {
   slider.max = String(steps.length - 1);
   slider.value = String(index);
   const pinned = expertIndex !== null && expertIndex < steps.length - 1;
+  // Points recovered from the pre-``router_domain_layers`` logs are a single
+  // micro-batch, not a window: say so rather than pretending they are equal.
+  const isSample = (series.sampled || []).includes(steps[index]);
   label.textContent = `step ${steps[index]} · ${index + 1}/${steps.length}` +
-                      (pinned ? ' · 历史' : ' · 最新');
+                      (pinned ? ' · 历史' : ' · 最新') +
+                      (isSample ? ' · 样本' : '');
 }
 
 function bindScrubber() {
@@ -646,9 +650,13 @@ function renderExperts(data) {
     sub.textContent = `view: ${DOMAIN_LABEL[expertView] || expertView}`;
     return;
   }
-  sub.textContent = `view: ${DOMAIN_LABEL[expertView] || expertView} · share of routed tokens ` +
-    `per expert per layer · tick = fair share 1/E · red = under half the fair share · ` +
-    `tool 只占 3%，单窗口噪声比 general/code 大得多`;
+  const sampledSet = new Set(series.sampled || []);
+  const source = sampledSet.has(stepWindow)
+    ? '该点是单个 micro-batch 样本（早期日志只留了这个）'
+    : '该窗口是整段 router_every 的累积';
+  sub.textContent = `view: ${DOMAIN_LABEL[expertView] || expertView} · ${source} · ` +
+    `share of routed tokens per expert per layer · tick = fair share 1/E · ` +
+    `red = under half the fair share · tool 只占 3%，单窗口噪声比 general/code 大得多`;
   host.innerHTML = layers.map(name => {
     const row = (perLayer[name] || [])[index] || [];
     // per-mille integers from the bridge -> percent
