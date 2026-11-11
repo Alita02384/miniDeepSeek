@@ -84,3 +84,7 @@ stages:
         flavor: mini_145m_a60m
         seq_len: 4096
         weight: 0.3333333334
+  - id: posttrain_report
+    kind: report
+    root: checkpoints/posttrain_e2e_4k_145m
+    out: reports/posttrain_e2e_4k_145m_report.html

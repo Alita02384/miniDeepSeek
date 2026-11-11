@@ -298,3 +298,55 @@ def test_dataset_exists_accepts_sidecars(tmp_path):
         logical.with_suffix(f".{name}.npy").write_bytes(b"")
     logical.with_suffix(".json").write_text("{}", encoding="utf-8")
     assert _dataset_exists(logical)
+
+
+def test_stage_done_report_checks_html(tmp_path):
+    out = tmp_path / "reports" / "posttrain.html"
+    stage = {"id": "report", "kind": "report", "out": str(out)}
+    assert not _stage_done(stage, tokenization_dir=tmp_path)
+    out.parent.mkdir()
+    out.write_text("<html></html>", encoding="utf-8")
+    assert _stage_done(stage, tokenization_dir=tmp_path)
+
+
+def test_preflight_report_does_not_require_run_root(tmp_path):
+    spec = {
+        "tokenization_dir": str(tmp_path / "tokenization"),
+        "stages": [
+            {
+                "id": "report",
+                "kind": "report",
+                "root": "checkpoints/does-not-exist-yet",
+                "out": str(tmp_path / "report.html"),
+            }
+        ],
+    }
+    _preflight(spec, tmp_path, dry_run=True)
+
+
+def test_dry_run_writes_separate_state(tmp_path):
+    config = tmp_path / "pipeline.yaml"
+    run_dir = tmp_path / "run"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "name": "dry",
+                "nproc": 1,
+                "run_dir": str(run_dir),
+                "stages": [
+                    {
+                        "id": "posttrain_report",
+                        "kind": "report",
+                        "root": str(tmp_path / "checkpoints"),
+                        "out": str(tmp_path / "report.html"),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from minideepseek.pipeline import run_pipeline
+
+    run_pipeline(config, dry_run=True)
+    assert (run_dir / "state_dry_run.json").exists()
+    assert not (run_dir / "state.json").exists()

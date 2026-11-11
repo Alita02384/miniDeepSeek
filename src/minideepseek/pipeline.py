@@ -431,6 +431,20 @@ def _export_stage(stage: dict[str, Any], *, run_dir: Path, dry_run: bool) -> Non
 
 
 
+def _report_stage(
+    stage: dict[str, Any], *, run_dir: Path, dry_run: bool
+) -> None:
+    root = str(stage.get("root", stage.get("out_dir", "")))
+    if not root:
+        raise SystemExit(f"report stage {stage.get('id')!r} needs root/out_dir")
+    out = str(stage.get("out", f"reports/{stage['id']}.html"))
+    _run(
+        [sys.executable, "scripts/posttraining_report.py", root, "--out", out],
+        log=run_dir / "logs" / f"{stage['id']}.log",
+        dry_run=dry_run,
+    )
+
+
 def _stage_done(stage: dict[str, Any], *, tokenization_dir: Path) -> bool:
     kind = stage["kind"]
     if kind == "tokenize":
@@ -454,6 +468,8 @@ def _stage_done(stage: dict[str, Any], *, tokenization_dir: Path) -> bool:
         return (Path(stage.get("out_dir", f"checkpoints/{stage['id']}")) / "final" / "meta.json").exists()
     if kind == "eval":
         return Path(stage.get("out_path", f"reports/{stage['id']}.json")).exists()
+    if kind == "report":
+        return Path(stage.get("out", f"reports/{stage['id']}.html")).exists()
     if kind == "export":
         return (Path(stage.get("out", "hf/minimind_145m")) / "config.json").exists()
     return False
@@ -544,6 +560,10 @@ def _preflight(
                 need(stage["data"])
             if stage.get("checkpoint"):
                 need(stage["checkpoint"])
+        elif kind == "report":
+            # The report root is this run's own output tree; preflight runs
+            # before that tree exists, so only the script is checked.
+            need("scripts/posttraining_report.py")
         if kind in {"sft", "grpo", "opd"}:
             outputs.append(
                 Path(stage.get("out_dir", f"checkpoints/{stage_id}")) / "final"
@@ -567,6 +587,9 @@ def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str |
     tokenization_dir = Path(spec.get("tokenization_dir", data_dir / "tokenization"))
     nproc = int(os.environ.get("NPROC_PER_NODE", spec.get("nproc", 1)))
     _preflight(spec, data_dir, dry_run=dry_run, start=start, stop=stop)
+    # A dry run must not overwrite the real state file; otherwise a later
+    # look at runs/<name>/state.json reports every stage as "dry-run".
+    state_path = run_dir / ("state_dry_run.json" if dry_run else "state.json")
     state: dict[str, Any] = {"name": name, "stages": {}}
     active = start is None
     for stage in spec.get("stages", []):
@@ -581,7 +604,7 @@ def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str |
         if not force and _stage_done(stage, tokenization_dir=tokenization_dir):
             print(f"\n== {stage_id} ({kind}) == already done, skipping")
             state["stages"][stage_id] = "skipped"
-            (run_dir / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+            state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
             continue
         print(f"\n== {stage_id} ({kind}) ==")
         if kind == "tokenize":
@@ -594,12 +617,14 @@ def run_pipeline(config_path: str | Path, *, dry_run: bool = False, start: str |
             _rl_stage(stage, run_dir=run_dir, nproc=nproc, dry_run=dry_run)
         elif kind == "eval":
             _eval_stage(stage, run_dir=run_dir, dry_run=dry_run)
+        elif kind == "report":
+            _report_stage(stage, run_dir=run_dir, dry_run=dry_run)
         elif kind == "export":
             _export_stage(stage, run_dir=run_dir, dry_run=dry_run)
         else:
             raise SystemExit(f"unknown stage kind {kind!r}")
         state["stages"][stage_id] = "dry-run" if dry_run else "done"
-        (run_dir / "state.json").write_text(json.dumps(state, indent=2), encoding="utf-8")
+        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
     return state
 
 

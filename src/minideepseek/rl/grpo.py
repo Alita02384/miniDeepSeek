@@ -41,7 +41,7 @@ from ..train.distributed import (
     load_model_state_dict,
 )
 from ..train.losses import iter_moe_layers, update_expert_biases
-from ..train.metrics import MetricsLogger
+from ..train.metrics import MetricsLogger, memory_stats
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
 from ..train.trainer import (
@@ -151,6 +151,7 @@ class GRPOTrainer:
         )
         self.prompt_sampler = EpochPromptSampler(len(self.records), seed=config.model.seed)
         self.step_index = 0
+        self._tokens_seen = 0.0
         self.run_name = run_name or Path(config.train.out_dir).name
         set_seed(config.model.seed)
 
@@ -478,6 +479,7 @@ class GRPOTrainer:
         )
         stats.lr = float(self.optimizer.param_groups[0]["lr"])
         record = stats.as_dict()
+        record.update(memory_stats(self.model.device))
         if self.dist.enabled:
             record = _merge_grpo_records(self.dist.all_gather_object(record))
         return record
@@ -492,6 +494,8 @@ class GRPOTrainer:
             metrics["tokens_per_sec"] = float(metrics.get("response_tokens", 0.0)) / max(
                 step_time, 1e-9
             )
+            self._tokens_seen += float(metrics.get("response_tokens", 0.0))
+            metrics["tokens_seen"] = self._tokens_seen
             if (
                 self.logger is not None
                 and self.step_index % max(self.config.train.log_every, 1) == 0

@@ -47,7 +47,7 @@ from ..train.distributed import (
     load_model_state_dict,
 )
 from ..train.losses import iter_moe_layers, update_expert_biases
-from ..train.metrics import MetricsLogger
+from ..train.metrics import MetricsLogger, memory_stats
 from ..train.optimizer import build_optimizer
 from ..train.scheduler import WarmupDecaySchedule
 from ..train.trainer import (
@@ -228,6 +228,7 @@ class OPDTrainer:
             len(self.prompts), seed=config.model.seed
         )
         self.step_index = 0
+        self._tokens_seen = 0.0
         set_seed(config.model.seed)
 
     def _sample_prompts(self) -> list[OPDPrompt]:
@@ -407,6 +408,7 @@ class OPDTrainer:
         )
         record = stats.as_dict()
         record["teacher_tokens"] = dict(teacher_tokens)
+        record.update(memory_stats(self.student.device))
         if self.dist.enabled:
             record = _merge_opd_records(self.dist.all_gather_object(record))
         return record
@@ -421,6 +423,8 @@ class OPDTrainer:
             metrics["tokens_per_sec"] = float(metrics.get("response_tokens", 0.0)) / max(
                 step_time, 1e-9
             )
+            self._tokens_seen += float(metrics.get("response_tokens", 0.0))
+            metrics["tokens_seen"] = self._tokens_seen
             if (
                 self.logger is not None
                 and self.step_index % max(self.config.train.log_every, 1) == 0
