@@ -1907,3 +1907,47 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
 - 未完成 / 风险: hn01 单卡无法 `torchrun --nproc_per_node=2`（rank1 请求
   cuda:1 报 invalid device ordinal），多卡由 CPU 2 进程 DDP/FSDP2 回归覆盖；
   SFT validation、预训练 config 的 2K/4K 预算与 per-source warmup 仍是待办。
+
+## 2026-11-12 后训练 4K checkpoint 全流程实跑（SFT → GRPO → OPD）
+
+- commit: `d90f1bb` feat: merge post-training metrics and generate a pretraining-style report
+- commit: `fde5faa` feat: log RL step time and response-token throughput
+- commit: `7b462ce` perf: sample GRPO/OPD prompts without replacement inside an epoch
+- commit: `87be1ba` fix: make the fresh SFT->GRPO->OPD pipeline runnable end to end
+
+- 做了什么:
+  - hb01 的 `checkpoints/curriculum_145m_3b/stage_01_seq4096/final`（step 8011，
+    2K+4K 约 2.1B pretrain token）传到 hn01，sha256 校验一致；用它替换 2K
+    step_001015 作为后训练 base。
+  - 在 hn01 单卡 4090 上跑完整链路：SFT general 280 / code 115 / tool 95 →
+    GRPO general 50 / code 200 / tool 400 → 3-teacher OPD 100。
+  - 新增 `scripts/posttraining_report.py`：把 7 个 stage 的
+    `metrics.jsonl` 合并成 `metrics_all.jsonl`（加 `phase` / `phase_step` /
+    `global_step`），写 `summary.json` 和自包含 `report.html`。
+- 实现了什么（hn01，单卡 4090）:
+  - SFT：general 10.21 s/step、9.08k target tok/s、loss 3.57→2.07；
+    code 10.73 s/step、6.16k、2.15→1.35；tool 9.64 s/step、3.43k、4.36→1.59；
+    峰值显存 13.16 GiB。
+  - GRPO：general 18.80 s/step、reward -2.58（finished 44.6%）；
+    code 11.71 s/step、reward -0.05（unit_tests 全程 0，92% max_new）；
+    tool 22.13 s/step、reward -0.54（finished 5–19%，87% max_new）。
+  - OPD：11.08 s/step，KL total 0.176→0.094；general 0.013→0.071、
+    code 0.163→0.066、tool 0.351→0.145。
+  - 数据覆盖：SFT ~1.11/1.00/1.95 target epoch；GRPO unique prompt
+    800/17,460（4.6%）、1,600/3,135（51.0%）、6,400/33,960（18.8%）；
+    OPD 1,600/9,135（17.5%）。
+  - 合并记录：**1,240 条**（SFT 490、GRPO 650、OPD 100），
+    `metrics_all.jsonl` 1.6 MB，`summary.json` 8.8 KB，`report.html` 221 KB。
+- 验证:
+  - `runs/posttrain_e2e_4k_145m/state.json` 7 个 stage 全部 done；
+  - `metrics_all.jsonl` 1,240 行、7 个 phase；
+  - `pytest -q` → **368 passed, 2 skipped**；ruff 通过；
+  - 4K checkpoint `model.pt` sha256 `45036e58...` 与 hb01 一致。
+- 未完成 / 风险:
+  - code GRPO 200 步 unit_tests 通过率 0，tool GRPO 87% 撞 max_new；这是
+    145M/4K base 的代码/工具能力与 SFT 数据构成问题，不是数据量不足，继续加
+    GRPO 步数收益很低；
+  - 没有跑 validation / eval；`report.html` 只有 SFT 有显存曲线，GRPO/OPD
+    本轮未写 `mem_peak_mb`（代码已补，下轮生效）；
+  - 2K base 的 SFT 在 step 36 被 SIGTERM 停掉，保留在
+    `checkpoints/posttrain_e2e_145m` 供对照。
