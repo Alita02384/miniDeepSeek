@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+
+import numpy as np
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -181,6 +183,26 @@ def load_dataset(
                 if seen_names[base_name] == 1
                 else f"{base_name}#{seen_names[base_name]}"
             )
+            # ``data.sources[].weight`` is documented as an *input-token*
+            # weight, but SFT's response-only mask makes the target/input ratio
+            # very different per domain (general ~0.86, code ~0.37, tool
+            # ~0.18).  Weighting batches by input tokens therefore gives the
+            # tool expert only 33% of the loss tokens even at nominal 70%.
+            # ``WeightedBatchMixer`` allocates *batches*, so divide the nominal
+            # weight by the source's loss-token ratio to make the realized
+            # loss-token fraction match the config.
+            effective_weight = float(spec.weight)
+            loss_ratio = None
+            target_tokens = getattr(dataset, "num_target_tokens", None)
+            input_tokens = getattr(dataset, "num_tokens", None)
+            if mode == "sft" and target_tokens is not None and input_tokens:
+                target_tokens = int(target_tokens)
+                input_tokens = int(input_tokens)
+                if target_tokens <= 0:
+                    effective_weight = 0.0
+                else:
+                    loss_ratio = target_tokens / input_tokens
+                    effective_weight = float(spec.weight) / max(loss_ratio, 1e-9)
             sources.append(
                 BatchSource(
                     name=name,
@@ -192,15 +214,18 @@ def load_dataset(
                         shard_world_size=shard_world_size,
                         persistent_warmup=persistent_warmup,
                     ),
-                    weight=spec.weight,
+                    weight=effective_weight,
                 )
             )
             meta_sources.append(
                 {
                     "path": spec.path,
                     "weight": spec.weight,
+                    "effective_weight": effective_weight,
+                    "loss_token_ratio": loss_ratio,
                     "domain": spec.domain,
                     "tokens": getattr(dataset, "num_tokens", None),
+                    "target_tokens": target_tokens,
                 }
             )
         return (
@@ -257,6 +282,33 @@ def _validate_dataset(dataset, tokenizer, config: TrainConfig, *, label: str) ->
             f"{label} dataset packs up to {dataset_seq_len} tokens but the model "
             f"context is {config.model.seq_len}"
         )
+    if isinstance(dataset, SFTDataset):
+        if meta.get("format") != "minideepseek-sft-v1":
+            raise ValueError(
+                f"{label} SFT dataset has format {meta.get('format')!r}, expected "
+                "'minideepseek-sft-v1'; rebuild it with the current "
+                "minideepseek.data.sft builder"
+            )
+        tokens = int(dataset.num_tokens)
+        targets = int(dataset.num_target_tokens)
+        if not (0 < targets < tokens):
+            raise ValueError(
+                f"{label} SFT dataset has {targets} target tokens out of {tokens}; "
+                "response-only masks must leave both input and target tokens"
+            )
+        offsets = np.asarray(dataset.offsets)
+        if offsets.ndim != 1 or offsets.size < 2:
+            raise ValueError(f"{label} SFT dataset has invalid offsets")
+        lengths = np.diff(offsets)
+        if lengths.size and int(lengths.min()) <= 0:
+            raise ValueError(f"{label} SFT dataset contains an empty example")
+        mask = np.asarray(dataset.target_mask)
+        per_example = np.add.reduceat(mask.astype(np.int64), offsets[:-1])
+        if int(per_example.min()) <= 0:
+            raise ValueError(
+                f"{label} SFT dataset has an example with zero target tokens; "
+                "a response-only mask is broken"
+            )
 
 
 def _interleave_sources(

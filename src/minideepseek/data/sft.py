@@ -11,7 +11,10 @@ so no string-span bookkeeping is needed and multi-turn/tool data works.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import random
 from array import array
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +107,47 @@ def encode_sft_record(
     return encoded.input_ids, encoded.target_mask
 
 
+def _conversation_key(record: dict[str, Any]) -> str:
+    """Stable digest of the normalized conversation for exact dedup."""
+    messages = normalize_conversation(record)
+    payload = json.dumps(
+        messages, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+    )
+    return hashlib.blake2b(payload.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _allocate(counts: list[int], total: int) -> list[int]:
+    """Largest-remainder allocation, capped by each source's unique count."""
+    if total <= 0:
+        return [0] * len(counts)
+    available = sum(counts)
+    if total >= available:
+        return list(counts)
+    raw = [count / available * total for count in counts]
+    quotas = [int(math.floor(value)) for value in raw]
+    remainder = total - sum(quotas)
+    order = sorted(
+        range(len(counts)),
+        key=lambda index: (raw[index] - quotas[index], counts[index], -index),
+        reverse=True,
+    )
+    for index in order[:remainder]:
+        if quotas[index] < counts[index]:
+            quotas[index] += 1
+    # A cap from largest-remainder can leave a slot unused when the top
+    # candidates are already at their cap; fill from the largest unused source.
+    while sum(quotas) < total:
+        index = max(
+            (i for i in range(len(counts)) if quotas[i] < counts[i]),
+            key=lambda i: counts[i] - quotas[i],
+            default=None,
+        )
+        if index is None:
+            break
+        quotas[index] += 1
+    return quotas
+
+
 def build_sft_dataset(
     paths: list[str | Path],
     output_path: str | Path,
@@ -114,21 +158,100 @@ def build_sft_dataset(
     max_tokens: int | None = None,
     add_generation_prompt: bool = False,
     seed: int = 1234,
+    shuffle: bool = True,
+    dedup: bool = True,
 ) -> dict[str, Any]:
+    """Tokenize SFT sources with sampling, dedup and no file-prefix bias.
+
+    The previous implementation walked each file from the top and stopped at
+    ``max_records``; ``seed`` was only written into the meta.  That trained the
+    general specialist on an 86%-multi-turn prefix block and the code
+    specialist on two of its five sources.  This version scans all records,
+    deduplicates exact conversations, allocates the record budget across files
+    proportionally to their unique counts, shuffles the selected line indices
+    with ``seed``, and only then encodes.  The selection digest in the meta
+    makes the exact sample reproducible.
+    """
     tokenizer = tokenizer or load_tokenizer()
-    # ``array``/``bytearray`` keep a 600M-token SFT corpus at ~6 GB instead of
-    # the ~50 GB a list-of-Python-ints would need.  This mirrors the pretrain
-    # packing buffers and produces byte-identical arrays.
+    paths = [Path(path) for path in paths]
+    if not paths:
+        raise ValueError("at least one SFT source path is required")
+
+    # Pass 1: index every record by line number, dedup by conversation, and
+    # count what each source can contribute.  No tokenization yet, so this is
+    # cheap relative to encoding.
+    candidates: list[list[int]] = [[] for _ in paths]
+    seen: set[str] = set()
+    source_stats: list[dict[str, Any]] = []
+    for path_index, path in enumerate(paths):
+        total = duplicates = invalid = 0
+        for line_index, record in enumerate(iter_jsonl(path)):
+            total += 1
+            try:
+                key = _conversation_key(record)
+            except ValueError:
+                invalid += 1
+                continue
+            if dedup:
+                if key in seen:
+                    duplicates += 1
+                    continue
+                seen.add(key)
+            candidates[path_index].append(line_index)
+        source_stats.append(
+            {
+                "path": str(path),
+                "total": total,
+                "unique": len(candidates[path_index]),
+                "duplicates": duplicates,
+                "invalid": invalid,
+                "selected": 0,
+            }
+        )
+
+    unique_total = sum(len(items) for items in candidates)
+    if unique_total == 0:
+        raise ValueError("no usable SFT records were produced")
+    budget = unique_total if max_records is None else min(int(max_records), unique_total)
+    quotas = _allocate([len(items) for items in candidates], budget)
+    selected: list[list[int]] = []
+    for path_index, items in enumerate(candidates):
+        rng = random.Random(int(seed) + path_index)
+        order = list(items)
+        if shuffle:
+            rng.shuffle(order)
+        chosen = sorted(order[: quotas[path_index]])
+        selected.append(chosen)
+        source_stats[path_index]["selected"] = len(chosen)
+        source_stats[path_index]["sampled"] = shuffle
+
+    selection_digest = hashlib.sha256(
+        "\n".join(
+            f"{path_index}:{line_index}"
+            for path_index, lines in enumerate(selected)
+            for line_index in lines
+        ).encode("utf-8")
+    ).hexdigest()
+
+    # Pass 2: stream each file once and encode the selected lines in order.
     flat_ids = array("i")
     flat_positions = array("i")
     flat_mask = bytearray()
     offsets = array("q", [0])
     used = 0
     skipped = 0
-    for path in paths:
-        for record in iter_jsonl(path):
-            if max_records is not None and used >= max_records:
+    stop = False
+    for path_index, path in enumerate(paths):
+        wanted = selected[path_index]
+        cursor = 0
+        if not wanted or stop:
+            continue
+        for line_index, record in enumerate(iter_jsonl(path)):
+            if cursor >= len(wanted):
                 break
+            if line_index != wanted[cursor]:
+                continue
+            cursor += 1
             try:
                 encoded = encode_sft_record(
                     record,
@@ -149,11 +272,9 @@ def build_sft_dataset(
             offsets.append(len(flat_ids))
             used += 1
             if max_tokens is not None and len(flat_ids) >= max_tokens:
+                stop = True
                 break
-        if max_records is not None and used >= max_records:
-            break
-        if max_tokens is not None and len(flat_ids) >= max_tokens:
-            break
+
     if used == 0:
         raise ValueError("no usable SFT records were produced")
     meta = {
@@ -164,9 +285,17 @@ def build_sft_dataset(
         "tokens": int(len(flat_ids)),
         "target_tokens": int(sum(flat_mask)),
         "tokenizer_hash": tokenizer.sha256,
-        "sources": [str(Path(p)) for p in paths],
+        "sources": [str(path) for path in paths],
         "add_generation_prompt": bool(add_generation_prompt),
         "seed": int(seed),
+        "shuffle": bool(shuffle),
+        "dedup": bool(dedup),
+        "max_records": None if max_records is None else int(max_records),
+        "max_tokens": None if max_tokens is None else int(max_tokens),
+        "unique_records": int(unique_total),
+        "selected_records": int(sum(len(lines) for lines in selected)),
+        "selection_sha256": selection_digest,
+        "source_stats": source_stats,
     }
     if flat_ids.itemsize != 4:  # pragma: no cover - non-32-bit-int platforms
         raise RuntimeError(f"array('i') has itemsize {flat_ids.itemsize}, expected 4")

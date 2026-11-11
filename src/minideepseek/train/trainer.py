@@ -651,6 +651,11 @@ class Trainer:
             # ``tokens`` is the LM token budget (main head only); MTP targets
             # are auxiliary prediction slots, not corpus tokens.
             metrics.tokens = loss_output.main_token_count
+            if metrics.tokens <= 0:
+                raise ValueError(
+                    "micro-batch has zero target tokens; the response mask or "
+                    "packed data is broken (loss and gradients would be empty)"
+                )
             # Diagnostics cost a reduction + a host sync per router layer per
             # micro-batch (32 of them per optimizer step).  The step-level
             # value is an average anyway, so only the last micro-batch pays for

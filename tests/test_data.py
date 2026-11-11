@@ -502,3 +502,113 @@ def test_full_packs_recut_without_moving_tokens(tmp_path):
         assert starts[0] == 0
         assert batch.cu_seqlens.tolist() == starts + [len(positions)]
         assert batch.target_mask.tolist() == [value != 0 for value in positions]
+
+
+def test_sft_builder_dedups_shuffles_and_budgets_across_sources(tmp_path):
+    from minideepseek.data.sft import build_sft_dataset
+
+    rows = [
+        {
+            "messages": [
+                {"role": "user", "content": f"question {index}"},
+                {"role": "assistant", "content": f"answer {index}"},
+            ]
+        }
+        for index in range(30)
+    ]
+    rows.extend([rows[0]] * 5)
+    source = tmp_path / "sft.jsonl"
+    source.write_text(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "sft.npz"
+    meta = build_sft_dataset([source], output, seq_len=256, max_records=10, seed=7)
+    stats = meta["source_stats"][0]
+    assert stats["total"] == 35
+    assert stats["unique"] == 30
+    assert stats["duplicates"] == 5
+    assert meta["examples"] == 10
+    assert meta["selected_records"] == 10
+    assert meta["selection_sha256"]
+
+    other = tmp_path / "sft2.npz"
+    meta2 = build_sft_dataset([source], other, seq_len=256, max_records=10, seed=8)
+    assert meta2["selection_sha256"] != meta["selection_sha256"]
+
+
+def test_sft_mixer_weights_are_loss_token_weights(tmp_path):
+    from minideepseek.config import (
+        DataSettings,
+        DataSourceSettings,
+        TrainConfig,
+        TrainSettings,
+    )
+    from minideepseek.data.sft import build_sft_dataset
+    from minideepseek.train.run import load_dataset
+
+    def write(path, assistant_repeat):
+        rows = [
+            {
+                "messages": [
+                    {"role": "user", "content": "q"},
+                    {"role": "assistant", "content": "a" * assistant_repeat},
+                ]
+            }
+            for _ in range(4)
+        ]
+        path.write_text(
+            "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+            encoding="utf-8",
+        )
+        build_sft_dataset([path], path.with_suffix(".npz"), seq_len=256)
+
+    general = tmp_path / "general.jsonl"
+    tool = tmp_path / "tool.jsonl"
+    write(general, 200)
+    write(tool, 20)
+    config = TrainConfig(
+        train=TrainSettings(steps=1, grad_accum=1),
+        data=DataSettings(
+            sources=[
+                DataSourceSettings(path=str(general.with_suffix(".npz")), domain="general", weight=0.7),
+                DataSourceSettings(path=str(tool.with_suffix(".npz")), domain="tool", weight=0.3),
+            ]
+        ),
+    )
+    dataset, _factory = load_dataset(config, "sft")
+    meta = dataset.meta["sources"]
+    assert meta[0]["loss_token_ratio"] > meta[1]["loss_token_ratio"]
+    assert meta[0]["effective_weight"] == pytest.approx(
+        0.7 / meta[0]["loss_token_ratio"]
+    )
+    assert meta[1]["effective_weight"] == pytest.approx(
+        0.3 / meta[1]["loss_token_ratio"]
+    )
+
+
+def test_sft_dataset_validation_rejects_broken_masks(tmp_path):
+    import numpy as np
+
+    from minideepseek.config import TrainConfig
+    from minideepseek.data.io import save_flat_dataset
+    from minideepseek.data.sft import SFTDataset
+    from minideepseek.tokenizer import load_tokenizer
+    from minideepseek.train.run import _validate_dataset
+
+    tokenizer = load_tokenizer()
+    path = tmp_path / "broken.npz"
+    save_flat_dataset(
+        path,
+        input_ids=np.asarray([1, 2, 3, 4], dtype=np.int32),
+        positions=np.arange(4, dtype=np.int32),
+        target_mask=np.zeros(4, dtype=bool),
+        offsets=np.asarray([0, 4], dtype=np.int64),
+        meta={
+            "format": "minideepseek-sft-v1",
+            "seq_len": 256,
+            "tokenizer_hash": tokenizer.sha256,
+        },
+    )
+    with pytest.raises(ValueError, match="target tokens"):
+        _validate_dataset(SFTDataset(path), tokenizer, TrainConfig(), label="train")
