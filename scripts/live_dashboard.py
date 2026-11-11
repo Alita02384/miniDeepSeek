@@ -150,6 +150,20 @@ class Remote:
         text = self._ssh(f"cat {path}")
         return _parse(text)
 
+    def _history_file(self) -> str:
+        """``metrics_all.jsonl`` next to the stage, or one level up.
+
+        ``scripts/merge_metrics.py`` consolidates every launch plus the steps
+        that only survive in the console log; seeding from it means the page
+        shows the whole campaign instead of just the current stage's launches.
+        """
+        parent = self.stage.rsplit("/", 1)[0]
+        for candidate in (f"{self.stage}/metrics_all.jsonl", f"{parent}/metrics_all.jsonl"):
+            found = self._ssh(f"test -s {candidate} && echo yes").strip()
+            if found == "yes":
+                return candidate
+        return ""
+
     def refresh(self) -> None:
         """Pick up new bytes from the followed file."""
         with self._lock:
@@ -161,6 +175,10 @@ class Remote:
                     self.records = {}
                     self.snapshots = []
                     self.domain_snapshots = []
+                    history = self._history_file()
+                    if history:
+                        for record in self._read_file(history):
+                            self._absorb(record)
                     for path in self._all_files():
                         for record in self._read_file(path):
                             self._absorb(record)
@@ -184,11 +202,13 @@ class Remote:
             return
         self.records[int(step)] = record
         layers = record.get("router_layers")
-        if layers:
+        if layers and (not self.snapshots or self.snapshots[-1]["step"] != int(step)):
             self.snapshots.append({"step": int(step), "layers": layers})
             self.snapshots = self.snapshots[-8:]
         domain_layers = record.get("router_domain_layers")
-        if domain_layers:
+        if domain_layers and (
+            not self.domain_snapshots or self.domain_snapshots[-1]["step"] != int(step)
+        ):
             self.domain_snapshots.append({"step": int(step), "domains": domain_layers})
             self.domain_snapshots = self.domain_snapshots[-(_MAX_TREND_POINTS):]
 

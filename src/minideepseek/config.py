@@ -430,10 +430,6 @@ class TrainSettings(BaseConfig):
 
 @dataclass
 class TrainConfig(BaseConfig):
-    #: Curriculum stage this run belongs to (0-based), stamped on every metrics
-    #: record so ``scripts/merge_metrics.py`` does not have to infer it from a
-    #: directory name.  ``None`` for a single-stage run.
-    stage_index: int | None = None
     #: Optional path to a model YAML; inline ``model`` values override it.
     model_file: str | None = None
     model: ModelSettings = field(default_factory=ModelSettings)

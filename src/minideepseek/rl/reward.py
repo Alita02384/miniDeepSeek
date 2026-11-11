@@ -166,7 +166,6 @@ def code_reward(response: str, record: GRPORecord, settings: RewardSettings) -> 
         )
     try:
         ast.parse(code)
-        compiled = 1.0
     except SyntaxError as error:
         penalty = -float(settings.code_syntax_penalty)
         return RewardResult(

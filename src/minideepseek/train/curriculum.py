@@ -127,6 +127,7 @@ def _stage_config(
     resume_data: bool = False,
 ) -> TrainConfig:
     config = TrainConfig.from_dict(base.to_dict())
+    config.train.stage_index = int(index)
     config.model.seq_len = int(stage.seq_len)
     if stage.index_topk is not None:
         config.model.index_topk = int(stage.index_topk)
