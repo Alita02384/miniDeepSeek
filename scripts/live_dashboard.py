@@ -94,9 +94,9 @@ class Remote:
         self.path = ""
         self.records: dict[int, dict] = {}
         self.snapshots: list[dict] = []
-        #: ``{domain: {layer: {"counts": [E]}}}`` for the newest snapshot step.
-        #: Kept out of ``rows``: ~1 KB each, and the 4-way expert view only ever
-        #: renders the latest one.
+        #: ``{domain: {layer: {"counts": [E]}}}`` per snapshot step.  Kept out
+        #: of ``rows`` (~3 KB each) but *all* of them are retained: the expert
+        #: view renders the newest one and the trend panel needs the history.
         self.domain_snapshots: list[dict] = []
         self.error = ""
         self.updated = 0.0
@@ -190,7 +190,7 @@ class Remote:
         domain_layers = record.get("router_domain_layers")
         if domain_layers:
             self.domain_snapshots.append({"step": int(step), "domains": domain_layers})
-            self.domain_snapshots = self.domain_snapshots[-2:]
+            self.domain_snapshots = self.domain_snapshots[-(_MAX_TREND_POINTS):]
 
     def payload(self) -> dict:
         with self._lock:
@@ -220,8 +220,52 @@ class Remote:
                     self.domain_snapshots[-1] if self.domain_snapshots else None
                 ),
                 "best_val": _best_val(rows),
+                "router_series": _router_series(self.domain_snapshots),
                 "rows": [_slim(record) for record in _thin(rows)],
             }
+
+
+#: Upper bound on retained router snapshots.  One snapshot is ~3 KB, so this
+#: caps the bridge at ~12 MB even on a run with ``router_every: 1``.
+_MAX_TREND_POINTS = 4000
+
+
+def _router_series(snapshots: list[dict]) -> dict:
+    """Compact per-domain expert-share history for the trend panel.
+
+    Shares are integers in per-mille so the payload stays small: a snapshot
+    costs ``4 domains x 8 layers x 6 experts x 4 chars`` instead of ~3 KB of
+    counts.  The dashboard redraws from this instead of the raw counts because
+    it plots shares (comparable across layers and over time), never counts.
+    """
+    steps: list[int] = []
+    layers: list[str] = []
+    domains: list[str] = []
+    shares: dict[str, dict[str, list[list[int]]]] = {}
+    seen_layers: dict[str, None] = {}
+    seen_domains: dict[str, None] = {}
+    for snapshot in snapshots:
+        steps.append(int(snapshot["step"]))
+        for domain, per_layer in snapshot["domains"].items():
+            seen_domains.setdefault(domain, None)
+            target = shares.setdefault(domain, {})
+            for layer, info in per_layer.items():
+                seen_layers.setdefault(layer, None)
+                counts = info.get("counts") or []
+                total = sum(counts) or 1
+                target.setdefault(layer, []).append(
+                    [round(value * 1000 / total) for value in counts]
+                )
+    layers = sorted(seen_layers)
+    domains = [name for name in ("overall", "general", "code", "tool") if name in seen_domains]
+    domains += sorted(name for name in seen_domains if name not in domains)
+    # A domain that had no tokens in a snapshot would be shorter than ``steps``;
+    # pad so the dashboard can index by snapshot position.
+    for per_layer in shares.values():
+        for rows in per_layer.values():
+            while len(rows) < len(steps):
+                rows.append([])
+    return {"steps": steps, "layers": layers, "domains": domains, "shares": shares}
 
 
 def _best_val(rows: list[dict]) -> dict | None:

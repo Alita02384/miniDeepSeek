@@ -153,3 +153,41 @@ def test_dashboard_slims_per_domain_training_losses_and_keeps_snapshots_out_of_r
     )
     assert best == {"value": 1.7, "step": 200}
     assert module._best_val([{"step": 1}]) is None
+
+
+def test_router_series_is_per_mille_and_padded_to_the_step_axis():
+    """The trend panel indexes every domain/layer by snapshot position."""
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "live_dashboard_series", root / "scripts" / "live_dashboard.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def snapshot(step, counts_by_domain):
+        return {
+            "step": step,
+            "domains": {
+                name: {"L2": {"counts": counts}}
+                for name, counts in counts_by_domain.items()
+            },
+        }
+
+    series = module._router_series(
+        [
+            snapshot(100, {"general": [50, 50], "overall": [50, 50]}),
+            # ``tool`` is missing here on purpose: 3% of the mix means most
+            # single windows have none.
+            snapshot(150, {"general": [80, 20], "overall": [80, 20]}),
+        ]
+    )
+    assert series["steps"] == [100, 150]
+    assert series["domains"] == ["overall", "general"]
+    assert series["layers"] == ["L2"]
+    assert series["shares"]["general"]["L2"] == [[500, 500], [800, 200]]
+    for domain in series["shares"].values():
+        for rows in domain.values():
+            assert len(rows) == len(series["steps"])

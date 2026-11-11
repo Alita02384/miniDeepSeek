@@ -57,6 +57,14 @@
   .tabs button.on { color: var(--fg); border-color: var(--accent);
                     background: #1f6feb22; }
   .tabs button .n { color: var(--dim); font-size: 10px; margin-left: 5px; }
+  .scrub { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+  .scrub input[type=range] { flex: 1; accent-color: var(--accent); height: 16px; }
+  .scrub button { background: #21262d; color: var(--fg); border: 1px solid var(--line);
+                  border-radius: 5px; padding: 2px 9px; font: inherit; font-size: 11px;
+                  cursor: pointer; }
+  .scrub button.on { border-color: var(--accent); background: #1f6feb22; }
+  .scrub #exp-when { color: var(--dim); font-size: 11px; min-width: 168px;
+                     text-align: right; }
   #experts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
              gap: 8px 18px; }
   .layer { font-size: 11px; }
@@ -139,7 +147,22 @@
     <div class="sub" id="exp-sub">share of routed tokens per expert per layer ·
       tick = fair share 1/E · red = under half the fair share</div>
     <div class="tabs" id="exp-tabs"></div>
+    <div class="scrub">
+      <button id="exp-play" title="play through the history">▶</button>
+      <input id="exp-slider" type="range" min="0" max="0" value="0" step="1">
+      <span id="exp-when">–</span>
+      <button id="exp-live" title="jump back to the newest snapshot">最新</button>
+    </div>
     <div id="experts"></div>
+  </section>
+
+  <section class="panel wide">
+    <h2>routing trend by expert</h2>
+    <div class="sub" id="trend-sub">每层每个专家的占比随时间（数据来自 train.router_every 快照）</div>
+    <div class="tabs" id="trend-domain"></div>
+    <div class="tabs" id="trend-layer"></div>
+    <canvas id="c-trend"></canvas>
+    <div class="legend" id="trend-legend"></div>
   </section>
 
   <section class="panel">
@@ -406,11 +429,97 @@ function renderMatrix(rows, latest) {
     `latest value · change over steps ${from}–${to} (green = improving, grey = neutral)`;
 }
 
-/* ---------- expert load: four domain views ---------- */
+/* ---------- routing trend ---------- */
+let trendDomain = 'overall';
+let trendLayer = null;
+
+function renderTrendTabs(data) {
+  const series = data.router_series;
+  const hostDomain = document.getElementById('trend-domain');
+  const hostLayer = document.getElementById('trend-layer');
+  if (!series || !series.steps.length) {
+    hostDomain.innerHTML = '<span style="color:var(--dim)">waiting for router snapshots…</span>';
+    hostLayer.innerHTML = '';
+    return;
+  }
+  if (!series.domains.includes(trendDomain)) trendDomain = series.domains[0];
+  if (!trendLayer || !series.layers.includes(trendLayer)) {
+    // default to a learned layer: hash layers are flat by construction and
+    // make a boring first impression
+    trendLayer = series.layers.find(n => !n.startsWith('layers.0') && !n.startsWith('layers.1'))
+              || series.layers[0];
+  }
+  const label = (name) => name.replace('layers.', 'L')
+                              .replace('.feed_forward.router', '')
+                              .replace('mtp_layers.', 'mtpL');
+  hostDomain.innerHTML = series.domains.map(name =>
+    `<button data-d="${name}"${name === trendDomain ? ' class="on"' : ''}>${name}</button>`
+  ).join('');
+  hostLayer.innerHTML = series.layers.map(name =>
+    `<button data-l="${name}"${name === trendLayer ? ' class="on"' : ''}>${label(name)}</button>`
+  ).join('');
+  for (const b of hostDomain.querySelectorAll('button')) {
+    b.onclick = () => { trendDomain = b.dataset.d; renderTrendTabs(lastData); renderTrend(lastData); };
+  }
+  for (const b of hostLayer.querySelectorAll('button')) {
+    b.onclick = () => { trendLayer = b.dataset.l; renderTrendTabs(lastData); renderTrend(lastData); };
+  }
+}
+
+function renderTrend(data) {
+  const series = data.router_series;
+  const canvas = document.getElementById('c-trend');
+  const legend = document.getElementById('trend-legend');
+  if (!series || !series.steps.length || !trendLayer) {
+    chart(canvas, [], { empty: 'waiting for router snapshots…' });
+    legend.innerHTML = '';
+    return;
+  }
+  const rows = (series.shares[trendDomain] || {})[trendLayer] || [];
+  const experts = Math.max(0, ...rows.map(r => r.length));
+  const colors = ['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'];
+  const lines = [];
+  for (let e = 0; e < experts; e++) {
+    lines.push({
+      color: color('--' + colors[e % colors.length], '#58a6ff'),
+      points: series.steps
+        .map((step, i) => [step, rows[i] && rows[i].length ? rows[i][e] / 10 : null])
+        .filter(p => Number.isFinite(p[1])),
+      width: 1.8,
+    });
+  }
+  // fair share as a flat reference line
+  if (experts) {
+    const fair = 100 / experts;
+    lines.push({
+      color: color('--dim', '#8b949e'),
+      points: [[series.steps[0], fair], [series.steps[series.steps.length - 1], fair]],
+      dash: [4, 3], width: 1,
+    });
+  }
+  chart(canvas, lines, { digits: 1 });
+  legend.innerHTML = Array.from({ length: experts }, (_, e) =>
+    `<span><i style="background:${color('--' + colors[e % colors.length], '#58a6ff')}"></i>e${e}</span>`
+  ).join('') + '<span><i style="background:var(--dim)"></i>fair 1/E</span>';
+  document.getElementById('trend-sub').textContent =
+    `${trendDomain} · ${trendLayer.replace('layers.', 'L').replace('.feed_forward.router', '')
+      .replace('mtp_layers.', 'mtpL')} · ` +
+    `${series.steps.length} snapshots · 每层每个专家的占比 (%)`;
+}
+
+/* ---------- expert load: four domain views + history scrubber ---------- */
 let expertView = 'overall';
+//: Index into ``router_series.steps``; ``null`` means "follow the newest
+//: snapshot".  Dragging the slider pins an index so an incoming poll does not
+//: yank the view out from under whatever the reader is inspecting.
+let expertIndex = null;
+let expertPlay = null;
 const DOMAIN_LABEL = { overall: 'overall', general: 'general', code: 'code', tool: 'tool' };
+const HASH_LAYER = /^layers\.[01]\./;
 
 function expertDomains(data) {
+  const series = data.router_series;
+  if (series && series.domains && series.domains.length) return series.domains;
   const snap = data.router_domain_layers;
   const keys = snap && snap.domains ? Object.keys(snap.domains) : [];
   const order = ['overall', 'general', 'code', 'tool'];
@@ -418,23 +527,25 @@ function expertDomains(data) {
   return order.filter(k => keys.includes(k)).concat(extra);
 }
 
+function currentIndex(data) {
+  const series = data.router_series;
+  if (!series || !series.steps.length) return -1;
+  const last = series.steps.length - 1;
+  if (expertIndex === null) return last;
+  return Math.max(0, Math.min(expertIndex, last));
+}
+
 function renderExpertTabs(data) {
   const host = document.getElementById('exp-tabs');
-  const snap = data.router_domain_layers;
   const domains = expertDomains(data);
   if (!domains.length) {
     host.innerHTML = '<span style="color:var(--dim)">waiting for a router_every snapshot…</span>';
     return;
   }
   if (!domains.includes(expertView)) expertView = domains[0];
-  host.innerHTML = domains.map(name => {
-    const layers = snap.domains[name] || {};
-    const total = Object.values(layers)
-      .reduce((sum, info) => sum + (info.counts || []).reduce((a, b) => a + b, 0), 0);
-    const on = name === expertView ? ' class="on"' : '';
-    return `<button data-view="${name}"${on}>${DOMAIN_LABEL[name] || name}` +
-           `<span class="n">${total ? fmt(total, 0) + ' slots' : ''}</span></button>`;
-  }).join('');
+  host.innerHTML = domains.map(name =>
+    `<button data-view="${name}"${name === expertView ? ' class="on"' : ''}>` +
+    `${DOMAIN_LABEL[name] || name}</button>`).join('');
   for (const button of host.querySelectorAll('button')) {
     button.onclick = () => {
       expertView = button.dataset.view;
@@ -444,32 +555,106 @@ function renderExpertTabs(data) {
   }
 }
 
+function renderScrubber(data) {
+  const series = data.router_series;
+  const slider = document.getElementById('exp-slider');
+  const label = document.getElementById('exp-when');
+  const steps = series && series.steps ? series.steps : [];
+  if (!steps.length) {
+    slider.max = 0; slider.value = 0;
+    label.textContent = '–';
+    return;
+  }
+  const index = currentIndex(data);
+  slider.max = String(steps.length - 1);
+  slider.value = String(index);
+  const pinned = expertIndex !== null && expertIndex < steps.length - 1;
+  label.textContent = `step ${steps[index]} · ${index + 1}/${steps.length}` +
+                      (pinned ? ' · 历史' : ' · 最新');
+}
+
+function bindScrubber() {
+  const slider = document.getElementById('exp-slider');
+  slider.oninput = () => {
+    if (!lastData || !lastData.router_series || !lastData.router_series.steps.length) return;
+    const last = lastData.router_series.steps.length - 1;
+    const index = Number(slider.value);
+    expertIndex = index === last ? null : index;
+    renderScrubber(lastData);
+    renderExperts(lastData);
+  };
+  document.getElementById('exp-live').onclick = () => {
+    expertIndex = null;
+    renderScrubber(lastData);
+    renderExperts(lastData);
+  };
+  const play = document.getElementById('exp-play');
+  play.onclick = () => {
+    if (expertPlay !== null) {                       // stop
+      clearInterval(expertPlay); expertPlay = null;
+      play.textContent = '▶'; play.classList.remove('on');
+      return;
+    }
+    if (!lastData || !lastData.router_series) return;
+    const steps = lastData.router_series.steps;
+    if (expertIndex === null) expertIndex = 0;       // restart from the oldest
+    play.textContent = '❚❚'; play.classList.add('on');
+    expertPlay = setInterval(() => {
+      const last = steps.length - 1;
+      if (expertIndex === null || expertIndex >= last) {
+        clearInterval(expertPlay); expertPlay = null;
+        play.textContent = '▶'; play.classList.remove('on');
+        expertIndex = null;
+        renderScrubber(lastData); renderExperts(lastData);
+        return;
+      }
+      expertIndex += 1;
+      if (expertIndex >= last) expertIndex = null;
+      renderScrubber(lastData); renderExperts(lastData);
+    }, 160);
+  };
+}
+
 function renderExperts(data) {
   const host = document.getElementById('experts');
   const sub = document.getElementById('exp-sub');
-  const snap = data.router_domain_layers;
+  const series = data.router_series;
   const domains = expertDomains(data);
-  if (!snap || !snap.domains || !domains.length) {
+  renderScrubber(data);
+  if (!series || !series.steps.length || !domains.length) {
     host.innerHTML = '<span style="color:var(--dim)">no per-domain routing snapshot yet ' +
                      '(train.router_every steps)</span>';
     return;
   }
-  const layersObj = snap.domains[expertView] || {};
-  const layers = Object.entries(layersObj);
+  const index = currentIndex(data);
+  const stepWindow = series.steps[index];
+  const perLayer = series.shares[expertView] || {};
+  const layers = Object.keys(perLayer).sort();
   if (!layers.length) {
-    host.innerHTML = `<span style="color:var(--dim)">no tokens of this domain in the ` +
-                     `snapshot step</span>`;
+    host.innerHTML = `<span style="color:var(--dim)">no tokens of this domain in this ` +
+                     `window</span>`;
     return;
   }
-  sub.textContent = `step ${snap.step} · view: ${DOMAIN_LABEL[expertView] || expertView} · ` +
-    `share of routed tokens per expert per layer · tick = fair share 1/E · ` +
-    `red = under half the fair share`;
-  host.innerHTML = layers.map(([name, info]) => {
-    const counts = info.counts || [];
-    const total = counts.reduce((a, b) => a + b, 0) || 1;
-    const fair = 1 / Math.max(counts.length, 1);
-    const bars = counts.map((n, i) => {
-      const share = n / total;
+  const firstRow = (perLayer[layers[0]] || [])[index] || [];
+  if (!firstRow.length) {
+    // A domain with no micro-batch in this window has no routing to show.  At
+    // ``router_every: 10`` that happens for ``tool`` (3% of the mix) about 2%
+    // of the time; say so instead of drawing empty tracks.
+    host.innerHTML = `<span style="color:var(--dim)">该窗口（step ${stepWindow}）内没有 ` +
+                     `${DOMAIN_LABEL[expertView] || expertView} 的 micro-batch，` +
+                     `换个时间点或用「最新」</span>`;
+    sub.textContent = `view: ${DOMAIN_LABEL[expertView] || expertView}`;
+    return;
+  }
+  sub.textContent = `view: ${DOMAIN_LABEL[expertView] || expertView} · share of routed tokens ` +
+    `per expert per layer · tick = fair share 1/E · red = under half the fair share · ` +
+    `tool 只占 3%，单窗口噪声比 general/code 大得多`;
+  host.innerHTML = layers.map(name => {
+    const row = (perLayer[name] || [])[index] || [];
+    // per-mille integers from the bridge -> percent
+    const shares = row.map(v => v / 1000);
+    const fair = 1 / Math.max(shares.length, 1);
+    const bars = shares.map((share, i) => {
       const width = Math.max(0.6, share / Math.max(fair * 2.2, 1e-9) * 100);
       const hot = share < fair / 2 ? 'background:var(--bad)' : '';
       return `<div class="bar"><span>e${i}</span>` +
@@ -477,7 +662,7 @@ function renderExperts(data) {
              `<span class="fair" style="left:${(fair / Math.max(fair * 2.2, 1e-9)) * 100}%"></span></div>` +
              `<em>${(share * 100).toFixed(1)}%</em></div>`;
     }).join('');
-    const tag = info.hash ? 'hash' : 'learned';
+    const tag = HASH_LAYER.test(name) ? 'hash' : 'learned';
     const short = name.replace('layers.', 'L').replace('.feed_forward.router', '')
                       .replace('mtp_layers.', 'mtp');
     return `<div class="layer"><div class="name">${short} · ${tag}</div>${bars}</div>`;
@@ -585,6 +770,8 @@ function render(data) {
     { color: c.c8, points: series(rows, 'mtp_loss_d1') },
   ], { log: true, digits: 2 });
 
+  renderTrendTabs(data);
+  renderTrend(data);
   renderExpertTabs(data);
   renderExperts(data);
 }
@@ -619,6 +806,7 @@ async function poll() {
         : '');
   }
 }
+bindScrubber();
 poll();
 setInterval(poll, POLL_MS);
 window.addEventListener('resize', () => poll());

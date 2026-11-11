@@ -1760,3 +1760,28 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
   - §3 的 P0 修复在共享 `trainer.py`，需等预训练 checkpoint 落盘并确认后再改。
   - 没有真实多卡 GPU 后训练验证；HCA 长上下文、CUDA-graph counter 只在 CPU 复现。
   - “RPO”未在仓库中找到实现（只有 GRPO/CISPO + OPD）；需确认是否指 DPO/RPO。
+
+### 2026-11-11 补：路由按 10 步与其它指标同频记录 + 面板时间滑块
+
+- 用户要求路由历史不要单独一步一记，而是和普通指标同频（每 10 步）。
+  `train.router_every: 50 -> 10`，与 `log_every` 对齐；`router_domain_layers`
+  每个窗口约 3 KB，跑满 11,444 步约 3.4 MB。
+- **合并了两个累加器**：`_accumulate_domain_routing` 现在对每个 micro-batch
+  都跑（原来只在 `collect_metrics` 的那一个），同时喂
+  - 每域每层每专家计数（`router_domain_layers`，面板四视图 + 趋势）
+  - 每域浓度标量（`router_domain_*_share_max/min/js_vs_pooled`）
+  两路输出同源，不会再出现"标量和明细对不上"。`overall` 桶从 pooled 计算里
+  排除（它是各域之和，喂回去会重复计数）。
+- 面板新增**时间滑块**：拖动滑块选中历史快照，下面按域的四视图柱状图随之
+  变化；`▶` 可按 160 ms/帧回放整段历史，「最新」跳回末端。滑块被拖动后
+  新的轮询不再把它拽回末端。
+- 实测窗口统计（10 步 = 159 个 micro-batch）：general 126–139、code 17–28、
+  tool 1–9。也就是 **tool 在 10 步粒度下单窗口只有 1–9 个 micro-batch，
+  噪声比 general/code 大得多**；约 2% 的窗口完全没有 tool micro-batch，
+  面板对这种情况显式提示而不是画空条。这是提高时间分辨率的直接代价；
+  需要更稳的 tool 曲线就用更大的 `router_every`。
+- 验证：本地 `pytest -q` 318 passed / 2 skipped、ruff 通过、`node --check`
+  页面 JS；服务器 13 个失败全为既有（RL/consistency，服务器代码落后 23 个
+  commit）；重启后快照 cadence 为 10 步（5660→5760），四域齐全；
+  bridge 的 `/data` 里 `router_series` 19 个快照、8 层、四域、无长度错位、
+  `error` 为空。

@@ -60,9 +60,12 @@ train:
   # costs <1 s even at 11k logged steps.
   report_every: 200
   # Dump the raw per-router expert counts + the learned routers' balance bias
-  # into metrics.jsonl every N steps.  ~1 KB per snapshot; this is the only
-  # routing signal that cannot be rebuilt from the per-step scalars afterwards.
-  router_every: 50
+  # into metrics.jsonl every N steps, aligned with log_every so the routing
+  # trend has the same resolution as the loss curves.  ~3 KB per snapshot
+  # (`router_domain_layers`, per domain x layer x expert), i.e. ~3.4 MB over
+  # 11,444 steps; the per-domain counts accumulate across the whole window, so
+  # `tool` (3% of the mix) still gets ~5 micro-batches per snapshot.
+  router_every: 10
   out_dir: checkpoints/pretrain_3b
   mtp_weight: 0.3
   mtp_weight_final: 0.1

@@ -76,6 +76,7 @@ def test_per_domain_layer_counts_accumulate_over_the_snapshot_window():
     trainer.config = config
     trainer.device = torch.device("cpu")
     trainer._domain_layer_counts = {}
+    trainer._domain_batches = {}
 
     def fake_routing(seed: int):
         generator = torch.Generator().manual_seed(seed)
@@ -91,9 +92,12 @@ def test_per_domain_layer_counts_accumulate_over_the_snapshot_window():
         return type("Record", (), {"layers": {"L0": layer}, "num_tokens": 64})()
 
     # two steps of general + one step that happens to hold no tool tokens
-    trainer._accumulate_layer_domains("general", fake_routing(0))
-    trainer._accumulate_layer_domains("general", fake_routing(1))
-    trainer._accumulate_layer_domains("code", fake_routing(2))
+    trainer._accumulate_domain_routing("general", fake_routing(0))
+    trainer._accumulate_domain_routing("general", fake_routing(1))
+    trainer._accumulate_domain_routing("code", fake_routing(2))
+    # the same accumulator feeds the concentration scalars, so a snapshot's
+    # per-domain batch counts must match the buckets they came from
+    assert trainer._domain_batches == {"general": 2, "code": 1, "overall": 3}
     snap = trainer._domain_layer_snapshot()
 
     assert sorted(snap) == ["code", "general", "overall"]
@@ -105,3 +109,4 @@ def test_per_domain_layer_counts_accumulate_over_the_snapshot_window():
     assert total("overall") == total("general") + total("code")
     # the window restarts after a snapshot
     assert trainer._domain_layer_counts == {}
+    assert trainer._domain_batches == {}
