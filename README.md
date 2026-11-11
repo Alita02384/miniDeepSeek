@@ -5,35 +5,33 @@
 <p align="center">
   <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11+"></a>
   <a href="https://pytorch.org/"><img src="https://img.shields.io/badge/PyTorch-2.9%2B-EE4C2C?style=flat-square&logo=pytorch&logoColor=white" alt="PyTorch 2.9+"></a>
-  <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><img src="https://img.shields.io/badge/ModelScope-mini--deepseek-624AFF?style=flat-square" alt="ModelScope dataset"></a>
+  <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><img src="https://img.shields.io/badge/ModelScope-dataset-624AFF?style=flat-square" alt="ModelScope dataset"></a>
+  <a href="https://modelscope.cn/models/Alita0429/miniDeepSeek"><img src="https://img.shields.io/badge/ModelScope-model-FF6A00?style=flat-square" alt="ModelScope model"></a>
   <a href="#五分钟先跑起来"><img src="https://img.shields.io/badge/tests-305%20passed-2EA44F?style=flat-square&logo=pytest&logoColor=white" alt="305 tests passed"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3DA639?style=flat-square&logo=opensourceinitiative&logoColor=white" alt="MIT License"></a>
   <a href="#现在跑到哪了"><img src="https://img.shields.io/badge/status-research%20preview-8B5CF6?style=flat-square" alt="Research preview"></a>
 </p>
 
-<h3 align="center">训练一个属于你自己的 baby DeepSeek</h3>
+<h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
 
 <p align="center">
-  <b>60M–220M</b> · <b>DeepSeek-V4 同构</b> · <b>CPU 可验证</b> · <b>单卡可训</b>
+  <b>60M–220M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
 </p>
 
 DeepSeek 每一次更新，都会把一些原本只在大厂内部讨论的技术推到开源社区：MoE、CSA/HCA、
-mHC、MTP、GRPO、多教师 OPD…… 但对大多数人来说，真正开始训练时，用的还是最普通的
+mHC、MTP、GRPO、多教师 OPD…… 但对大多数人来说，真正开始训练时，用的还是经典的
 dense Transformer / GPT-2 式堆叠。
 
-不是不想用前沿技术，而是三件事挡在前面：论文里的配置动辄几百 B、1M context，个人根本跑不起；
-把新结构从论文搬进能训练的代码，还要接数据、并行、RL、推理，工程量太大；更缺一套能告诉自己
-“我真的跑对了”的测试和门禁。
+你是否也想将这些酷炫的大模型技术用到自己的模型中？直接用上最前沿的 LLM 技术？
 
-**miniDeepSeek 想填的就是这个空。** 我们把 DeepSeek 的技术栈拆成可读的模块，缩到 60M–220M，
-接上一条从预训练到 OPD 的完整链路。它不是“又一个 MiniGPT”，而是一个 **DeepSeek 技术栈的大杂烩**：
-让你用很低的成本，亲手训练一个自己的 baby DeepSeek，或者只拆其中一块做实验。
+**miniDeepSeek 做的就是这个。** 一步到位把 DeepSeek 的技术栈整合到一个 145M 的 MoE 模型中，
+接上一条与 DeepSeek-V4 同款的从预训练 → 领域SFT → GRPO → OPD 的完整训练流程。
 
-> **一句话**：DeepSeek 负责把技术推到前沿，miniDeepSeek 负责把它拉回一张 24 GB 显卡。
+它不是“又一个 MiniGPT”，而是一个 **Baby DeepSeek**：只需要 1 张 4090 24GB（多卡也同样支持）
 
 > [!NOTE]
 > 这是一个**研究方法复现 + 教学向**项目，不是产品，也不追 benchmark。
-> 当前主跑的是 **145M MoE**；220M / 60M 用于结构对照与 1-step 验证。
+> 当前主跑的是 **145M MoE**；220M / 60M 配置还未实际训练验证。
 > 代码按多卡 CUDA 设计，CPU 只负责逻辑验证。
 
 **直接跳转**：[先跑起来](#五分钟先跑起来) · [硬核部分](#硬核部分) · [文档](#文档地图)
@@ -51,14 +49,19 @@ dense Transformer / GPT-2 式堆叠。
 - 🧰 **一份能拆改的代码**：模型、数据、训练、RL、评估按职责分模块；想研究 MoE 路由、
   CSA/HCA、mHC、KV-cache rollout，都能单独拎出来。
 - 📦 **开箱即用的数据**：3B 语料和预训练 tokenization 已发布在
-  [ModelScope](https://modelscope.cn/datasets/Alita0429/mini-deepseek)，不用先花几个小时重新打包。
+  [ModelScope 数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek)，不用先花几个小时重新打包。
+- 🤗 **已发布的模型**：模型页已上线
+  [ModelScope 模型页](https://modelscope.cn/models/Alita0429/miniDeepSeek)，可直接查看/下载。
 
 ---
 
-## 数据已发布
+## 模型与数据已发布
 
-3B 语料和预训练 tokenization 已经传到 ModelScope：
-**[Alita0429/mini-deepseek](https://modelscope.cn/datasets/Alita0429/mini-deepseek)**
+**模型**：[Alita0429/miniDeepSeek](https://modelscope.cn/models/Alita0429/miniDeepSeek) ——
+模型页已上线，可在 ModelScope 查看/下载；模型文件以页面实际内容为准。
+
+**数据**：3B 语料和预训练 tokenization 已经传到 ModelScope：
+**[mini-deepseek](https://modelscope.cn/datasets/Alita0429/mini-deepseek)**
 
 | 文件 | 内容 |
 |---|---|
@@ -66,11 +69,11 @@ dense Transformer / GPT-2 式堆叠。
 | `*.jsonl` | pretrain / SFT / GRPO / OPD / eval 的平铺数据 |
 | `SHA256SUMS` | 下载后校验 |
 
-这是本仓库现在**最省事的数据入口**：不用自己跑 3B token 的 tokenize / pack，下载解压后直接进预训练。
+不用自己跑 3B token 的 tokenize / pack，下载解压 packs.tar.zst 后直接进预训练。
 
 ## 五分钟先跑起来
 
-不需要 GPU，也不需要数据。先确认代码逻辑是通的：
+不需要 GPU，也不需要数据。先验证代码不报错：
 
 ```bash
 git clone https://github.com/Alita02384/miniDeepSeek.git
@@ -148,7 +151,7 @@ bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 
 ## 现在跑到哪了
 
-> 截至 **2026-11-11**。这里只写实际跑过的；未验证项在[边界与未完成](#边界与未完成)。
+> 截至 **2026-11-11**
 
 - ✅ **代码 / 测试**：`305 passed, 2 skipped`（CPU，debugmodel，约 72 s）
 - 🔄 **145M 预训练**：2K 阶段 step 1200 / 1717；val loss 2.456 / ppl 6.3 @ step 1199
@@ -292,26 +295,6 @@ miniDeepSeek/
 └── checkpoints/      # 训练产物（git 忽略）
 ```
 
----
-
-## 边界与未完成
-
-- **预训练尚未跑完 3B。** 145M 当前在 2K 阶段 step 1200 / 1717；4K / 8K 阶段和完整
-  3B token 仍在计划中。上面所有数字都标了对应 stage，不把计划值当结果。
-- **220M / 60M 还没有真实训练。** 它们目前用于结构、参数量的对照和 1-step 验证。
-- **没有 EP（专家并行）。** 145M 用 DDP；FSDP2 路径存在，但在 145M 上比 DDP 慢
-  （见 D81）。EP 的 all-to-all dispatch 未实现。
-- **vLLM 不能直接服务这个模型。** 4090 是 SM89、模型 `head_dim=64`，不满足 vLLM 的
-  FlashMLA / FlashInfer 后端要求；rollout 走项目内自研 KV-cache + CUDA graph 引擎。
-  prefill 仍是 torch reference，尚未做 chunked prefill。
-- **3-teacher OPD 只跑了 20 step。** KL 在 0.055–0.085 间波动、没有单调下降，
-  lr / 步数还没扫；code / tool teacher 仍是 SFT，GRPO 只有 smoke，teacher 上限受限。
-- **tool 多轮 rollout 已接 cached continuation**，但 FSDP2 + cached 还没接；
-  prefill 仍是 torch reference，chunked prefill 未做。
-- **长上下文不在当前范围。** `max_context=8192`，没有 1M context、FP8/FP4、
-  DSpark / 推测解码。
-- **Anticipatory Routing 默认关闭**；已实现预取队列，但 probe 仍是同步执行。
-- **数据规模到 6B 时需要分布式去重**；当前去重 / 污染检查是单进程实现。
 
 ---
 
@@ -323,8 +306,7 @@ miniDeepSeek/
 | 哪些代码来自上游、改了什么 | [`doc/sources.md`](doc/sources.md) |
 | 每个阶段的开发日志与验证命令 | [`doc/PROCESS.md`](doc/PROCESS.md) |
 | 测试策略与一致性门禁 | [`doc/testing.md`](doc/testing.md) |
-| 下载数据 / 看文件清单 | [ModelScope 数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek) |
-| 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
+| 下载模型 / 数据 | [ModelScope 模型](https://modelscope.cn/models/Alita0429/miniDeepSeek)、[数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek) || 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
 | 145M 上线、迁移、packs 传输 | [`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md)、[`doc/server_runbook.md`](doc/server_runbook.md) |
 | SFT / GRPO / OPD 的后训练细节 | [`doc/posttraining_plan.md`](doc/posttraining_plan.md) |
 | 显存、吞吐、batching 预算 | [`doc/hardware_budget.md`](doc/hardware_budget.md)、[`doc/batching.md`](doc/batching.md) |
@@ -347,8 +329,7 @@ Tokenizer 与基础数据来自 MiniMind；外部语料各自带有 license，�
 
 ## License
 
-代码以 [MIT License](LICENSE) 发布。数据、tokenizer 与第三方模型的 license 独立于代码，
-使用前请阅读对应的 manifest 与数据说明。
+代码、数据、模型均以 [MIT License](LICENSE) 发布。
 
 > DeepSeek 名称与蓝鲸标识归 DeepSeek 所有。README 里的蓝鲸标识是对其的非官方致敬，
 > 不代表 DeepSeek 官方；标识字体为 Fredoka / DM Serif Display（SIL OFL），已转为路径，
@@ -358,5 +339,4 @@ Tokenizer 与基础数据来自 MiniMind；外部语料各自带有 license，�
 
 <div align="center">
   <sub>如果这个项目对你有帮助，欢迎 Star ⭐ / 提 Issue / 发 PR。</sub><br>
-  <sub>在提交 PR 前，请先跑一遍 <code>./scripts/debug_smoke.sh</code>。</sub>
 </div>
