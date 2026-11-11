@@ -1724,3 +1724,39 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
 - **撤回"提高 balance_loss_coeff"的建议**：那会压制这里想要的分化，与项目目标相反。
 - 分化轴是 "general vs code+tool" 而非三个独立簇（L2 的 code 专家 e1/e2 同时是
   tool 的专家）。tool 仅在 L5 的 e0 上显出独立偏好（1.56）。
+
+## 2026-11-11（后训练代码审计：SFT / GRPO / OPD / rollout）
+
+- **commit**: `e6b3c13` docs: 后训练代码审计（SFT/GRPO/OPD/rollout/eval）
+
+- **做了什么**:
+  - 审计 SFT、GRPO/CISPO、多教师 OPD、cached/tool rollout、reward、eval、pipeline；
+    对照 verl/minimind 参考实现，并在 CPU debug 模型上写临时脚本复现关键怀疑。
+  - 只读检查 hb01 的 pretrain job；未改预训练配置/代码。
+  - 同步：本地 `main` 推到 GitHub `bf6a670`；hn01 `c946f5b → bf6a670`
+    fast-forward；hb01 未动（等当前预训练结束）。
+
+- **实现了什么**:
+  - `doc/posttraining_audit_2026-11-11.md`：P0/P1/P2/P3 清单、行号、证据、
+    最小修复建议；P0 是多卡 SFT 的梯度缩放（reduce 后按本 rank target 数缩放，
+    rank 间权重一步后分叉；2 进程复现 79/106 参数差 2.1e-5）。
+  - P1 覆盖：tool continuation 的 train-mode counter 污染、context 越界、
+    open_thinking 推断错误、max_turns 少一轮；reward clip 饱和把好组 advantage
+    清零；tool reward unfinished 仍给 gt、alignment 用 len(gt)；eval 旧路径、
+    reward dispatch、eval_code tests 丢失；SFT 数据前缀切片与 0.41/0.48/1.39
+    epoch；域混料按 input token；pipeline 断点；HCA 长上下文 decode/forward 不一致。
+  - 同步了本地与 GitHub、hn01 的代码；hb01 的未提交 pretrain 改动经去注释
+    对比与本地 `main` 语义一致。
+
+- **验证**:
+  - 本地与 hn01：`pytest tests/test_{grpo,opd,cache,cached_tool,tool_agent}.py -q`
+    → **34 passed**；DDP GRPO/OPD smoke（`scripts/test_rl_distributed.py`）PASS。
+  - 临时复现：`/tmp/ddp_scale_probe.py`（2 进程 18 vs 4 target → 79/106 参数分叉；
+    18 vs 18 → 0）、`/tmp/tool_probe2.py`（counter 0→369、context IndexError）、
+    reward clip 饱和、eval_code tests 丢失。
+
+- **未完成 / 风险**:
+  - 本次只审计，没有改 `src/`/`configs/`/`tests/`；修复顺序见审计文档 §7。
+  - §3 的 P0 修复在共享 `trainer.py`，需等预训练 checkpoint 落盘并确认后再改。
+  - 没有真实多卡 GPU 后训练验证；HCA 长上下文、CUDA-graph counter 只在 CPU 复现。
+  - “RPO”未在仓库中找到实现（只有 GRPO/CISPO + OPD）；需确认是否指 DPO/RPO。
