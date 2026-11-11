@@ -104,21 +104,35 @@ def main() -> int:
     if primary_target_per_step <= 0:
         print("primary source produced no batches in the sample; increase --steps")
         return 1
-    recommended = int(round(target_tokens * args.epochs / primary_target_per_step))
+    grad_accum = max(int(config.train.grad_accum), 1)
+    # The mixer is sampled per micro-batch; an optimizer step consumes
+    # ``grad_accum`` of them.
+    primary_target_per_optimizer_step = primary_target_per_step * grad_accum
+    primary_input_per_optimizer_step = (
+        totals[primary_name]["input"] / max(totals[primary_name]["batches"], 1)
+    ) * grad_accum
+    recommended = int(
+        round(target_tokens * args.epochs / max(primary_target_per_optimizer_step, 1e-9))
+    )
     input_recommended = int(
-        round(input_tokens * args.epochs / (totals[primary_name]["input"] / max(totals[primary_name]["batches"], 1)))
+        round(input_tokens * args.epochs / max(primary_input_per_optimizer_step, 1e-9))
     )
     print(
         json.dumps(
             {
                 "primary_target_tokens": target_tokens,
                 "primary_input_tokens": input_tokens,
-                "primary_target_per_step": round(primary_target_per_step, 1),
+                "grad_accum": grad_accum,
+                "primary_target_per_microbatch": round(primary_target_per_step, 1),
+                "primary_target_per_step": round(primary_target_per_optimizer_step, 1),
                 "recommended_steps_target_epoch": recommended,
                 "recommended_steps_input_epoch": input_recommended,
                 "current_steps": int(config.train.steps),
                 "target_epochs_at_current_steps": round(
-                    config.train.steps * primary_target_per_step / max(target_tokens, 1), 3
+                    config.train.steps
+                    * primary_target_per_optimizer_step
+                    / max(target_tokens, 1),
+                    3,
                 ),
             },
             indent=2,

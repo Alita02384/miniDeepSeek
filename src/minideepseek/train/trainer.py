@@ -1696,10 +1696,17 @@ def build_trainer(
         distributed=context,
     )
     resume_path = config.train.resume
-    if resume_path is None and config.train.auto_resume:
+    if config.train.auto_resume:
+        # A checkpoint in out_dir is a crash-recovery checkpoint and takes
+        # precedence over the configured stage base (SFT configs point
+        # ``resume`` at the pretrain checkpoint).  The old code only looked at
+        # auto_resume when ``resume`` was None, so the flag was dead and a
+        # rerun overwrote ``final`` from the pretrain base.
         found = latest_checkpoint(config.train.out_dir)
         if found is not None:
             resume_path = str(found)
+            config.train.resume_step = True
+            config.train.resume_data = True
             trainer._say(f"[trainer] auto-resume from {resume_path}")
     if resume_path:
         trainer.resume(resume_path)
