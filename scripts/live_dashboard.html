@@ -259,6 +259,10 @@ function dur(seconds) {
   return h ? `${h}h${String(m).padStart(2, '0')}m` : `${m}m`;
 }
 
+//: Shared ``{x0, x1}`` step range for every chart, set once per render from all
+//: records (plus any routing snapshots beyond them).
+let AXIS = null;
+
 /* ---------- tiny canvas line chart ---------- */
 function chart(canvas, series, opts = {}) {
   const dpr = window.devicePixelRatio || 1;
@@ -280,8 +284,12 @@ function chart(canvas, series, opts = {}) {
     return;
   }
 
+  // A shared span keeps every panel on the same time axis: a metric that only
+  // exists from step 2400 shows an empty left third instead of silently
+  // rescaling its own x range and looking like it covers the whole run.
   const xs = live.flatMap(s => s.points.map(p => p[0]));
-  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const x0 = AXIS ? AXIS.x0 : Math.min(...xs);
+  const x1 = AXIS ? AXIS.x1 : Math.max(...xs);
   const span = x1 - x0 || 1;
   const X = x => pad.l + (x - x0) / span * plotW;
 
@@ -684,6 +692,17 @@ function render(data) {
   lastData = data;
   const rows = data.rows || [];
   const latest = data.latest || {};
+  // One time axis for the whole page: earliest record -> newest, including
+  // routing snapshots that can sit past the last ordinary log line.
+  const routeSteps = (data.router_series && data.router_series.steps) || [];
+  const starts = [rows.length ? rows[0].step : null, ...(routeSteps.length ? [routeSteps[0]] : [])];
+  const ends = [rows.length ? rows[rows.length - 1].step : null,
+                ...(routeSteps.length ? [routeSteps[routeSteps.length - 1]] : [])];
+  const usable = (list) => list.filter(v => Number.isFinite(v));
+  const xs0 = usable(starts), xs1 = usable(ends);
+  AXIS = xs0.length && xs1.length
+    ? { x0: Math.min(...xs0), x1: Math.max(...xs1) }
+    : null;
   document.getElementById('s-step').textContent = latest.step ?? '–';
   document.getElementById('s-lm').textContent = fmt(latest.main_loss, 4);
   document.getElementById('s-lm-ema').textContent =
