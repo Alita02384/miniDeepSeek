@@ -17,68 +17,69 @@ stages:
     kind: curriculum
     config: configs/pretrain/curriculum_145m_4x4090.yaml
     token_ratios: {2048: 0.15, 4096: 0.55, 8192: 0.30}
-    out_dir: checkpoints/curriculum_145m
+    out_dir: checkpoints/curriculum_145m_3b
+    data_domains: [general, code, tool]
   - id: sft_general
     kind: sft
     name: general
     config: configs/sft/general.yaml
-    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
     epochs: 1.0
-    out_dir: checkpoints/sft_general
+    out_dir: checkpoints/sft_general_145m
   - id: sft_tool
     kind: sft
     name: tool
     config: configs/sft/tool.yaml
-    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
     epochs: 1.0
-    out_dir: checkpoints/sft_tool
+    out_dir: checkpoints/sft_tool_145m
   - id: sft_code
     kind: sft
     name: code
     config: configs/sft/code.yaml
-    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
     epochs: 1.0
-    out_dir: checkpoints/sft_code
+    out_dir: checkpoints/sft_code_145m
   - id: grpo_general
     kind: grpo
     config: configs/grpo/general.yaml
     data: data/grpo_general_train.jsonl
-    resume: checkpoints/sft_general/final
-    out_dir: checkpoints/grpo_general
+    resume: checkpoints/sft_general_145m/final
+    out_dir: checkpoints/grpo_general_145m
   - id: grpo_tool
     kind: grpo
     config: configs/grpo/tool.yaml
     data: data/grpo_tool_train.jsonl
-    resume: checkpoints/sft_tool/final
-    out_dir: checkpoints/grpo_tool
+    resume: checkpoints/sft_tool_145m/final
+    out_dir: checkpoints/grpo_tool_145m
   - id: grpo_code
     kind: grpo
     config: configs/grpo/code.yaml
     data: data/grpo_code_train.jsonl
-    resume: checkpoints/sft_code/final
-    out_dir: checkpoints/grpo_code
+    resume: checkpoints/sft_code_145m/final
+    out_dir: checkpoints/grpo_code_145m
   - id: opd_three_teacher
     kind: opd
     config: configs/opd/three_teacher.yaml
-    data: data/opd_prompts_mixed.jsonl
-    resume: checkpoints/curriculum_145m/stage_02_seq8192/final
-    out_dir: checkpoints/opd_three_teacher
+    data: data/opd_prompts_three.jsonl
+    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    out_dir: checkpoints/opd_three_grpo_145m
   - id: eval_general
     kind: eval
     config: configs/eval/general.yaml
-    checkpoint: checkpoints/grpo_general/final
+    checkpoint: checkpoints/grpo_general_145m/final
     data: data/eval_general.jsonl
   - id: eval_tool
     kind: eval
     config: configs/eval/tool.yaml
-    checkpoint: checkpoints/grpo_tool/final
+    checkpoint: checkpoints/grpo_tool_145m/final
     data: data/eval_tool.jsonl
   - id: eval_code
     kind: eval
     config: configs/eval/code.yaml
-    checkpoint: checkpoints/grpo_code/final
+    checkpoint: checkpoints/grpo_code_145m/final
     data: data/eval_code.jsonl
   - id: export
     kind: export
-    checkpoint: checkpoints/opd_three_teacher/final
+    checkpoint: checkpoints/opd_three_grpo_145m/final
     out: hf/minimind_145m_three_teacher

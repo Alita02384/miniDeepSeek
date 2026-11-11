@@ -37,11 +37,12 @@ def tokenize_pretrain(
     dedup: bool = False,
     paragraph_dedup: bool = False,
     quality_filter: bool = True,
+    output_prefix: str = "pretrain",
 ) -> dict:
     tokenizer = load_tokenizer()
     reports = {}
     for seq_len in seq_lens:
-        output = out_dir / f"pretrain_{SEQ_SUFFIX.get(seq_len, str(seq_len))}.npz"
+        output = out_dir / f"{output_prefix}_{SEQ_SUFFIX.get(seq_len, str(seq_len))}.npz"
         reports[str(seq_len)] = build_pretrain_dataset(
             [input_path],
             output,
