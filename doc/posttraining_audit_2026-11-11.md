@@ -4,7 +4,7 @@
 > eval / pipeline / configs。**预训练进程与预训练配置未改动**；hb01 上的训练 job
 > 未触碰。
 >
-> 审计基线：本地 `main` = `bf6a670`（= 审计结束时的 `origin/main`）。
+> 审计基线代码：`bf6a670`；本文档的 commit：`e6b3c13`（审计）、`84721bf`（PROCESS 记录）。
 > 服务器实跑数据：hn01 上已有的 `checkpoints/{sft,grpo,opd}_*_145m` 与
 > `data/tokenization/sft_*`。
 >
@@ -55,14 +55,14 @@
 
 | 位置 | 审计前 | 审计后 | 操作 |
 |---|---|---|---|
-| 本地 `main` | `2cfb34c`（+ 并发会话的未提交 dashboard/pretrain 修改） | `bf6a670` | 只读 |
-| `origin/main` | `ad66d08` | `bf6a670` | `git push origin main`（正常 fast-forward，无 force） |
-| hn01 | `c946f5b`，`.venv` 外无改动 | `bf6a670` | `git fetch` + `git merge --ff-only origin/main` |
+| 本地 `main` | `2cfb34c`（+ 并发会话的未提交 dashboard/pretrain 修改） | `84721bf`（代码基线 `bf6a670` + 2 个 docs commit） | 只读/写文档 |
+| `origin/main` | `ad66d08` | `84721bf` | `git push origin main`（正常 fast-forward，无 force） |
+| hn01 | `c946f5b`，`.venv` 外无改动 | `bf6a670`（代码；docs 同步的 fetch 被网络中断） | `git fetch` + `git merge --ff-only origin/main` |
 | hb01 | `e30ef7c`（工作树 14 个 modified + 5 个 untracked） | 未动 | 只读检查；训练 job 未触碰 |
 
 ### 1.2 hb01 的真实状态
 
-- `HEAD=e30ef7c`，比本地 `main` 落后 **33 个 commit**。
+- `HEAD=e30ef7c`，比审计基线代码 `bf6a670` 落后 **33 个 commit**（当前 `main` 另有 2 个 docs commit）。
 - 工作树有 14 个 modified 文件，其中 **11 个与本地 `main` 逐字节相同**
   （`model/wrapper.py`、`train/trainer.py`、`train/distributed.py`、
   `train/metrics.py`、`train/run.py`、`model/routing.py`、`viz/report.py`、
