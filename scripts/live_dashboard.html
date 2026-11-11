@@ -86,7 +86,7 @@
 <body>
 <header>
   <h1>miniDeepSeek · live</h1>
-  <div class="stat">step <b id="s-step">–</b></div>
+  <div class="stat">step <b id="s-step">–</b> <span id="s-stage"></span></div>
   <div class="stat">LM <b id="s-lm">–</b> <span id="s-lm-ema"></span></div>
   <div class="stat">total <b id="s-loss">–</b></div>
   <div class="stat">val <b id="s-val">–</b></div>
@@ -370,6 +370,9 @@ function paletteColor(name, index) {
 /* ---------- metric matrix ---------- */
 const MATRIX = [
   ['step', 'step', 0, null],
+  ['stage', 'stage', 0, null],
+  ['seq_len', 'seq_len', 0, null],
+  ['source', 'record source', 0, null],
   ['main_loss', 'LM loss (main)', 4, 'down'],
   ['main_loss_ema', 'LM loss EMA', 4, 'down'],
   ['loss', 'total (incl MTP)', 4, 'down'],
@@ -407,6 +410,11 @@ function renderMatrix(rows, latest) {
   const cells = MATRIX.map(([key, label, digits, goodDir]) => {
     const value = latest[key];
     if (value === null || value === undefined) return '';
+    if (typeof value === 'string') {
+      return `<div class="cell"><div class="k">${label}</div>` +
+             `<div class="v" style="font-size:12px">${value}</div>` +
+             `<div class="d">&nbsp;</div></div>`;
+    }
     let text;
     if (key === 'tokens_seen') text = fmt(value, 0);
     else if (key === 'mem_peak_mb') text = (value / 1024).toFixed(1) + ' GiB';
@@ -704,6 +712,9 @@ function render(data) {
     ? { x0: Math.min(...xs0), x1: Math.max(...xs1) }
     : null;
   document.getElementById('s-step').textContent = latest.step ?? '–';
+  document.getElementById('s-stage').textContent = Number.isFinite(latest.seq_len)
+    ? `stage ${latest.stage ?? '?'} · ${latest.seq_len / 1024}K`
+    : '';
   document.getElementById('s-lm').textContent = fmt(latest.main_loss, 4);
   document.getElementById('s-lm-ema').textContent =
     latest.main_loss_ema ? `(ema ${fmt(latest.main_loss_ema, 4)})` : '';

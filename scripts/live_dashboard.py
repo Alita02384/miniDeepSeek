@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -37,6 +38,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
+
+#: ``.../stage_01_seq4096/...`` -> (1, 4096), so a record read straight out of a
+#: per-launch file still carries the stage it belongs to.
+STAGE_DIR = re.compile(r"stage_(\d+)_seq(\d+)")
 HTML_PATH = HERE / "live_dashboard.html"
 
 #: Fields the dashboard draws.  Everything else stays on the server.
@@ -75,6 +80,8 @@ KEEP = (
     "swiglu_gate_abs_max", "swiglu_up_abs_max",
     "mem_allocated_mb", "mem_reserved_mb", "mem_peak_mb",
     "domain_name", "loss_spike", "ar_active",
+    # ---- provenance: which stage produced the row, and where it came from --
+    "stage", "seq_len", "source", "wall_clock",
 )
 
 
@@ -178,10 +185,10 @@ class Remote:
                     history = self._history_file()
                     if history:
                         for record in self._read_file(history):
-                            self._absorb(record)
+                            self._absorb(record, history)
                     for path in self._all_files():
                         for record in self._read_file(path):
-                            self._absorb(record)
+                            self._absorb(record, path)
                     self.offset = int(
                         self._ssh(f"stat -c %s {self.path}").strip() or 0
                     )
@@ -190,17 +197,34 @@ class Remote:
                     if chunk:
                         self.offset += len(chunk.encode())
                         for record in _parse(chunk):
-                            self._absorb(record)
+                            self._absorb(record, self.path)
                 self.error = ""
                 self.updated = time.time()
             except Exception as error:  # keep serving the last good snapshot
                 self.error = str(error)
 
-    def _absorb(self, record: dict) -> None:
+    def _absorb(self, record: dict, path: str = "") -> None:
         step = record.get("step")
         if step is None:
             return
-        self.records[int(step)] = record
+        step = int(step)
+        # Provenance: a raw run file says nothing about its stage, and the
+        # consolidated history file already tags each row.  ``setdefault``
+        # means the file's own answer wins when it has one.
+        if path:
+            match = STAGE_DIR.search(path)
+            if match:
+                record.setdefault("stage", int(match.group(1)))
+                record.setdefault("seq_len", int(match.group(2)))
+            record.setdefault("source", "metrics")
+        previous = self.records.get(step)
+        # More fields wins: the consolidated row carries ``source``/``stage``
+        # while the live one may not, and a re-logged boundary step should not
+        # drop that provenance.
+        if previous is None or len(record) >= len(previous):
+            self.records[step] = record
+        else:
+            return
         layers = record.get("router_layers")
         if layers and (not self.snapshots or self.snapshots[-1]["step"] != int(step)):
             self.snapshots.append({"step": int(step), "layers": layers})
@@ -232,7 +256,7 @@ class Remote:
                         "balance_loss", "entropy", "top1_prob", "domain_name",
                         "train_main_loss_general", "train_main_loss_code",
                         "train_main_loss_tool", "val_main_loss",
-                        "router_learned_min_relative_load",
+                        "router_learned_min_relative_load", "stage", "seq_len", "source",
                     )
                 },
                 "router_layers": latest_layers,
