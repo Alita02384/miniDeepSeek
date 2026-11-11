@@ -199,6 +199,26 @@ OMP_NUM_THREADS=1 .venv/bin/python scripts/test_sft_ddp_scaling.py --dist-mode f
 
 全量 pytest 结果见 `doc/PROCESS.md` 对应条目。
 
+### 3.1 hn01 真机 smoke（单卡 4090，2026-11-11）
+
+用现有 `checkpoints/{sft,grpo,opd}_*_145m` 和新数据实际跑了四类任务：
+
+| 任务 | 配置 | 结果 |
+|---|---|---|
+| SFT 2 步 | `sft/general`、新 50k/30k/8k 数据、MTP 1、4K | loss 5.029→5.002，step0/1 target 104,795/81,467，峰值 12.98 GB，`final/` 落盘；日志里同时出现 `train_main_loss_{general,code,tool}` |
+| tool GRPO 1 步 | 2 prompts × group 2 × 32 token，cached + max_turns 3 | 4 条轨迹全部 `max_new_hit`、`finished_rate=0`，reward=-0.5（unfinished），loss=0（常数组 advantage 为 0）；**没有崩在 continuation/prefix/context** |
+| OPD 1 步 | 3-teacher config，2 prompts × 32 token，cached | `kl_general=0.0654`、`kl_code=0.1156`、`loss=0.0603`、`grad_norm=3.35`；本步只出现 general/code 两个 teacher，固定分母没有把它们放大 |
+| eval tool / code | 现有 `grpo_{tool,code}_145m/final`，limit 2、32 token | tool eval 现在加载 1.8B RM（reward -2.35，旧代码恒 0）；code eval 走 syntax penalty（-0.1），`tests` 已映射 |
+
+HCA 长上下文也在 hn01 GPU 上复验（debugmodel，seq_len=256、max_context=1024、
+prompt=640）：fp32 下 decode vs full-forward max diff `2.9e-6 / 2.6e-6 / 1.8e-6`；
+bf16 下为 `0.0156 / 0.0156 / 0.0703`（bf16 kernel/accum 噪声，与 rollout 4e-2
+同量级）。修复方向正确，bf16 差异不是窗口错位。
+
+**没有跑 2 进程 GPU DDP**：hn01 只有一张 4090，`torchrun` 的 rank1 会请求
+`cuda:1` 并报 `invalid device ordinal`。多卡正确性由 CPU 2 进程
+DDP/FSDP2 回归（§1）覆盖；hn01 的 1-step 结果只验证单卡路径。
+
 ## 4. 明确未做 / 待预训练结束
 
 1. **SFT validation（P2-11）**：三个 SFT config 仍无 held-out。建议从重建后的

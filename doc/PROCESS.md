@@ -1850,3 +1850,60 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
 - 未完成 / 风险: 没有在 hb01 上 pull（pretrain job 正在跑）；SFT base 仍是
   2K step_001015，等预训练落盘；SFT validation、多轮 tool eval、温度/clip
   语义、RPO（确认为笔误）见修复文档 §4。
+
+
+### 2026-11-11 补：审计后续 + 真机 smoke
+
+- commit: `1efb65c` fix: filter sft_tool to tool records; accept 答案/answer markers
+- commit: `b27b585` fix: follow-up audit findings (resume guard, OPD collectives, tool truncation, metrics)
+- commit: `1ee5bc2` docs: correct SFT step budgets to 280/115/95
+- commit: `0258521` fix: GRPO merged response_length_mean divides by sample count
+
+- 做了什么: 处理两个独立审计 subagent 的新发现：OPD per-teacher collective
+  顺序/数量依赖 rank（多卡会挂）；ChatML 前缀不稳定时 continuation 直接 raise；
+  torch tool engine 不看 max_new/context；resume 语义会覆盖显式 base；
+  `finished_rate` 被 max_new 也算成 finished；tool eval 没加载 RM；
+  OPD `kl_total` 被 `kl_` 前缀合并清零；SFT step budget 少乘 primary batch share。
+- 实现了什么:
+  - OPD 把所有 teacher 的 token 数收成一个固定顺序向量，只做一次 all_reduce；
+    单卡 1-step 只出现 general/code 时 loss 仍按固定 Σw 归一。
+  - tool continuation 前缀不匹配 -> `unfinished=True` 并保留轨迹，不杀 run；
+    torch engine 加 context 预算和 `finished/max_new_hit`。
+  - `check_out_dir_overwrite`：显式 `train.resume` 指向 out_dir 外且已有
+    `final/` 时拒绝启动；`auto_resume` 只填 `resume=None`；`force_restart` 放行。
+  - SFT steps 按真实 primary batch share 修成 280/115/95（~1/1/2 epoch）。
+  - hn01 真机：SFT 2 步、tool GRPO 1 步、OPD 1 步、eval tool/code 均跑通；
+    数据、reward、cached rollout、checkpoint 保存都是真实 4090 路径。
+- 验证: 全量 pytest 见下一条；hn01 SFT loss 5.029→5.002、target
+  104,795/81,467；OPD kl 0.0654/0.1156；tool eval RM -2.35。
+- 未完成 / 风险: hn01 单卡跑不了 2 进程 NCCL（rank1 请求 cuda:1）；SFT
+  validation、预训练 config 的 2K/4K 预算、per-source warmup 仍留待处理。
+
+### 2026-11-11 补 2：真机 smoke 与最终回归
+
+- commit: `0258521` fix: GRPO merged response_length_mean divides by sample count
+- commit: `7154bef` fix: keep direct _globalize tokens_seen semantics
+- commit: `411fc27` fix: GRPO chunk stats carry sample count for length merge
+
+- 做了什么: 按用户要求在 hn01 的现有 checkpoint 上跑真实 4090 路径，并用
+  两个独立审计的新发现补掉 OPD collective 死锁、tool 前缀不一致崩溃、
+  torch tool engine 截断、resume 覆盖显式 base、tool eval 漏 RM、
+  `kl_total` 清零、SFT step budget 少乘 batch share 等问题。
+- 实现了什么:
+  - SFT 2 步（general，新数据）：loss 5.029→5.002，target
+    104,795/81,467，峰值 12.98 GB，`final/` 正常。
+  - tool GRPO 1 步（cached，max_turns=3，max_new=256）：4 条轨迹全部
+    max_new（`finished_rate=0`、`max_new_hit_rate=1`），reward=-0.5
+    （unfinished），`response_length_mean=256`；没有崩溃。
+  - OPD 1 步（3 teacher config，2 prompt）：`kl_general=0.0654`、
+    `kl_code=0.1156`、`loss=0.0603`；只出现 2 个 teacher 时固定分母生效。
+  - eval tool：现在加载 1.8B RM（reward -2.35，旧代码恒 0）；code eval
+    走 syntax penalty。
+  - HCA GPU fp32：decode vs full-forward max diff 1.8e-6–2.9e-6。
+  - tool checkpoint 直接 rollout：SFT tool 模型当前不输出 `<tool_call>`，
+    128 token 生成无关文本；这是模型/数据质量，不是 continuation 代码路径。
+- 验证: 本地全量 `pytest -q` -> **355 passed, 2 skipped**（新增工具/OPD/
+  resume/step-budget 用例）；hn01 单卡 smoke 全部完成。
+- 未完成 / 风险: hn01 单卡无法 `torchrun --nproc_per_node=2`（rank1 请求
+  cuda:1 报 invalid device ordinal），多卡由 CPU 2 进程 DDP/FSDP2 回归覆盖；
+  SFT validation、预训练 config 的 2K/4K 预算与 per-source warmup 仍是待办。

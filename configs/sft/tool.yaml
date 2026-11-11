@@ -35,6 +35,8 @@ data:
   domain: tool
   lockstep: false
 train:
+  # 重训新数据时换新 out_dir，或显式 train.force_restart: true；
+  # out_dir/final 已存在且 resume 指向外部 base 时会被拒绝启动。
   steps: 95
   resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
   resume_data: false

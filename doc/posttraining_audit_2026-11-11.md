@@ -1,5 +1,9 @@
 # 后训练代码审计（2026-11-11）
 
+> **修复状态（2026-11-11 晚）**：P0 与 P1 主体、核心 P2 已修，另有 5 个审计外
+> 新 bug；逐项结果、验证命令、真机 smoke 与未做项见
+> `doc/posttraining_fixes_2026-11-11.md`。本文保留审计当时的证据与结论。
+
 > 范围：SFT / GRPO（含 CISPO）/ 多教师 OPD / rollout（torch + KV-cache）/ reward /
 > eval / pipeline / configs。**预训练进程与预训练配置未改动**；hb01 上的训练 job
 > 未触碰。
