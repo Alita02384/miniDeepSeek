@@ -65,6 +65,8 @@ def cmd_sft(args: argparse.Namespace) -> int:
         max_records=args.max_records,
         max_tokens=args.max_tokens,
         seed=args.seed,
+        dedup=not args.no_dedup,
+        shuffle=not args.no_shuffle,
     )
     _print(meta)
     return 0
@@ -198,6 +200,8 @@ def build_parser() -> argparse.ArgumentParser:
     sft.add_argument("--max-records", type=int)
     sft.add_argument("--max-tokens", type=int)
     sft.add_argument("--seed", type=int, default=1234)
+    sft.add_argument("--no-dedup", action="store_true")
+    sft.add_argument("--no-shuffle", action="store_true")
     sft.add_argument("--vocab-limit", type=int, default=None, help="debug-only token-id modulo")
     sft.set_defaults(func=cmd_sft)
 

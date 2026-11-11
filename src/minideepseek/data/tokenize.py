@@ -64,6 +64,7 @@ def tokenize_sft(
     seq_len: int,
     max_records: int | None = None,
     max_tokens: int | None = None,
+    seed: int = 1234,
 ) -> dict:
     return build_sft_dataset(
         [input_path],
@@ -72,6 +73,7 @@ def tokenize_sft(
         seq_len=seq_len,
         max_records=max_records,
         max_tokens=max_tokens,
+        seed=seed,
     )
 
 
@@ -82,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seq-lens", type=int, nargs="+", default=[2048, 4096, 8192])
     parser.add_argument("--sft-seq-len", type=int, default=4096)
     parser.add_argument("--max-records", type=int, default=None)
+    parser.add_argument(
+        "--sft-seed", type=int, default=1234, help="sampling seed for SFT sources"
+    )
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--dedup", action="store_true", help="enable built-in MinHash (debug only)")
     parser.add_argument("--paragraph-dedup", action="store_true")
@@ -111,20 +116,21 @@ def main(argv: list[str] | None = None) -> int:
             quality_filter=not args.no_quality,
         )
     if not args.skip_sft:
-        report["sft_general"] = tokenize_sft(
-            data_dir / "sft_general.jsonl",
-            out_dir / "sft_general.npz",
-            seq_len=args.sft_seq_len,
-            max_records=max_records,
-            max_tokens=args.max_tokens,
-        )
-        report["sft_tool"] = tokenize_sft(
-            data_dir / "sft_tool.jsonl",
-            out_dir / "sft_tool.npz",
-            seq_len=args.sft_seq_len,
-            max_records=max_records,
-            max_tokens=args.max_tokens,
-        )
+        # Per-specialist budgets: enough target tokens for ~1-3 epochs at the
+        # shipped SFT step counts, sampled from the whole file (not a prefix).
+        # ``--max-records`` overrides all three for smoke runs.
+        sft_budgets = {"general": 50_000, "code": 30_000, "tool": 8_000}
+        for name, default_budget in sft_budgets.items():
+            report[f"sft_{name}"] = tokenize_sft(
+                data_dir / f"sft_{name}.jsonl",
+                out_dir / f"sft_{name}.npz",
+                seq_len=args.sft_seq_len,
+                max_records=(
+                    max_records if max_records is not None else default_budget
+                ),
+                max_tokens=args.max_tokens,
+                seed=args.sft_seed,
+            )
     print(json.dumps(report, indent=2, ensure_ascii=False, default=str))
     return 0
 
