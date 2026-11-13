@@ -608,7 +608,11 @@ class Trainer:
                 swiglu_monitor(self.model.model) as swiglu,
             ):
                 loss_output = self.model.compute_loss(
-                    batch, mtp_weight=mtp_weight, entropy=collect_metrics
+                    batch,
+                    mtp_weight=mtp_weight,
+                    entropy=collect_metrics,
+                    eos_id=self.config.train.eos_token_id,
+                    eos_weight=self.config.train.eos_weight,
                 )
                 balance_loss = torch.zeros((), device=self.device)
                 if self.config.train.balance_loss_coeff > 0:
@@ -1338,7 +1342,12 @@ class Trainer:
             if index >= max_steps:
                 break
             batch = batch.to(self.device)
-            output = self.model.compute_loss(batch, mtp_weight=self._mtp_weight())
+            output = self.model.compute_loss(
+                batch,
+                mtp_weight=self._mtp_weight(),
+                eos_id=self.config.train.eos_token_id,
+                eos_weight=self.config.train.eos_weight,
+            )
             count = int(output.main_token_count)
             if count <= 0:
                 continue

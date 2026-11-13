@@ -379,6 +379,12 @@ class TrainSettings(BaseConfig):
     #: bias) into ``metrics.jsonl`` every N steps (0 disables).  This is the only
     #: routing signal that cannot be rebuilt from the group-level scalars later.
     router_every: int = 0
+    #: Up-weight the assistant terminator in the SFT loss.  ``<|im_end|>`` is
+    #: ~0.3% of target tokens, so models learn replies but not when to stop.
+    #: 1.0 keeps the historical loss exactly; 8-16 makes stopping learnable.
+    eos_weight: float = 1.0
+    #: Token id of the terminator (the SFT configs set 2 for <|im_end|>).
+    eos_token_id: int | None = None
     out_dir: str = "checkpoints/debug"
     mtp_weight: float = 0.3
     mtp_weight_final: float | None = None

@@ -473,7 +473,7 @@ def test_nonfinite_loss_saves_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(
         trainer.model,
         "compute_loss",
-        lambda batch, mtp_weight=0.3, entropy=False: _NanLoss()
+        lambda batch, mtp_weight=0.3, entropy=False, **kwargs: _NanLoss()
     )
     with pytest.raises(NonFiniteLossError, match="non-finite"):
         trainer.train(1)

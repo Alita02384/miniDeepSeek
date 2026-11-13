@@ -194,14 +194,40 @@ class MiniDeepSeekModel:
 
     # -- losses ---------------------------------------------------------------
     @staticmethod
+    def _weighted_ce(
+        losses: Tensor, targets: Tensor, *, eos_id: int | None, eos_weight: float
+    ) -> Tensor:
+        """Mean cross-entropy with extra weight on the terminator token.
+
+        ``<|im_end|>`` is only ~0.3% of SFT target tokens, so a small model
+        learns everything about a reply except when to stop: at temperature 0.8
+        the SFT checkpoints only emitted the terminator in 6-9% of rollouts and
+        the rest ran to the generation cap.  Weighting the terminator is the
+        cheapest fix and is an exact no-op at the default ``eos_weight=1.0``.
+        """
+        if eos_id is None or eos_weight == 1.0:
+            return losses.mean()
+        if eos_weight <= 0:
+            raise ValueError("eos_weight must be positive")
+        weights = torch.ones_like(losses).masked_fill(targets == int(eos_id), float(eos_weight))
+        return (losses * weights).sum() / weights.sum().clamp_min(1e-12)
+
+    @classmethod
     def _masked_ce(
-        logits: Tensor, batch: PackedBatch, shift: int
+        cls,
+        logits: Tensor,
+        batch: PackedBatch,
+        shift: int,
+        *,
+        eos_id: int | None = None,
+        eos_weight: float = 1.0,
     ) -> tuple[Tensor, int]:
         targets, valid = shift_targets(batch, shift)
         if targets.numel() == 0 or not bool(valid.any()):
             return logits.new_zeros(()), 0
         selected = logits[: targets.numel()][valid].float()
-        loss = F.cross_entropy(selected, targets[valid], reduction="mean")
+        losses = F.cross_entropy(selected, targets[valid], reduction="none")
+        loss = cls._weighted_ce(losses, targets[valid], eos_id=eos_id, eos_weight=eos_weight)
         return loss, int(valid.sum())
 
     @staticmethod
@@ -238,10 +264,14 @@ class MiniDeepSeekModel:
         *,
         mtp_weight: float = 0.3,
         entropy: bool = False,
+        eos_id: int | None = None,
+        eos_weight: float = 1.0,
     ) -> LossOutput:
         """Cross-entropy over the main depth plus every configured MTP depth."""
         preds = self.forward(batch)
-        main_loss, main_count = self._masked_ce(preds[0], batch, 0)
+        main_loss, main_count = self._masked_ce(
+            preds[0], batch, 0, eos_id=eos_id, eos_weight=eos_weight
+        )
         total = main_loss
         indexer_loss = self.model.collect_indexer_loss()
         mtp_losses: dict[int, Tensor] = {}
@@ -250,7 +280,9 @@ class MiniDeepSeekModel:
         if depths > 0 and mtp_weight > 0:
             per_depth = mtp_weight / depths
             for depth, logits in enumerate(preds[1:], start=1):
-                loss, count = self._masked_ce(logits, batch, depth)
+                loss, count = self._masked_ce(
+                    logits, batch, depth, eos_id=eos_id, eos_weight=eos_weight
+                )
                 mtp_losses[depth] = loss
                 mtp_counts[depth] = count
                 total = total + loss * per_depth
