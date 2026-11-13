@@ -14,7 +14,7 @@
 <h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
 
 <p align="center">
-  <b>6M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
+  <b>60M–220M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
 </p>
 
 > 用 DeepSeek-V4 的技术栈（DeepSeekMoE、mHC、CSA/HCA、MTP、SwiGLU clamp），
