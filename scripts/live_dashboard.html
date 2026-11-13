@@ -6,18 +6,18 @@
 <title>miniDeepSeek · live training</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --line: #30363d; --fg: #e6edf3;
-    --dim: #8b949e; --accent: #58a6ff; --good: #3fb950; --warn: #d29922;
-    --bad: #f85149;
-    --c1: #58a6ff; --c2: #f78166; --c3: #3fb950; --c4: #d2a8ff; --c5: #ffa657;
-    --c6: #79c0ff; --c7: #ff7b72; --c8: #a5d6ff;
+    --bg: #f8fafc; --panel: #ffffff; --line: #e2e8f0; --fg: #0f172a;
+    --dim: #64748b; --accent: #2563eb; --good: #16a34a; --warn: #d97706;
+    --bad: #dc2626;
+    --c1: #2563eb; --c2: #ea580c; --c3: #16a34a; --c4: #7c3aed; --c5: #d97706;
+    --c6: #0891b2; --c7: #dc2626; --c8: #0d9488;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
   header { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap;
            gap: 16px; align-items: baseline; padding: 10px 16px;
-           background: #0d1117ee; border-bottom: 1px solid var(--line);
+           background: #f8fafcee; border-bottom: 1px solid var(--line);
            backdrop-filter: blur(4px); }
   header h1 { font-size: 13px; margin: 0; font-weight: 600; letter-spacing: .04em; }
   header .stat { color: var(--dim); }
@@ -51,18 +51,18 @@
 
   /* ---- expert load, four domain views ---- */
   .tabs { display: flex; gap: 6px; margin: 2px 0 8px; flex-wrap: wrap; }
-  .tabs button { background: #21262d; color: var(--dim); border: 1px solid var(--line);
+  .tabs button { background: #f1f5f9; color: var(--dim); border: 1px solid var(--line);
                  border-radius: 5px; padding: 3px 10px; font: inherit; font-size: 11px;
                  cursor: pointer; }
   .tabs button.on { color: var(--fg); border-color: var(--accent);
-                    background: #1f6feb22; }
+                    background: #2563eb22; }
   .tabs button .n { color: var(--dim); font-size: 10px; margin-left: 5px; }
   .scrub { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
   .scrub input[type=range] { flex: 1; accent-color: var(--accent); height: 16px; }
-  .scrub button { background: #21262d; color: var(--fg); border: 1px solid var(--line);
+  .scrub button { background: #f1f5f9; color: var(--fg); border: 1px solid var(--line);
                   border-radius: 5px; padding: 2px 9px; font: inherit; font-size: 11px;
                   cursor: pointer; }
-  .scrub button.on { border-color: var(--accent); background: #1f6feb22; }
+  .scrub button.on { border-color: var(--accent); background: #2563eb22; }
   .scrub #exp-when { color: var(--dim); font-size: 11px; min-width: 168px;
                      text-align: right; }
   #experts { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -71,7 +71,7 @@
   .layer .name { color: var(--dim); margin-bottom: 2px; }
   .bar { display: flex; align-items: center; gap: 6px; margin: 1px 0; }
   .bar span { width: 16px; color: var(--dim); }
-  .bar .track { position: relative; flex: 1; height: 8px; background: #21262d;
+  .bar .track { position: relative; flex: 1; height: 8px; background: #f1f5f9;
                 border-radius: 2px; overflow: hidden; }
   .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px;
            background: var(--accent); }
@@ -279,7 +279,7 @@ function chart(canvas, series, opts = {}) {
   ctx.font = '10px ui-monospace, monospace';
 
   if (!live.length) {
-    ctx.fillStyle = color('--dim', '#8b949e');
+    ctx.fillStyle = color('--dim', '#64748b');
     ctx.fillText(opts.empty || 'no data yet', pad.l, pad.t + 14);
     return;
   }
@@ -309,8 +309,8 @@ function chart(canvas, series, opts = {}) {
   };
   const left = axisFor('left'), right = axisFor('right');
 
-  ctx.strokeStyle = color('--line', '#30363d'); ctx.lineWidth = 1;
-  ctx.fillStyle = color('--dim', '#8b949e');
+  ctx.strokeStyle = color('--line', '#e2e8f0'); ctx.lineWidth = 1;
+  ctx.fillStyle = color('--dim', '#64748b');
   for (let i = 0; i <= 4; i++) {
     const y = pad.t + plotH * i / 4;
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + plotW, y); ctx.stroke();
@@ -323,14 +323,14 @@ function chart(canvas, series, opts = {}) {
     }
   }
   if (right) {
-    ctx.fillStyle = color('--dim', '#8b949e');
+    ctx.fillStyle = color('--dim', '#64748b');
     for (let i = 0; i <= 4; i++) {
       const y = pad.t + plotH * i / 4;
       const v = right.lo + (right.hi - right.lo) * (1 - i / 4);
       ctx.fillText(fmt(v, 2), pad.l + plotW + 6, y + 3);
     }
   }
-  ctx.fillStyle = color('--dim', '#8b949e');
+  ctx.fillStyle = color('--dim', '#64748b');
   ctx.fillText(String(Math.round(x0)), pad.l, h - 6);
   const endLabel = String(Math.round(x1));
   ctx.fillText(endLabel, pad.l + plotW - ctx.measureText(endLabel).width, h - 6);
@@ -497,7 +497,7 @@ function renderTrend(data) {
   const lines = [];
   for (let e = 0; e < experts; e++) {
     lines.push({
-      color: color('--' + colors[e % colors.length], '#58a6ff'),
+      color: color('--' + colors[e % colors.length], '#2563eb'),
       points: series.steps
         .map((step, i) => [step, rows[i] && rows[i].length ? rows[i][e] / 10 : null])
         .filter(p => Number.isFinite(p[1])),
@@ -508,14 +508,14 @@ function renderTrend(data) {
   if (experts) {
     const fair = 100 / experts;
     lines.push({
-      color: color('--dim', '#8b949e'),
+      color: color('--dim', '#64748b'),
       points: [[series.steps[0], fair], [series.steps[series.steps.length - 1], fair]],
       dash: [4, 3], width: 1,
     });
   }
   chart(canvas, lines, { digits: 1 });
   legend.innerHTML = Array.from({ length: experts }, (_, e) =>
-    `<span><i style="background:${color('--' + colors[e % colors.length], '#58a6ff')}"></i>e${e}</span>`
+    `<span><i style="background:${color('--' + colors[e % colors.length], '#2563eb')}"></i>e${e}</span>`
   ).join('') + '<span><i style="background:var(--dim)"></i>fair 1/E</span>';
   document.getElementById('trend-sub').textContent =
     `${trendDomain} · ${trendLayer.replace('layers.', 'L').replace('.feed_forward.router', '')
@@ -731,11 +731,11 @@ function render(data) {
     best ? `${fmt(best.value, 4)} @${best.step}` : '–';
 
   const c = {
-    c1: color('--c1', '#58a6ff'), c2: color('--c2', '#f78166'),
-    c3: color('--c3', '#3fb950'), c4: color('--c4', '#d2a8ff'),
-    c5: color('--c5', '#ffa657'), c6: color('--c6', '#79c0ff'),
-    c7: color('--c7', '#ff7b72'), c8: color('--c8', '#a5d6ff'),
-    dim: color('--dim', '#8b949e'),
+    c1: color('--c1', '#2563eb'), c2: color('--c2', '#ea580c'),
+    c3: color('--c3', '#16a34a'), c4: color('--c4', '#7c3aed'),
+    c5: color('--c5', '#d97706'), c6: color('--c6', '#0891b2'),
+    c7: color('--c7', '#dc2626'), c8: color('--c8', '#0d9488'),
+    dim: color('--dim', '#64748b'),
   };
 
   chart(document.getElementById('c-loss'), [

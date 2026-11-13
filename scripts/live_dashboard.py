@@ -85,13 +85,96 @@ KEEP = (
 )
 
 
+_MAX_TREND_POINTS = 4000
+
+
+class _State:
+    """records / snapshots accumulator shared by the live bridge and the exporter."""
+
+    def __init__(self) -> None:
+        self.records: dict[int, dict] = {}
+        self.snapshots: list[dict] = []
+        self.domain_snapshots: list[dict] = []
+
+
+def _absorb(state, record: dict, path: str = "") -> None:
+    step = record.get("step")
+    if step is None:
+        return
+    step = int(step)
+    if path:
+        match = STAGE_DIR.search(path)
+        if match:
+            record.setdefault("stage", int(match.group(1)))
+            record.setdefault("seq_len", int(match.group(2)))
+        record.setdefault("source", "metrics")
+    previous = state.records.get(step)
+    if previous is None or len(record) >= len(previous):
+        state.records[step] = record
+    else:
+        return
+    layers = record.get("router_layers")
+    if layers and (not state.snapshots or state.snapshots[-1]["step"] != int(step)):
+        state.snapshots.append({"step": int(step), "layers": layers})
+        state.snapshots = state.snapshots[-8:]
+    domain_layers = record.get("router_domain_layers")
+    if domain_layers and (
+        not state.domain_snapshots or state.domain_snapshots[-1]["step"] != int(step)
+    ):
+        state.domain_snapshots.append({"step": int(step), "domains": domain_layers})
+        state.domain_snapshots = state.domain_snapshots[-_MAX_TREND_POINTS:]
+
+
+def _payload(state, *, stage: str, path: str, updated: float, error: str) -> dict:
+    rows = [state.records[key] for key in sorted(state.records)]
+    latest_layers = state.snapshots[-1] if state.snapshots else None
+    newest = rows[-1] if rows else {}
+    return {
+        "stage": stage,
+        "file": path,
+        "updated_at": time.time(),
+        "age_s": round(time.time() - updated, 1) if updated else None,
+        "error": error,
+        "latest": {
+            key: newest.get(key)
+            for key in (
+                "step", "loss", "loss_ema", "main_loss", "main_loss_ema",
+                "tokens_per_sec", "eta_seconds", "lr", "lr_factor",
+                "grad_norm", "tokens_seen", "mem_peak_mb", "mtp_weight",
+                "balance_loss", "entropy", "top1_prob", "domain_name",
+                "train_main_loss_general", "train_main_loss_code",
+                "train_main_loss_tool", "val_main_loss",
+                "router_learned_min_relative_load", "stage", "seq_len", "source",
+            )
+        },
+        "router_layers": latest_layers,
+        "router_domain_layers": (
+            state.domain_snapshots[-1] if state.domain_snapshots else None
+        ),
+        "best_val": _best_val(rows),
+        "router_series": _router_series(state.domain_snapshots, rows),
+        "rows": [_slim(record) for record in _thin(rows)],
+    }
+
+
 class Remote:
     """One SSH hop, one followed file."""
 
-    def __init__(self, host: str, port: int, root: str, stage: str) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        root: str,
+        stage: str,
+        metrics_file: str | None = None,
+    ) -> None:
         self.host = host
         self.port = port
         self.root = root.rstrip("/")
+        #: Explicit consolidated file (``merge_metrics.py --name`` output).  The
+        #: curriculum run spans three stage directories, so pointing at one
+        #: ``metrics_all.jsonl`` is how the page shows steps 0..N in one axis.
+        self.metrics_file = metrics_file or ""
         # ``stage`` is either one stage directory or the curriculum root; the
         # glob below covers both, so the view keeps following when the run
         # crosses into the next stage directory.
@@ -158,14 +241,23 @@ class Remote:
         return _parse(text)
 
     def _history_file(self) -> str:
-        """``metrics_all.jsonl`` next to the stage, or one level up.
+        """Consolidated history: explicit ``--metrics-file`` or ``metrics_all``.
 
         ``scripts/merge_metrics.py`` consolidates every launch plus the steps
         that only survive in the console log; seeding from it means the page
         shows the whole campaign instead of just the current stage's launches.
         """
+        if self.metrics_file:
+            found = self._ssh(f"test -s {self.metrics_file} && echo yes").strip()
+            if found == "yes":
+                return self.metrics_file
         parent = self.stage.rsplit("/", 1)[0]
-        for candidate in (f"{self.stage}/metrics_all.jsonl", f"{parent}/metrics_all.jsonl"):
+        for candidate in (
+            f"{self.stage}/metrics_full.jsonl",
+            f"{parent}/metrics_full.jsonl",
+            f"{self.stage}/metrics_all.jsonl",
+            f"{parent}/metrics_all.jsonl",
+        ):
             found = self._ssh(f"test -s {candidate} && echo yes").strip()
             if found == "yes":
                 return candidate
@@ -204,74 +296,12 @@ class Remote:
                 self.error = str(error)
 
     def _absorb(self, record: dict, path: str = "") -> None:
-        step = record.get("step")
-        if step is None:
-            return
-        step = int(step)
-        # Provenance: a raw run file says nothing about its stage, and the
-        # consolidated history file already tags each row.  ``setdefault``
-        # means the file's own answer wins when it has one.
-        if path:
-            match = STAGE_DIR.search(path)
-            if match:
-                record.setdefault("stage", int(match.group(1)))
-                record.setdefault("seq_len", int(match.group(2)))
-            record.setdefault("source", "metrics")
-        previous = self.records.get(step)
-        # More fields wins: the consolidated row carries ``source``/``stage``
-        # while the live one may not, and a re-logged boundary step should not
-        # drop that provenance.
-        if previous is None or len(record) >= len(previous):
-            self.records[step] = record
-        else:
-            return
-        layers = record.get("router_layers")
-        if layers and (not self.snapshots or self.snapshots[-1]["step"] != int(step)):
-            self.snapshots.append({"step": int(step), "layers": layers})
-            self.snapshots = self.snapshots[-8:]
-        domain_layers = record.get("router_domain_layers")
-        if domain_layers and (
-            not self.domain_snapshots or self.domain_snapshots[-1]["step"] != int(step)
-        ):
-            self.domain_snapshots.append({"step": int(step), "domains": domain_layers})
-            self.domain_snapshots = self.domain_snapshots[-(_MAX_TREND_POINTS):]
+        _absorb(self, record, path)
 
     def payload(self) -> dict:
-        with self._lock:
-            rows = [self.records[key] for key in sorted(self.records)]
-            latest_layers = self.snapshots[-1] if self.snapshots else None
-            newest = rows[-1] if rows else {}
-            return {
-                "stage": self.stage,
-                "file": self.path,
-                "updated_at": time.time(),
-                "age_s": round(time.time() - self.updated, 1) if self.updated else None,
-                "error": self.error,
-                "latest": {
-                    key: newest.get(key)
-                    for key in (
-                        "step", "loss", "loss_ema", "main_loss", "main_loss_ema",
-                        "tokens_per_sec", "eta_seconds", "lr", "lr_factor",
-                        "grad_norm", "tokens_seen", "mem_peak_mb", "mtp_weight",
-                        "balance_loss", "entropy", "top1_prob", "domain_name",
-                        "train_main_loss_general", "train_main_loss_code",
-                        "train_main_loss_tool", "val_main_loss",
-                        "router_learned_min_relative_load", "stage", "seq_len", "source",
-                    )
-                },
-                "router_layers": latest_layers,
-                "router_domain_layers": (
-                    self.domain_snapshots[-1] if self.domain_snapshots else None
-                ),
-                "best_val": _best_val(rows),
-                "router_series": _router_series(self.domain_snapshots, rows),
-                "rows": [_slim(record) for record in _thin(rows)],
-            }
-
-
-#: Upper bound on retained router snapshots.  One snapshot is ~3 KB, so this
-#: caps the bridge at ~12 MB even on a run with ``router_every: 1``.
-_MAX_TREND_POINTS = 4000
+        return _payload(
+            self, stage=self.stage, path=self.path, updated=self.updated, error=self.error
+        )
 
 
 def _router_series(snapshots: list[dict], records: list[dict]) -> dict:
@@ -430,7 +460,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", required=True)
+    parser.add_argument("--host", default="", help="remote host (required unless --export)")
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--remote-root", default="/root/rivermind-data/miniDeepSeek")
     parser.add_argument(
@@ -439,11 +469,69 @@ def main(argv: list[str] | None = None) -> int:
         help="curriculum root or one stage directory, relative to --remote-root; "
         "the curriculum root keeps following the run across stage boundaries",
     )
+    parser.add_argument(
+        "--metrics-file",
+        default=None,
+        help="explicit consolidated metrics.jsonl (e.g. metrics_full.jsonl) to seed from",
+    )
+    parser.add_argument(
+        "--export",
+        default=None,
+        help="write a static HTML (same layout as the live page) and exit",
+    )
+    parser.add_argument(
+        "--local-metrics",
+        default=None,
+        help="local metrics.jsonl used by --export (no SSH involved)",
+    )
     parser.add_argument("--local-port", type=int, default=8765)
     parser.add_argument("--interval", type=float, default=5.0, help="seconds between polls")
     args = parser.parse_args(argv)
 
-    remote = Remote(args.host, args.port, args.remote_root, args.stage)
+    if not args.export and not args.host:
+        raise SystemExit("--host is required unless --export is used")
+    if args.export:
+        if not args.local_metrics:
+            raise SystemExit("--export needs --local-metrics <file>")
+        source = Path(args.local_metrics)
+        if not source.is_file():
+            raise SystemExit(f"no such metrics file: {source}")
+        state = _State()
+        for record in _parse(source.read_text(encoding="utf-8")):
+            _absorb(state, record, str(source))
+        payload = _payload(
+            state,
+            stage=args.stage or str(source),
+            path=str(source),
+            updated=time.time(),
+            error="",
+        )
+        shim = (
+            "<script>\nwindow.__DASH_DATA__ = "
+            + json.dumps(payload)
+            + ";\n(function () {\n"
+            "  var data = window.__DASH_DATA__;\n"
+            "  var orig = window.fetch.bind(window);\n"
+            "  window.fetch = function (url, opts) {\n"
+            "    if (String(url).indexOf('/data') !== -1) {\n"
+            "      return Promise.resolve({ ok: true, status: 200,\n"
+            "        json: function () { return Promise.resolve(data); } });\n"
+            "    }\n"
+            "    return orig(url, opts);\n"
+            "  };\n"
+            "})();\n</script>\n"
+        )
+        html = HTML_PATH.read_text(encoding="utf-8")
+        index = html.find("<script")
+        if index < 0:
+            index = len(html)
+        out = Path(args.export)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(html[:index] + shim + html[index:], encoding="utf-8")
+        print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KiB, {len(payload['rows'])} rows)")
+        return 0
+
+    remote = Remote(args.host, args.port, args.remote_root, args.stage, args.metrics_file)
     print(
         f"[live] following {remote.stage}/runs/*/metrics.jsonl on {args.host}",
         flush=True,
