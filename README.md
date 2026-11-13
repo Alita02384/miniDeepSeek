@@ -14,14 +14,14 @@
 <h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
 
 <p align="center">
-  <b>60M–220M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
+  <b>145M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
 </p>
 
 > 用 DeepSeek-V4 的技术栈（DeepSeekMoE、mHC、CSA/HCA、MTP、SwiGLU clamp），
-> 训练一个 60M 级、结构同构的研究模型，并跑通 pretrain → SFT → GRPO → 多教师 OPD 的完整链路。
+> 训练一个 145M、结构同构的研究模型，并跑通 pretrain → SFT → GRPO → 多教师 OPD 的完整链路。
 >
-> 这是一个**研究方法复现 + 教学向**项目，不是产品，也不追 benchmark。当前主跑 145M；
-> 220M / 60M 只做了结构与 1-step 验证。代码按多卡 CUDA 设计，CPU 只负责逻辑验证。
+> 这是一个**研究方法复现 + 教学向**项目，不是产品，也不追 benchmark。
+> 代码按多卡 CUDA 设计，CPU 只负责逻辑验证。
 
 ---
 
@@ -42,19 +42,27 @@ DeepSeek 每次更新，都会把 MoE、CSA/HCA、mHC、MTP、GRPO、OPD 这些�
 
 | 模型 | 总参 / 激活 | 状态 |
 |---|---:|---|
-| miniDeepSeek-145M-A60M | 145.84M / 60.91M | ✅ 已发布（[ModelScope](https://modelscope.cn/models/Alita0429/miniDeepSeek)） |
-| mini_220m_a80m | 216.65M / 82.17M | 结构 + 1-step 验证，未训练 |
-| mini_60m_dense_d768 | 60.88M | dense 对照 |
-| debugmodel | 12.98M | CPU 测试 / 参考对齐 |
+| miniDeepSeek-145M | 145.84M / 60.91M | ✅ 已发布（[ModelScope](https://modelscope.cn/models/Alita0429/miniDeepSeek)） |
+
+#### 📊 训练报告
+
+预训练 2K → 4K → 8K 全程的交互式看板（内嵌 1,198 条 metrics，step 0 – 11440，
+loss / 分域 / 路由 / 专家分化都在里面）：
+
+- 在线查看：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html
+- 文件页：https://github.com/Alita02384/miniDeepSeek/blob/main/reports/curriculum_145m_3b_dashboard.html
+- 本地复现：`python3 scripts/live_dashboard.py --export out.html --local-metrics metrics_full.jsonl`
+
+> 数据源由 `scripts/merge_metrics.py` 把三个阶段的 metrics 合并成一份
+> `metrics_full.jsonl`（原 per-stage 文件不动）；看板与 `scripts/live_dashboard.py`
+> 起在 `127.0.0.1:8765` 的实时页是同一份模板。
 
 #### 📝 当前进度
 
-- ✅ **代码 / 测试**：CPU 全量通过；debugmodel 覆盖 forward/backward、checkpoint、routing、cache、rollout。
-- 🔄 **145M 预训练**：2K 阶段 step 1200 / 1717；val loss 2.456 / ppl 6.3 @ step 1199。
-- ✅ **general SFT + GRPO**：已在单卡 4090 跑通；SFT 6–7k tok/s、GRPO 18.6 s/step。
-- ✅ **code / tool SFT**：已产出 final；GRPO code / tool 只跑了 2-step smoke。
-- ✅ **3-teacher OPD**：20 step 跑通并落盘，KL total 0.065，约 17 s/step。
-- ⏳ **220M / 60M 实跑**：当前只做结构、参数量与 1-step 验证。
+- ✅ **代码 / 测试**：CPU 全量通过；`debugmodel`（12.98M，仅测试用）覆盖 forward/backward、checkpoint、routing、cache、rollout。
+- ✅ **145M 预训练**：2K → 4K → 8K 全程 **11,444 步 / 2.68B token**；val main loss **1.1407**、ppl **2.755**，路由熵 1.77 / 2.08 nats。
+- 🔄 **145M SFT**：三域数据全量 tokenize（general 359M / code 25M / tool 7M target，各 1 epoch）；跑到 step 1672 / 4152 时因机器停机暂停，恢复后自动续训。
+- ⏳ **GRPO / OPD**：旧版 4K 链已跑通但结果不可用（code 单测通过率恒 0、tool 轨迹 97% 截断，已定位为 tokenizer 停止符与 SFT 停止行为问题）；新版 SFT 完成后重跑。
 
 ---
 
@@ -212,7 +220,7 @@ GRPO 算全词表 logprob 的前提。**不要换词表**——换一次就要�
 
 ## Ⅱ Pretrain 数据
 
-3B token，按 **general / code / tool = 82% / 15% / 3%** 混料，2K → 4K → 8K 三段互不重叠：
+预算 3B token（实跑 **2.68B**：按 262,144 token/step × 11,444 步的预算，pack 填充率 76–95%，实际消费略低于预算），按 **general / code / tool = 82% / 15% / 3%** 混料，2K → 4K → 8K 三段互不重叠：
 
 | 阶段 | token | 序列长度 |
 |---|---:|---:|
@@ -232,11 +240,15 @@ codeparrot-clean，以及 ToolACE / glaive 的 schema→call 文本。跨源精�
 
 三个 specialist 各自一套数据，response-only mask，领域数据 70–90% + general 10–30%：
 
-| 专家 | 文档数 | loss token | 步数 |
+| 专家 | 文档数 | loss token | 1 epoch 步数 |
 |---|---:|---:|---:|
-| general | 50k | 21.63M | 280 |
-| code | 30k | 5.69M | 115 |
-| tool | 8k | 1.93M | 95 |
+| general | 877,651 | 359.1M | 4,152 |
+| code | 148,723 | 24.5M | 480 |
+| tool | 99,552 | 6.9M | 285 |
+| identity | 69 | 2.2k | 混入 general（权重 0.0002） |
+
+三个域都是 **1 个 target epoch**（`configs/pipeline/posttrain_e2e_145m.yaml`），
+identity 以 0.0002 的权重混进 general，约 15 遍，用来修正「你是谁」的自述。
 
 MiniMind 语料里的旧身份（`jingyaogong / minimind / 小参数AI模型`）已用
 [`scripts/scrub_identity.py`](scripts/scrub_identity.py) 清掉，并换成本项目身份。
@@ -291,14 +303,12 @@ SHA256SUMS         # 下载后校验
 
 | 模型 | 总参 / 激活 | 层 | FFN | 路由 | 用途 |
 |---|---:|---:|---|---|---|
-| `mini_60m_dense_d768` | 60.88M / 60.88M | 7 | 1 dense expert | — | dense 对照 |
 | `mini_145m_a60m` | 145.84M / 60.91M | 7 | 6 routed experts | top-2 | **当前主跑** |
-| `mini_220m_a80m` | 216.65M / 82.17M | 7 | 8 routed experts | top-2 | 最大档 |
-| `debugmodel` | 12.98M（含 MTP） | 4 | 4 routed experts | top-3 | CPU 测试 / 参考对齐 |
 
-三档目标模型共享：`dim=768`、7 层 + 1 层 MTP、`vocab=6400`、`seq_len=4096`、`max_context=8192`、
-`swiglu_limit=10.0`、`hc_mult=4`、`sinkhorn_iters=20`。220M 档用 `n_heads=16 / head_dim=256`，
-其余两档为 `12 / 64`。完整字段见 [`doc/Parameter_Setting.md`](doc/Parameter_Setting.md)。
+配置：`dim=768`、7 层 + 1 层 MTP、`n_heads=12 / head_dim=64`、`vocab=6400`、`seq_len=4096`、
+`max_context=8192`、`swiglu_limit=10.0`、`hc_mult=4`、`sinkhorn_iters=20`。
+完整字段见 [`configs/model/mini_145m_a60m.yaml`](configs/model/mini_145m_a60m.yaml) 与
+[`doc/Parameter_Setting.md`](doc/Parameter_Setting.md)。CPU 测试另用 `debugmodel`（12.98M）。
 
 ---
 
@@ -310,22 +320,23 @@ SHA256SUMS         # 下载后校验
 
 | 项目 | 数值 | 条件 |
 |---|---:|---|
-| 预训练吞吐 | **29,580 tok/s** / 8.86 s/step | 2×4090D，DDP，2K stage，12.8 GiB / 卡 |
-| SFT 吞吐 | 6.1–7.0k tok/s | 1×4090，4K，micro 8192，grad_accum 16，12.7 GiB |
+| 预训练吞吐 | **19.1–19.6k tok/s** / 13.4 s/step | 2×4090D，DDP，8K stage，262,144 token/step |
+| 预训练吞吐（2K） | 29,580 tok/s / 8.86 s/step | 2×4090D，DDP，2K stage，12.8 GiB / 卡 |
+| SFT 吞吐 | 18–20k tok/s | 2×4090D，DDP，4K，micro 8192×2，grad_accum 16，7.5 GiB |
 | GRPO step | 18.6 s | 1×4090，16 prompt × group 6 × 512 token，9.0 GiB |
 | KV-cache decode | 5.4 ms/step ≈ 12k tok/s | 1×4090，batch 64，CUDA graph |
 | 3-teacher OPD | KL total 0.065 / 20 step | 9,135 prompt 池，约 17 s/step |
 
-> 预训练当前还在 2K 阶段，4K / 8K 与完整 3B 尚未跑完；表里不混计划值。
+> 预训练已跑完 2K → 8K 全程（11,444 步，2.68B token）；表里都是实测值，不混计划值。
 
 ## Ⅱ 主要训练
 
 | 阶段 | 配置 | 预算 | 产物 |
 |---|---|---|---|
-| 预训练 | `configs/pretrain/curriculum_145m_4x4090.yaml` | 3B token，11,444 步 | `checkpoints/curriculum_145m_3b/` |
-| SFT | `configs/sft/{general,code,tool}.yaml` | 280 / 115 / 95 步 | `checkpoints/sft_*_145m/final/` |
-| GRPO | `configs/grpo/{general,code,tool}.yaml` | 50 step（general） | `checkpoints/grpo_*_145m/final/` |
-| OPD | `configs/opd/three_teacher.yaml` | 20 step | `checkpoints/opd_three_grpo_145m/final/` |
+| 预训练 | `configs/pretrain/curriculum_145m_4x4090.yaml` | 11,444 步 / 2.68B token（预算 3B） | `checkpoints/curriculum_145m_3b/` |
+| SFT | `configs/pipeline/posttrain_e2e_145m.yaml` | 4,152 / 480 / 285 步（各 1 epoch，357M target） | `checkpoints/posttrain_e2e_145m/sft_*/final/` |
+| GRPO | `configs/pipeline/posttrain_e2e_145m.yaml` | 200 / 200 / 400 步 | `checkpoints/posttrain_e2e_145m/grpo_*/final/` |
+| OPD | `configs/pipeline/posttrain_e2e_145m.yaml` | 100 步 | `checkpoints/posttrain_e2e_145m/opd_three_teacher/final/` |
 
 ## Ⅲ 其它训练
 
