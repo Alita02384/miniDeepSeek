@@ -103,13 +103,12 @@
   <section class="panel wide">
     <h2>loss</h2>
     <div class="sub">LM = main head (line + EMA) · total = main + 0.3·MTP (thin) ·
-      validation points use the main head too</div>
+      val 在下面的 validation 面板里，不混进这条轴</div>
     <canvas id="c-loss"></canvas>
     <div class="legend">
       <span><i style="background:var(--c1)"></i>LM main</span>
       <span><i style="background:var(--c6)"></i>LM EMA</span>
       <span><i style="background:var(--c4)"></i>total (incl. MTP)</span>
-      <span><i style="background:var(--c2)"></i>val LM</span>
     </div>
   </section>
 
@@ -742,7 +741,9 @@ function render(data) {
     { color: c.c1, points: series(rows, 'main_loss'), width: 1 },
     { color: c.c6, points: series(rows, 'main_loss_ema'), width: 2.2 },
     { color: c.c4, points: series(rows, 'loss'), width: 0.9, dash: [3, 3] },
-    { color: c.c2, points: series(rows, 'val_main_loss'), width: 1.2, dots: true },
+    // Validation lives in its own panel: the train curve carries bf16 autocast
+    // + full_packs recut, so putting val on the same axis invites a bogus
+    // train-vs-val comparison.
   ], { digits: 2 });
 
   chart(document.getElementById('c-train-domain'), [
