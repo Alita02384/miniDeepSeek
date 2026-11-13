@@ -49,9 +49,13 @@ DeepSeek 每次更新，都会把 MoE、CSA/HCA、mHC、MTP、GRPO、OPD 这些�
 预训练 2K → 4K → 8K 全程的交互式看板（内嵌 1,198 条 metrics，step 0 – 11440，
 loss / 分域 / 路由 / 专家分化都在里面）：
 
-- 在线查看：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html
-- 文件页：https://github.com/Alita02384/miniDeepSeek/blob/main/reports/curriculum_145m_3b_dashboard.html
-- 本地复现：`python3 scripts/live_dashboard.py --export out.html --local-metrics metrics_full.jsonl`
+- 预训练：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html
+- SFT：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html
+- 文件页：[预训练](https://github.com/Alita02384/miniDeepSeek/blob/main/reports/curriculum_145m_3b_dashboard.html) ·
+  [SFT](https://github.com/Alita02384/miniDeepSeek/blob/main/reports/sft_dashboard.html)
+- 本地复现：
+  `python3 scripts/live_dashboard.py --export out.html --local-metrics metrics_full.jsonl`（预训练）/
+  `python3 scripts/sft_dashboard.py --export out.html --total-steps 4152`（SFT）
 
 > 数据源由 `scripts/merge_metrics.py` 把三个阶段的 metrics 合并成一份
 > `metrics_full.jsonl`（原 per-stage 文件不动）；看板与 `scripts/live_dashboard.py`

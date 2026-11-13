@@ -198,6 +198,10 @@ PAGE = r"""<!doctype html>
       <span><i style="background:var(--c5)"></i>balance</span>
       <span><i style="background:var(--c8)"></i>indexer</span>
       <span><i style="background:var(--c2)"></i>mem GB（右）</span></div></section>
+  <section class="panel"><h2>预测分布</h2><div class="note">输出 token 概率分布的熵（左，nats）· top-1 概率（右）</div>
+    <canvas id="c-dist"></canvas>
+    <div class="legend"><span><i style="background:var(--c6)"></i>entropy</span>
+      <span><i style="background:var(--c2)"></i>top-1 prob（右）</span></div></section>
   <section class="panel"><h2>MoE 路由健康</h2><div class="note">专家负载 max/mean（越接近 1 越均衡）· 路由熵（右，归一化）</div>
     <canvas id="c-router"></canvas>
     <div class="legend"><span><i style="background:var(--c1)"></i>learned max/mean</span>
@@ -366,6 +370,10 @@ function render() {
   chart(document.getElementById('c-speed'), [
     { points: pts(rows, 'tokens_per_sec'), color: COLORS.c3 },
     { points: pts(rows, 'step_time_s'), color: COLORS.c7, axis: 'right' },
+  ], { right: true });
+  chart(document.getElementById('c-dist'), [
+    { points: pts(rows, 'entropy'), color: COLORS.c6 },
+    { points: pts(rows, 'top1_prob'), color: COLORS.c2, axis: 'right' },
   ], { right: true });
   chart(document.getElementById('c-router'), [
     { points: pts(rows, 'router_learned_expert_load_max_over_mean'), color: COLORS.c1 },
