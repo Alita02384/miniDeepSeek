@@ -40,7 +40,7 @@ stages:
       - {path: data/tokenization/pretrain_general_4k.npz, weight: 0.82, domain: general}
       - {path: data/tokenization/pretrain_code_4k.npz, weight: 0.15, domain: code}
       - {path: data/tokenization/pretrain_tool_4k.npz, weight: 0.03, domain: tool}
-    # Held-out tails of each corpus (D87), carved out of the 8K stage's pool by
+    # Held-out tails of each corpus (D84), carved out of the 8K stage's pool by
     # scripts/make_val_split.py so they are disjoint from every training range.
     val_sources:
       - {path: data/tokenization/val_general_4k_v2.npz, weight: 1.0, domain: general}

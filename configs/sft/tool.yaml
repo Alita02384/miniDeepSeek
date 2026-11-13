@@ -37,17 +37,23 @@ data:
 train:
   # 重训新数据时换新 out_dir，或显式 train.force_restart: true；
   # out_dir/final 已存在且 resume 指向外部 base 时会被拒绝启动。
-  steps: 95
-  resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+  steps: 285
+  resume: checkpoints/curriculum_145m_3b/stage_02_seq8192/final
   resume_data: false
   resume_optimizer: false
   resume_step: false
   grad_accum: 16
   log_every: 1
-  ckpt_every: 40
-  keep_last_ckpt: 2
+  ckpt_every: 500
+  # Per-layer expert counts + domain share, same key the pretraining run logs.
+  router_every: 10
+  keep_last_ckpt: 1
   auto_resume: true
-  out_dir: checkpoints/sft_tool_145m
+  # <|im_end|> is only ~0.3% of target tokens; 8x makes stopping learnable
+  # (the previous run emitted it in 6-9% of rollouts and ran to the cap).
+  eos_weight: 8.0
+  eos_token_id: 2
+  out_dir: checkpoints/sft_tool_v2_145m
   mtp_weight: 0.3
   mtp_weight_final: 0.1
   mtp_decay_ratio: 0.8

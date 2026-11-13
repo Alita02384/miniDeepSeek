@@ -16,25 +16,25 @@ stages:
     kind: sft
     name: general
     config: configs/sft/general.yaml
-    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    resume: checkpoints/curriculum_145m_3b/stage_02_seq8192/final
     epochs: 1.0
-    steps: 280
+    steps: 4152
     out_dir: checkpoints/posttrain_e2e_145m/sft_general
   - id: sft_code
     kind: sft
     name: code
     config: configs/sft/code.yaml
-    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    resume: checkpoints/curriculum_145m_3b/stage_02_seq8192/final
     epochs: 1.0
-    steps: 115
+    steps: 480
     out_dir: checkpoints/posttrain_e2e_145m/sft_code
   - id: sft_tool
     kind: sft
     name: tool
     config: configs/sft/tool.yaml
-    resume: checkpoints/curriculum_145m_3b/stage_00_seq2048/step_001015
+    resume: checkpoints/curriculum_145m_3b/stage_02_seq8192/final
     epochs: 2.0
-    steps: 95
+    steps: 285
     out_dir: checkpoints/posttrain_e2e_145m/sft_tool
   - id: grpo_general
     kind: grpo
@@ -42,7 +42,7 @@ stages:
     data: data/grpo_general_train.jsonl
     resume: checkpoints/posttrain_e2e_145m/sft_general/final
     out_dir: checkpoints/posttrain_e2e_145m/grpo_general
-    steps: 50
+    steps: 200
   - id: grpo_code
     kind: grpo
     config: configs/grpo/code.yaml

@@ -17,7 +17,7 @@ stages:
     kind: sft
     name: general
     config: configs/sft/general.yaml
-    resume: checkpoints/pretrain_4k_145m/stage_01_seq4096/final
+    resume: checkpoints/curriculum_145m_3b/stage_01_seq4096/final
     epochs: 1.0
     steps: 280
     out_dir: checkpoints/posttrain_e2e_4k_145m/sft_general
@@ -25,7 +25,7 @@ stages:
     kind: sft
     name: code
     config: configs/sft/code.yaml
-    resume: checkpoints/pretrain_4k_145m/stage_01_seq4096/final
+    resume: checkpoints/curriculum_145m_3b/stage_01_seq4096/final
     epochs: 1.0
     steps: 115
     out_dir: checkpoints/posttrain_e2e_4k_145m/sft_code
@@ -33,7 +33,7 @@ stages:
     kind: sft
     name: tool
     config: configs/sft/tool.yaml
-    resume: checkpoints/pretrain_4k_145m/stage_01_seq4096/final
+    resume: checkpoints/curriculum_145m_3b/stage_01_seq4096/final
     epochs: 2.0
     steps: 95
     out_dir: checkpoints/posttrain_e2e_4k_145m/sft_tool

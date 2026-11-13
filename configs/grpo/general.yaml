@@ -25,7 +25,7 @@ data:
   seed: 1234
   domain: general
 train:
-  steps: 50
+  steps: 200
   grad_accum: 1
   activation_checkpointing: true
   log_every: 1
