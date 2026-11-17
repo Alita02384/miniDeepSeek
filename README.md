@@ -71,11 +71,9 @@ OPD 使用**学生自己生成的同一批轨迹**：三个冻结教师分别提
 
 ## 📊 训练报告
 
-下面是仓库中已保存的训练看板截图，展示主要曲线；点击图片可打开完整交互式报告。截图是历史记录，不代表实时训练状态。
+下面是我自己训练模型时生成的报告，用于效果展示（报告保存在 `reports/` 目录下）。
 
 ### 预训练：2K → 4K → 8K
-
-预训练已完成 **11,444 步，实际消费约 2.68B token**。看板记录到 step 11,440，可查看训练 loss、分域验证结果、专家负载与路由变化。
 
 [![145M 预训练报告：训练 loss、分域 loss 与指标概览](assets/reports/pretrain_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
 
