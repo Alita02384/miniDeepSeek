@@ -150,28 +150,18 @@ print(torch.cuda.is_available())
 
 ### 1' 下载数据
 
-使用 [ModelScope 官方 Python SDK](https://modelscope.cn/docs/datasets/download) 下载。以下命令均在仓库根目录执行：
+使用 [ModelScope 官方命令行工具](https://modelscope.cn/docs/datasets/download) 下载。以下命令均在仓库根目录执行：
 
 ```bash
 .venv/bin/pip install -U modelscope
 
-.venv/bin/python - <<'PYTHON'
-from modelscope.hub.snapshot_download import dataset_snapshot_download
-
 # 预训练 tokenization 压缩包（约 3.4 GB）
-dataset_snapshot_download(
-    dataset_id="Alita0429/mini-deepseek",
-    local_dir="download/mini-deepseek",
-    allow_file_pattern=["packs.tar.zst"],
-)
+.venv/bin/modelscope download --dataset Alita0429/mini-deepseek packs.tar.zst \
+  --local_dir download/mini-deepseek
 
 # SFT / GRPO / OPD 等阶段使用的 JSONL
-dataset_snapshot_download(
-    dataset_id="Alita0429/mini-deepseek",
-    local_dir="data",
-    allow_file_pattern=["*.jsonl"],
-)
-PYTHON
+.venv/bin/modelscope download --dataset Alita0429/mini-deepseek \
+  --include '*.jsonl' --local_dir data
 
 # 压缩包内已包含 data/tokenization/ 路径，在仓库根目录解压
 zstd -dc download/mini-deepseek/packs.tar.zst | tar -xf -
