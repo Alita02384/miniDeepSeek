@@ -157,14 +157,14 @@ print(torch.cuda.is_available())
 
 # 预训练 tokenization 压缩包（约 3.4 GB）
 .venv/bin/modelscope download --dataset Alita0429/mini-deepseek packs.tar.zst \
-  --local_dir download/mini-deepseek
+  --local_dir data
 
 # SFT / GRPO / OPD 等阶段使用的 JSONL
 .venv/bin/modelscope download --dataset Alita0429/mini-deepseek \
   --include '*.jsonl' --local_dir data
 
 # 压缩包内已包含 data/tokenization/ 路径，在仓库根目录解压
-zstd -dc download/mini-deepseek/packs.tar.zst | tar -xf -
+zstd -dc data/packs.tar.zst | tar -xf -
 ```
 
 解压后，`data/tokenization/` 下是 `pretrain_{general,code,tool}_{2k,4k,8k}.npz`
