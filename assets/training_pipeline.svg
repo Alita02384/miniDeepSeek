@@ -8,7 +8,7 @@
 <rect x="210" y="420" width="140" height="64" rx="12" fill="#edf4ff" stroke="#b5d0ff"/>
 <text x="280.0" y="459" text-anchor="middle">Base Model</text>
 <path d="M170 452 H210" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
-<path d="M280 420 V375" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M280 420 V375" fill="none" stroke="#64748b" stroke-width="2"/>
 <path d="M280 375 V80" fill="none" stroke="#64748b" stroke-width="2"/>
 <path d="M280 80 H390" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>
 <rect x="390" y="48" width="180" height="64" rx="12" fill="#edf4ff" stroke="#b5d0ff"/>
