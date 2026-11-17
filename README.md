@@ -39,36 +39,54 @@
            → 各领域模型的 GRPO 强化学习 → 多教师 OPD 蒸馏为统一模型
 ```
 
-这里的三个领域模型都是从同一个预训练模型出发、分别训练的完整模型。项目的目标是让你亲手理解这些方法如何协同工作，并通过训练曲线与评估检查效果；各阶段的实际完成情况见下方「当前进度」。
-
-## 你可以在这里学到什么
-
-- **模型怎么搭**：理解 DeepSeekMoE、CSA/HCA 混合注意力、mHC 和 MTP 在小模型中的实现。
-- **模型怎么训**：从数据准备、2K → 4K → 8K 预训练，到指令微调、GRPO 和多教师 OPD，逐步运行训练脚本。
-- **训练效果怎么看**：观察 loss、分域表现和专家路由，检查 checkpoint 与生成过程的一致性，定位训练中的问题。
-
-## 📝 当前进度
-
-- ✅ **代码 / 测试**：CPU 全量通过；`debugmodel`（12.98M，仅测试用）覆盖 forward/backward、checkpoint、routing、cache、rollout。
-- ✅ **145M 预训练**：2K → 4K → 8K 全程 **11,444 步 / 2.68B token**；val main loss **1.1407**、ppl **2.755**，路由熵 1.77 / 2.08 nats。
-- 🔄 **145M SFT**：三域数据全量 tokenize（general 359M / code 25M / tool 7M target，各 1 epoch）；跑到 step 1672 / 4152 时因机器停机暂停，恢复后自动续训。
-- ⏳ **GRPO / OPD**：旧版 4K 链已跑通但结果不可用（code 单测通过率恒 0、tool 轨迹 97% 截断，已定位为 tokenizer 停止符与 SFT 停止行为问题）；新版 SFT 完成后重跑。
+这里的三个领域模型都是从同一个预训练模型出发、分别训练的完整模型。项目的目标是让你亲手理解这些方法如何协同工作，并通过训练曲线与评估检查效果。
 
 ---
 
-# 📊 训练报告
+# 📌 完成这个项目你将会得到
+
+## 1. 一个融合 DeepSeek 核心技术的 145M 模型
+
+你将从零搭建并训练一个 **145.84M 总参数、60.91M 激活参数**的语言模型，在可控的规模下理解这些技术的实现与作用。
+
+| 技术 | 在模型中的实现 | 你能理解什么 |
+|---|---|---|
+| DeepSeekMoE | 6 个路由专家、top-2 路由；前两层采用 token-ID hash routing，后续层学习路由 | 如何只激活部分参数，以及专家如何分工 |
+| Loss-free 负载均衡 | 通过路由偏置调节专家负载 | 如何避免少数专家过载、其他专家闲置 |
+| CSA / HCA 混合注意力 | 滑动窗口注意力结合两种压缩注意力 | 如何结合局部信息和压缩后的长程信息 |
+| MLA | 注意力中的低秩 q/o 投影 | 如何通过低秩表示组织注意力计算 |
+| mHC | 4 条残差流，使用 Sinkhorn 迭代进行混合 | 多条残差流如何传递和融合信息 |
+| MTP | 增加 1 层多 token 预测辅助训练 | 如何让模型学习额外的未来 token 预测任务 |
+| SwiGLU clamp | 将激活值限制在设定范围内 | 如何控制极端激活、改善训练稳定性 |
+
+## 2. 一套从预训练到蒸馏的训练流程
+
+三个领域模型分别面向通用对话、代码和工具调用，均从同一个预训练 checkpoint 出发。下表展示完整训练路线与各阶段的目标产物。
+
+| 阶段 | 模型怎么训 | 训练目标与产物 |
+|---|---|---|
+| 预训练 | 混合通用、代码和工具语料，按 2K → 4K → 8K 扩展序列长度；使用语言模型损失 + MTP，Muon + AdamW 优化 | 学习基础语言能力，得到 base 模型 |
+| SFT 指令微调 | 从 base 分别训练三个领域模型，仅对回答部分计算交叉熵损失 | 学习遵循指令与领域任务的回答方式 |
+| GRPO 强化学习 | 每个领域模型对同一提示生成多条回答，结合奖励模型、代码单测或工具调用正确性评分进行更新 | 用任务反馈优化三个领域模型，作为后续教师 |
+| 多教师 OPD | 学生模型生成回答，三个冻结的教师在同一轨迹上提供全词表分布，以反向 KL 训练学生 | 将多个领域教师的能力整合到统一学生模型 |
+
+## 📊 训练报告
 
 下面是仓库中已保存的训练看板截图，展示主要曲线；点击图片可打开完整交互式报告。截图是历史记录，不代表实时训练状态。
 
-## 预训练：2K → 4K → 8K
+### 预训练：2K → 4K → 8K
 
 预训练已完成 **11,444 步，实际消费约 2.68B token**。看板记录到 step 11,440，可查看训练 loss、分域验证结果、专家负载与路由变化。
 
 [![145M 预训练报告：训练 loss、分域 loss 与指标概览](assets/reports/pretrain_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
 
+**MoE 专家分化与路由。** 下图展示代码域的专家负载、各专家路由占比随训练的变化，以及各领域相对整体负载的分化程度（JS divergence）。
+
+[![预训练 MoE 报告：代码域专家负载、路由趋势与领域分化曲线](assets/reports/pretrain_moe.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
+
 [打开完整预训练报告](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html) · [查看 HTML 文件](reports/curriculum_145m_3b_dashboard.html)
 
-## SFT：指令微调阶段记录
+### SFT：指令微调阶段记录
 
 以下截图来自 **2026-11-13 保存的 general SFT 看板**，显示 step **1,672 / 4,152** 时的训练指标，包括 loss、分域 loss、梯度、吞吐与路由情况。这是阶段性记录，尚非三个领域模型全部训练完成的报告。
 
@@ -132,28 +150,38 @@ print(torch.cuda.is_available())
 
 ### 1' 下载数据
 
-3B 语料与 2K/4K/8K tokenization 已打包发布，不用自己重新 tokenize：
+使用 [ModelScope 官方 Python SDK](https://modelscope.cn/docs/datasets/download) 下载。以下命令均在仓库根目录执行：
 
 ```bash
-# 预训练 tokenization（约 3.4 GB，支持断点续传）
-curl -L --fail -C - -o packs.tar.zst \
-  https://www.modelscope.cn/datasets/Alita0429/mini-deepseek/resolve/master/packs.tar.zst
+.venv/bin/pip install -U modelscope
 
-# 先确认路径：应看到 data/tokenization/pretrain_*.npz
-zstd -dc packs.tar.zst | tar -tf - | head -3
+.venv/bin/python - <<'PYTHON'
+from modelscope.hub.snapshot_download import dataset_snapshot_download
 
-# 解压；在仓库根目录执行
-zstd -dc packs.tar.zst | tar -xf -
-rm packs.tar.zst
+# 预训练 tokenization 压缩包（约 3.4 GB）
+dataset_snapshot_download(
+    dataset_id="Alita0429/mini-deepseek",
+    local_dir="download/mini-deepseek",
+    allow_file_pattern=["packs.tar.zst"],
+)
+
+# SFT / GRPO / OPD 等阶段使用的 JSONL
+dataset_snapshot_download(
+    dataset_id="Alita0429/mini-deepseek",
+    local_dir="data",
+    allow_file_pattern=["*.jsonl"],
+)
+PYTHON
+
+# 压缩包内已包含 data/tokenization/ 路径，在仓库根目录解压
+zstd -dc download/mini-deepseek/packs.tar.zst | tar -xf -
 ```
 
-解压后 `data/tokenization/` 下是 `pretrain_{general,code,tool}_{2k,4k,8k}.npz` 和对应的 `val_*`，
-正好是 `train_curriculum.sh` 读取的格式。SFT / GRPO / OPD 的 JSONL 也在同一个数据集仓库，
-按需下载到 `data/` 即可。
+解压后，`data/tokenization/` 下是 `pretrain_{general,code,tool}_{2k,4k,8k}.npz`
+和对应的 `val_*`，可直接供预训练脚本使用，无需重新 tokenize。
+后训练 JSONL 下载到 `data/`；训练前按对应配置完成 tokenize / pack。
 
-> 需要 `zstd`：macOS `brew install zstd`，Ubuntu `sudo apt install zstd`。
-> 没有 ModelScope 网络时，仍可从 MiniMind 公开数据生成最小 JSONL：
-> `MINIMIND_ROOT=../minimind/dataset bash scripts/build_data.sh`。
+> 解压需要 `zstd`：macOS 用 `brew install zstd`，Ubuntu 用 `sudo apt install zstd`。
 
 ### 2' 开始训练
 
@@ -204,8 +232,7 @@ done
 
 > general 用 1.8B reward model，code 用单元测试，tool 用 tool-call reward；
 > 产物在 `checkpoints/grpo_{general,code,tool}_145m/final/`。
-> general 需要先把 `internlm2-1_8b-reward` 放到仓库根目录（约 3.2 GB，下载见
-> [`doc/server_runbook.md`](doc/server_runbook.md)）。
+> general 需要先把 `internlm2-1_8b-reward` 奖励模型放到仓库根目录（约 3.2 GB）。
 
 #### 2.4 多教师 OPD（可选）
 
@@ -214,16 +241,6 @@ bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 ```
 
 > student 自己采样，general / code / tool 三个 teacher 对同一轨迹算 full-vocabulary reverse KL，权重各 1/3。
-
-#### 2.5 测试已训练模型（可选）
-
-```bash
-bash scripts/eval.sh configs/eval/general.yaml
-bash scripts/eval.sh configs/eval/code.yaml
-bash scripts/eval.sh configs/eval/tool.yaml
-```
-
-> 产物是 JSON / markdown 报告；`configs/eval/*.yaml` 里可以改 checkpoint、样本数与 rubric。
 
 ## Ⅱ 📦 模型导出
 
@@ -323,8 +340,7 @@ SHA256SUMS         # 下载后校验
   <img src="assets/architecture.svg" alt="miniDeepSeek V4-isomorphic architecture" width="100%">
 </div>
 
-实现按职责拆在 [`src/minideepseek/model/`](src/minideepseek/model/)，来源、commit 与改动记录在
-[`doc/sources.md`](doc/sources.md)。state dict 的 key 和形状与参考实现一致，可以直接对照加载。
+实现按职责拆在 [`src/minideepseek/model/`](src/minideepseek/model/)。state dict 的 key 和形状与参考实现一致，可以直接对照加载。
 
 ## 模型配置
 
@@ -334,8 +350,7 @@ SHA256SUMS         # 下载后校验
 
 配置：`dim=768`、7 层 + 1 层 MTP、`n_heads=12 / head_dim=64`、`vocab=6400`、`seq_len=4096`、
 `max_context=8192`、`swiglu_limit=10.0`、`hc_mult=4`、`sinkhorn_iters=20`。
-完整字段见 [`configs/model/mini_145m_a60m.yaml`](configs/model/mini_145m_a60m.yaml) 与
-[`doc/Parameter_Setting.md`](doc/Parameter_Setting.md)。CPU 测试另用 `debugmodel`（12.98M）。
+完整字段见 [`configs/model/mini_145m_a60m.yaml`](configs/model/mini_145m_a60m.yaml)。CPU 测试另用 `debugmodel`（12.98M）。
 
 ---
 
@@ -375,33 +390,6 @@ SHA256SUMS         # 下载后校验
 
 ---
 
-# 📌 评估
-
-## Ⅰ 领域评估
-
-```bash
-bash scripts/eval.sh configs/eval/general.yaml
-bash scripts/eval.sh configs/eval/code.yaml
-bash scripts/eval.sh configs/eval/tool.yaml
-```
-
-general 走 1.8B reward model，code 跑单元测试与语法惩罚，tool 检查调用格式与参数。
-评估集与训练集做过 13-gram 污染检查。
-
-## Ⅱ lm-eval（可选）
-
-导出 HF 格式后，可接 [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness)：
-
-```bash
-.venv/bin/pip install -e '.[eval]'
-.venv/bin/python scripts/run_lm_eval.py \
-  --hf-model hf/mini_145m_a60m --tasks mmlu,arc_easy --limit 100
-```
-
-> 这类选择题对 145M 模型的分辨率有限；分数只作参考，不作为项目目标。
-
----
-
 # 📌 其他
 
 ## 📁 目录结构
@@ -420,23 +408,8 @@ miniDeepSeek/
 ├── scripts/          # 环境、数据、训练、监控、benchmark、导出
 ├── tests/            # CPU 测试，全部使用 debugmodel
 ├── tokenizer/        # MiniMind 6,400 tokenizer + chat template
-├── doc/              # 设计决策、代码来源、开发日志、复现 runbook
 └── assets/           # logo / banner / 架构图
 ```
-
-## 📚 文档地图
-
-| 想了解 | 读这个 |
-|---|---|
-| 为什么这么设计、哪里偏离了原计划 | [`doc/decisions.md`](doc/decisions.md) |
-| 哪些代码来自上游、改了什么 | [`doc/sources.md`](doc/sources.md) |
-| 每个阶段的开发日志与验证命令 | [`doc/PROCESS.md`](doc/PROCESS.md) |
-| 测试策略与一致性门禁 | [`doc/testing.md`](doc/testing.md) |
-| 3B 数据来源、配比、license | [`doc/data_plan_145m.md`](doc/data_plan_145m.md)、[`doc/external_data.md`](doc/external_data.md) |
-| 145M 上线、迁移、packs 传输 | [`doc/run_145m_gpuhome.md`](doc/run_145m_gpuhome.md)、[`doc/server_runbook.md`](doc/server_runbook.md) |
-| SFT / GRPO / OPD 的后训练细节 | [`doc/posttraining_plan.md`](doc/posttraining_plan.md) |
-| 显存、吞吐、batching 预算 | [`doc/hardware_budget.md`](doc/hardware_budget.md)、[`doc/batching.md`](doc/batching.md) |
-| 实现审计：哪些只是代码落地 | [`doc/roadmap_audit.md`](doc/roadmap_audit.md) |
 
 ---
 
@@ -446,12 +419,10 @@ miniDeepSeek/
 [torchtitan](https://github.com/pytorch/torchtitan)、
 [verl](https://github.com/volcengine/verl) 和
 [MiniMind](https://github.com/jingyaogong/minimind)。
-本项目把需要的部分**复制并重构**进自己的模块，保留版权头并在
-[`doc/sources.md`](doc/sources.md) 记录来源；运行时**不依赖**这些仓库。
+本项目把需要的部分**复制并重构**进自己的模块，保留代码中的版权头与来源说明；运行时**不依赖**这些仓库。
 README 的视觉与章节风格参考 MiniMind。
 
-Tokenizer 与基础数据来自 MiniMind；外部语料各自带有 license，见
-[`doc/external_data.md`](doc/external_data.md)。
+Tokenizer 与基础数据来自 MiniMind；外部语料的使用须遵循各自来源的许可证。
 
 ## License
 

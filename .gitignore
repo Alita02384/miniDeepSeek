@@ -42,3 +42,6 @@ internlm2-1_8b-reward/
 
 # 按卡数自动生成的配置（scripts/autoconfig_145m.py）
 configs/pretrain/generated/
+
+# 本地项目文档，不发布
+/doc/
