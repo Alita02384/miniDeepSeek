@@ -1951,3 +1951,11 @@ hardlink 再 `mv`**，绝不用 `cat >` 写穿 —— 否则会连带毁掉 gene
     本轮未写 `mem_peak_mb`（代码已补，下轮生效）；
   - 2K base 的 SFT 在 step 36 被 SIGTERM 停掉，保留在
     `checkpoints/posttrain_e2e_145m` 供对照。
+
+## 2026-11-17 — README 项目介绍与训练报告
+
+- commit: `6fcbd64` docs: clarify project introduction and show training report screenshots
+- 做了什么: 根据 proposal 的 Summary / Project Goal 重写介绍，突出面向初学者、消费级 GPU 和完整训练路线；将数据集与模型链接前置。
+- 实现了什么: 新增独立训练报告章节，从仓库现有 HTML 看板生成预训练和 SFT 截图，图片链接到完整报告；注明 SFT 的历史日期和阶段进度。
+- 验证: Chrome headless 渲染两份看板并人工查看截图；README 新增本地图片及报告路径检查通过；`git diff --check` 通过。
+- 未完成 / 风险: 仅调整文档及截图，未重跑训练或测试；截图反映已保存的历史数据，未验证远程训练状态；未推送 GitHub。
