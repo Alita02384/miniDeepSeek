@@ -14,59 +14,82 @@
 <h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
 
 <p align="center">
-  <b>145M</b> · <b>DeepSeek-V4 同构</b> · <b>单卡可训</b>
+  <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><b>🤗 开源数据集</b></a> ·
+  <a href="https://modelscope.cn/models/Alita0429/miniDeepSeek/files"><b>🤗 模型权重</b></a> ·
+  <a href="#-训练报告">📊 训练报告</a> ·
+  <a href="#-快速开始">🚀 快速开始</a>
 </p>
 
-> 用 DeepSeek-V4 的技术栈（DeepSeekMoE、mHC、CSA/HCA、MTP、SwiGLU clamp），
-> 训练一个 145M、结构同构的研究模型，并跑通 pretrain → SFT → GRPO → 多教师 OPD 的完整链路。
->
-> 这是一个**研究方法复现 + 教学向**项目，不是产品，也不追 benchmark。
-> 代码按多卡 CUDA 设计，CPU 只负责逻辑验证。
+<p align="center">
+  <b>145M 参数</b> · <b>DeepSeek-V4 同构</b> · <b>消费级 GPU 训练</b>
+</p>
 
 ---
 
 # 📌 项目介绍
 
-DeepSeek 每次更新，都会把 MoE、CSA/HCA、mHC、MTP、GRPO、OPD 这些原本只在大厂内部讨论的技术推到开源社区；但大多数人真正开始训练时，用的还是 dense Transformer。miniDeepSeek 把这些技术装进一个能在单机跑通的小模型：结构、训练方法和 V4 对齐，而不是只改小 `hidden_size`。
+**miniDeepSeek 是一个面向大模型初学者的开源训练项目：用消费级显卡，从零训练一个 145M 参数的小型 DeepSeek，学习从预训练到强化学习与多教师蒸馏的完整过程。**
 
-#### 🎉 本项目包含以下内容
+想自己训练大模型，常常会遇到一道门槛：nanoGPT、MiniMind 等入门项目容易上手，但主要围绕经典的稠密 Transformer；想进一步学习 MoE、压缩注意力和复杂的后训练流程，又往往需要面对面向集群的框架和较高的工程门槛。**miniDeepSeek 希望补上这段学习路径，让初学者也能读懂、运行和修改 DeepSeek 的核心结构与训练方法。**
 
-- **V4 同构结构**：SWA + CSA + HCA 混合注意力、mHC、DeepSeekMoE（hash routing + loss-free bias）、MTP、SwiGLU clamp、Muon + AdamW。
-- **完整训练链路**：数据清洗 → 2K/4K/8K 预训练 → general / code / tool 三个 specialist 的 SFT → GRPO → 多教师 OPD → eval / HF export。
-- **可验证的工程**：router replay、logprob / routing / checkpoint 一致性门禁；CPU 全量测试全部使用 debugmodel。
-- **开箱即用的数据**：3B 语料与 2K/4K/8K tokenization 已发布到 ModelScope。
-- **自包含**：模型、数据、训练、RL、评估按职责分模块；运行时**不依赖** torchtitan / verl / minimind。
-- **单卡可训**：145M 在 1×4090 24GB 上即可完成 SFT / GRPO / OPD。
+项目将 DeepSeek-V4 的核心组件缩小到 **145.84M 总参数、60.91M 激活参数**，提供自包含的模型代码、训练脚本、开源数据和训练报告。预训练已在 **2×24GB RTX 4090D** 上完成，SFT / GRPO / OPD 支持单张 24GB RTX 4090。你可以先在 CPU 上运行小模型测试，再用 GPU 逐步实践下面的训练路线：
 
-#### 🎉 已发布模型列表
+```text
+从零预训练 → 通用 / 代码 / 工具调用三个领域模型的 SFT
+           → 各领域模型的 GRPO 强化学习 → 多教师 OPD 蒸馏为统一模型
+```
 
-| 模型 | 总参 / 激活 | 状态 |
-|---|---:|---|
-| miniDeepSeek-145M | 145.84M / 60.91M | ✅ 已发布（[ModelScope](https://modelscope.cn/models/Alita0429/miniDeepSeek)） |
+这里的三个领域模型都是从同一个预训练模型出发、分别训练的完整模型。项目的目标是让你亲手理解这些方法如何协同工作，并通过训练曲线与评估检查效果；各阶段的实际完成情况见下方「当前进度」。
 
-#### 📊 训练报告
+## 你可以在这里学到什么
 
-预训练 2K → 4K → 8K 全程的交互式看板（内嵌 1,198 条 metrics，step 0 – 11440，
-loss / 分域 / 路由 / 专家分化都在里面）：
+- **模型怎么搭**：理解 DeepSeekMoE、CSA/HCA 混合注意力、mHC 和 MTP 在小模型中的实现。
+- **模型怎么训**：从数据准备、2K → 4K → 8K 预训练，到指令微调、GRPO 和多教师 OPD，逐步运行训练脚本。
+- **训练效果怎么看**：观察 loss、分域表现和专家路由，检查 checkpoint 与生成过程的一致性，定位训练中的问题。
 
-- 预训练：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html
-- SFT：https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html
-- 文件页：[预训练](https://github.com/Alita02384/miniDeepSeek/blob/main/reports/curriculum_145m_3b_dashboard.html) ·
-  [SFT](https://github.com/Alita02384/miniDeepSeek/blob/main/reports/sft_dashboard.html)
-- 本地复现：
-  `python3 scripts/live_dashboard.py --export out.html --local-metrics metrics_full.jsonl`（预训练）/
-  `python3 scripts/sft_dashboard.py --export out.html --total-steps 4152`（SFT）
-
-> 数据源由 `scripts/merge_metrics.py` 把三个阶段的 metrics 合并成一份
-> `metrics_full.jsonl`（原 per-stage 文件不动）；看板与 `scripts/live_dashboard.py`
-> 起在 `127.0.0.1:8765` 的实时页是同一份模板。
-
-#### 📝 当前进度
+## 📝 当前进度
 
 - ✅ **代码 / 测试**：CPU 全量通过；`debugmodel`（12.98M，仅测试用）覆盖 forward/backward、checkpoint、routing、cache、rollout。
 - ✅ **145M 预训练**：2K → 4K → 8K 全程 **11,444 步 / 2.68B token**；val main loss **1.1407**、ppl **2.755**，路由熵 1.77 / 2.08 nats。
 - 🔄 **145M SFT**：三域数据全量 tokenize（general 359M / code 25M / tool 7M target，各 1 epoch）；跑到 step 1672 / 4152 时因机器停机暂停，恢复后自动续训。
 - ⏳ **GRPO / OPD**：旧版 4K 链已跑通但结果不可用（code 单测通过率恒 0、tool 轨迹 97% 截断，已定位为 tokenizer 停止符与 SFT 停止行为问题）；新版 SFT 完成后重跑。
+
+---
+
+# 📊 训练报告
+
+下面是仓库中已保存的训练看板截图，展示主要曲线；点击图片可打开完整交互式报告。截图是历史记录，不代表实时训练状态。
+
+## 预训练：2K → 4K → 8K
+
+预训练已完成 **11,444 步，实际消费约 2.68B token**。看板记录到 step 11,440，可查看训练 loss、分域验证结果、专家负载与路由变化。
+
+[![145M 预训练报告：训练 loss、分域 loss 与指标概览](assets/reports/pretrain_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
+
+[打开完整预训练报告](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html) · [查看 HTML 文件](reports/curriculum_145m_3b_dashboard.html)
+
+## SFT：指令微调阶段记录
+
+以下截图来自 **2026-11-13 保存的 general SFT 看板**，显示 step **1,672 / 4,152** 时的训练指标，包括 loss、分域 loss、梯度、吞吐与路由情况。这是阶段性记录，尚非三个领域模型全部训练完成的报告。
+
+[![145M general SFT 阶段报告：loss、吞吐和 MoE 路由指标](assets/reports/sft_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html)
+
+[打开完整 SFT 报告](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html) · [查看 HTML 文件](reports/sft_dashboard.html)
+
+<details>
+<summary>导出自己的训练报告</summary>
+
+先用 `scripts/merge_metrics.py` 合并预训练各阶段的 metrics，再导出看板：
+
+```bash
+# 预训练
+python3 scripts/live_dashboard.py --export pretrain_report.html --local-metrics metrics_full.jsonl
+
+# SFT
+python3 scripts/sft_dashboard.py --export sft_report.html --total-steps 4152
+```
+
+</details>
 
 ---
 
