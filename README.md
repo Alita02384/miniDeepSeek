@@ -65,7 +65,7 @@
 
 从同一个预训练模型出发，分别训练通用对话、代码和工具调用三个 specialist，再通过多教师 OPD 将它们的能力整合到统一学生模型中。下图从左到右展示完整训练流程。
 
-![miniDeepSeek 完整训练流程与 general、code、tool 三教师 OPD 流程](assets/training_pipeline.svg)
+![miniDeepSeek 完整训练流程与 general、code、tool 三教师 OPD 流程](assets/training_pipeline_curriculum.svg)
 
 OPD 使用**学生自己生成的同一批轨迹**：三个冻结教师分别提供全词表概率分布，各自计算学生到教师的反向 KL，汇总后只更新学生。
 
