@@ -26,7 +26,7 @@
 
 ---
 
-# 📌 项目介绍
+# 🐳 项目介绍
 
 **miniDeepSeek 是一个面向大模型初学者的开源训练项目：用消费级显卡，从零训练一个 145M 参数的小型 DeepSeek，学习从预训练到强化学习与多教师蒸馏的完整过程。**
 
@@ -43,7 +43,7 @@
 
 ---
 
-# 📌 完成这个项目你将会得到
+# 🎯 完成这个项目你将会得到
 
 ## 1. 一个融合 DeepSeek 核心技术的 145M 模型
 
@@ -113,7 +113,7 @@ python3 scripts/sft_dashboard.py --export sft_report.html --total-steps 4152
 
 ---
 
-# 📌 快速开始
+# 🚀 快速开始
 
 ## 第0步
 
@@ -246,7 +246,7 @@ bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 
 ---
 
-# 📌 数据介绍
+# 📚 数据介绍
 
 ## Ⅰ Tokenizer
 
@@ -316,7 +316,7 @@ SHA256SUMS         # 下载后校验
 
 ---
 
-# 📌 模型
+# 🧠 模型
 
 ## 结构
 
@@ -346,7 +346,7 @@ SHA256SUMS         # 下载后校验
 
 ---
 
-# 📌 实验
+# 🧪 实验
 
 ## Ⅰ 训练开销
 
@@ -382,7 +382,7 @@ SHA256SUMS         # 下载后校验
 
 ---
 
-# 📌 其他
+# 🧰 其他
 
 ## 📁 目录结构
 
@@ -405,7 +405,7 @@ miniDeepSeek/
 
 ---
 
-# 📌 致谢
+# 🙏 致谢
 
 模型结构与训练方法来自 **DeepSeek-V4** 技术报告；参考实现与工程经验来自
 [torchtitan](https://github.com/pytorch/torchtitan)、
