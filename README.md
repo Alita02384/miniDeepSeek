@@ -11,7 +11,7 @@
 
 </div>
 
-<h3 align="center">从0开始，用上最前沿的大模型技术训练一个属于你自己的 LLM</h3>
+<h3 align="center">用上最前沿的大模型技术，训练一个属于你自己的 LLM</h3>
 
 <p align="center">
   <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><b>🤗 开源数据集</b></a> ·
@@ -23,7 +23,9 @@
 <p align="center">
   <b>145M 参数</b> · <b>DeepSeek-V4 同构</b> · <b>消费级 GPU 训练</b>
 </p>
+
 - miniDeepSeek 旨在解决前沿模型技术与初学者之间的壁垒，让初学者在自己的第一个项目中就应用上当下大模型领域中的最前沿技术。
+
 ---
 
 # 🐳 项目介绍
@@ -68,11 +70,8 @@ miniDeepSeek 是一个 145M-A60M 参数的语言模型。仅用一张 RTX 4090 �
 
 ## 2. 一套与 DeepSeek-V4 同款的完整训练流程
 
-从同一个预训练模型出发，分别训练通用对话、代码和工具调用三个 specialist，再通过多教师 OPD 将它们的能力整合到统一学生模型中。下图从左到右展示完整训练流程。
-
 ![miniDeepSeek 完整训练流程与 general、code、tool 三教师 OPD 流程](assets/training_pipeline_curriculum.svg)
 
-OPD 使用**学生自己生成的同一批轨迹**：三个冻结教师分别提供全词表概率分布，各自计算学生到教师的反向 KL，汇总后只更新学生。
 
 ## 3. 详细的训练报告 📊
 训练过程中会在 log 和 checkpiont 目录下记录详细的各项指标。
@@ -82,16 +81,13 @@ OPD 使用**学生自己生成的同一批轨迹**：三个冻结教师分别提
 
 [![145M 预训练报告：训练 loss、分域 loss 与指标概览](assets/reports/pretrain_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
 
-**MoE 专家分化与路由。** 下图展示代码域的专家负载、各专家路由占比随训练的变化，以及各领域相对整体负载的分化程度（JS divergence）。
+**MoE 专家分化与路由情况。**
 
 [![预训练 MoE 报告：代码域专家负载、路由趋势与领域分化曲线](assets/reports/pretrain_moe.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html)
 
 [打开完整预训练报告](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/curriculum_145m_3b_dashboard.html) · [查看 HTML 文件](reports/curriculum_145m_3b_dashboard.html)
 
 ### SFT：指令微调阶段记录
-
-以下截图来自 **2026-11-13 保存的 general SFT 看板**，显示 step **1,672 / 4,152** 时的训练指标，包括 loss、分域 loss、梯度、吞吐与路由情况。这是阶段性记录，尚非三个领域模型全部训练完成的报告。
-
 [![145M general SFT 阶段报告：loss、吞吐和 MoE 路由指标](assets/reports/sft_dashboard.png)](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html)
 
 [打开完整 SFT 报告](https://raw.githack.com/Alita02384/miniDeepSeek/main/reports/sft_dashboard.html) · [查看 HTML 文件](reports/sft_dashboard.html)
@@ -125,8 +121,9 @@ python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 ```
 
-不需要 GPU，也不需要数据。先验证代码环境不报错：
-
+<details>
+<summary>不需要 GPU，也不需要数据。验证代码环境不报错</summary>
+  
 ```bash
 # 2-step 训练 smoke → 一致性门禁 → 全量 CPU 测试
 ./scripts/debug_smoke.sh
@@ -134,6 +131,8 @@ python3.12 -m venv .venv
 
 看到 `365 passed, 2 skipped` 就说明模型前向/反向、checkpoint、路由和测试都正常。
 如果只是想确认“这个仓库能跑”，到这里就够了；想真正训练，继续看下一节。
+
+<details>
 
 ## Ⅰ 🛠️ 模型训练
 
@@ -152,7 +151,7 @@ print(torch.cuda.is_available())
 
 ### 1' 下载数据
 
-使用 [ModelScope 官方命令行工具](https://modelscope.cn/docs/datasets/download) 下载。以下命令均在仓库根目录执行：
+在项目根目录：
 
 ```bash
 .venv/bin/pip install -U modelscope
@@ -169,11 +168,8 @@ modelscope download --dataset Alita0429/mini-deepseek \
 zstd -dc data/packs.tar.zst | tar -xf -
 ```
 
-解压后，`data/tokenization/` 下是 `pretrain_{general,code,tool}_{2k,4k,8k}.npz`
-和对应的 `val_*`，可直接供预训练脚本使用，无需重新 tokenize。
+压缩包中是经过 tokenize 后的预训练数据，存在`data/tokenization/` 下，可直接供预训练脚本使用，无需重新 tokenize。
 后训练 JSONL 下载到 `data/`；训练前按对应配置完成 tokenize / pack。
-
-> 解压需要 `zstd`：macOS 用 `brew install zstd`，Ubuntu 用 `sudo apt install zstd`。
 
 ### 2' 开始训练
 
