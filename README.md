@@ -34,11 +34,8 @@
 
 换言之，当前初学者难以在自己的项目中实操运用上最前沿的大模型技术。这对许多怀抱着热情的初学者来说无疑是扫兴的。
 
-miniDeepSeek 的目标正是解决这个前沿模型技术与初学者之间的鸿沟，让初学者在自己的第一个项目中就应用上当下大模型领域中的最前沿技术。
-
-miniDeepSeek 目前采用DeepSeek-V4 技术栈，涵盖了
-DeepSeekMoE、Hash Routing、无辅助损失负载均衡、MLA、CSA/HCA、mHC、MTP、SwiGLU Clamp、Muon + AdamW 等技术。
-训练方法也采用同款分阶段预训练（2K → 4K → 8K）、领域 SFT、GRPO、多教师 OPD。
+miniDeepSeek 的目标正是解决这个前沿模型技术与初学者之间的鸿沟，让初学者在自己的第一个项目中就应用上当下大模型领域中的最前沿技术。miniDeepSeek 目前采用DeepSeek-V4 技术栈，涵盖了
+DeepSeekMoE、Hash Routing、无辅助损失负载均衡、MLA、CSA/HCA、mHC、MTP、SwiGLU Clamp、Muon + AdamW 等技术。训练方法也采用同款分阶段预训练（2K → 4K → 8K）、领域 SFT、GRPO、多教师 OPD。
 
 miniDeepSeek 是一个 145M-A60M 参数的语言模型。仅用一张 RTX 4090 就可以开始训练，也支持多卡比如 2 * RTX 4090D（这是我的配置）。
 
