@@ -11,11 +11,11 @@
 
 </div>
 
-<h3 align="center">从0开始，训练一个属于你自己的 baby DeepSeek</h3>
+<h3 align="center">从0开始，用上最前沿的大模型技术训练一个属于你自己的 LLM</h3>
 
 <p align="center">
   <a href="https://modelscope.cn/datasets/Alita0429/mini-deepseek"><b>🤗 开源数据集</b></a> ·
-  <a href="https://modelscope.cn/models/Alita0429/miniDeepSeek/files"><b>🤗 模型权重</b></a> ·
+  <a href="https://modelscope.cn/models/Alita0429/miniDeepSeek/files"><b>🤗 预训练模型权重</b></a> ·
   <a href="#-训练报告">📊 训练报告</a> ·
   <a href="#-快速开始">🚀 快速开始</a>
 </p>
@@ -23,22 +23,28 @@
 <p align="center">
   <b>145M 参数</b> · <b>DeepSeek-V4 同构</b> · <b>消费级 GPU 训练</b>
 </p>
-
+- miniDeepSeek 旨在解决前沿模型技术与初学者之间的壁垒，让初学者在自己的第一个项目中就应用上当下大模型领域中的最前沿技术。
 ---
 
 # 🐳 项目介绍
 
-对于想要训练语言模型的初学者而言，当前的领域呈现出一种割裂的状态：一方面，像 nanoGPT 和 MiniMind 这类易于上手的项目，基于经典的稠密（dense）Transformer 架构，但是目前的大模型早已不用这种结构并加入了许多新的技术；另一方面，诸如 torchtitan 和 verl 等前沿技术栈，虽然集成了 MoE（混合专家模型）、压缩注意力机制、mHC、MTP、GRPO 和 OPD 等先进技术，但往往要求使用者具备集群环境以及对深度学习框架的深厚理解，让初学者难以上手。
+对于想要训练语言模型的初学者而言，当前的领域呈现出一种割裂的状态：一方面，像 nanoGPT 和 MiniMind 这类易于上手的项目，基于经典的 Transformer 架构，但是目前前沿的大模型早已不用这种结构并加入了许多新的技术；另一方面，诸如 torchtitan 和 verl 等前沿技术栈，虽然集成了 MoE（混合专家模型）、压缩注意力机制、mHC、MTP、GRPO 和 OPD 等先进技术，但往往要求使用者具备集群环境以及对深度学习框架的深厚理解，让初学者难以上手。
 
-换言之，当前初学者难以在自己的项目中实操运用上前沿的大模型技术。
+换言之，当前初学者难以在自己的项目中实操运用上最前沿的大模型技术。这对许多怀抱着热情的初学者来说无疑是扫兴的。
 
-miniDeepSeek 的目标正是解决这个前沿模型技术与初学者之间的鸿沟，让初学者在自己的第一个项目中就应用上前沿技术。
+miniDeepSeek 的目标正是解决这个前沿模型技术与初学者之间的鸿沟，让初学者在自己的第一个项目中就应用上当下大模型领域中的最前沿技术。
 
-miniDeepSeek 目前采用DeepSeek-V4 技术栈的前沿技术，涵盖了
+miniDeepSeek 目前采用DeepSeek-V4 技术栈，涵盖了
 DeepSeekMoE、Hash Routing、无辅助损失负载均衡、MLA、CSA/HCA、mHC、MTP、SwiGLU Clamp、Muon + AdamW 等技术。
 训练方法也采用同款分阶段预训练（2K → 4K → 8K）、领域 SFT、GRPO、多教师 OPD。
 
 miniDeepSeek 是一个 145M-A60M 参数的语言模型。仅用一张 RTX 4090 就可以开始训练，也支持多卡比如 2 * RTX 4090D（这是我的配置）。
+
+😊 一起感受探索的乐趣吧！
+
+训练数据已开源：[在 ModelScope 下载数据集](https://modelscope.cn/datasets/Alita0429/mini-deepseek)
+
+预训练模型已发布：[在 ModelScope 下载模型权重](https://modelscope.cn/models/Alita0429/miniDeepSeek/files)
 
 ---
 
