@@ -11,6 +11,8 @@
 
 </div>
 
+<p align="center"><strong>中文</strong> · <a href="README_EN.md">English</a></p>
+
 <h3 align="center">用上最前沿的大模型技术，训练一个属于你自己的 LLM</h3>
 
 <p align="center">
