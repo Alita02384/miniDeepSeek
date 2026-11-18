@@ -132,7 +132,7 @@ python3.12 -m venv .venv
 看到 `365 passed, 2 skipped` 就说明模型前向/反向、checkpoint、路由和测试都正常。
 如果只是想确认“这个仓库能跑”，到这里就够了；想真正训练，继续看下一节。
 
-<details>
+</details>
 
 ## Ⅰ 🛠️ 模型训练
 
