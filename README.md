@@ -28,24 +28,23 @@
 
 # 🐳 项目介绍
 
-**miniDeepSeek 是一个面向大模型初学者的开源训练项目：用消费级显卡，从零训练一个 145M 参数的小型 DeepSeek，学习从预训练到强化学习与多教师蒸馏的完整过程。**
+对于想要训练语言模型的初学者而言，当前的领域呈现出一种割裂的状态：一方面，像 nanoGPT 和 MiniMind 这类易于上手的项目，基于经典的稠密（dense）Transformer 架构，但是目前的大模型早已不用这种结构并加入了许多新的技术；另一方面，诸如 torchtitan 和 verl 等前沿技术栈，虽然集成了 MoE（混合专家模型）、压缩注意力机制、mHC、MTP、GRPO 和 OPD 等先进技术，但往往要求使用者具备集群环境以及对深度学习框架的深厚理解，让初学者难以上手。
 
-想自己训练大模型，常常会遇到一道门槛：nanoGPT、MiniMind 等入门项目容易上手，但主要围绕经典的稠密 Transformer；想进一步学习 MoE、压缩注意力和复杂的后训练流程，又往往需要面对面向集群的框架和较高的工程门槛。**miniDeepSeek 希望补上这段学习路径，让初学者也能读懂、运行和修改 DeepSeek 的核心结构与训练方法。**
+换言之，当前初学者难以在自己的项目中实操运用上前沿的大模型技术。
 
-项目将 DeepSeek-V4 的核心组件缩小到 **145.84M 总参数、60.91M 激活参数**，提供自包含的模型代码、训练脚本、开源数据和训练报告。预训练已在 **2×24GB RTX 4090D** 上完成，SFT / GRPO / OPD 支持单张 24GB RTX 4090。你可以先在 CPU 上运行小模型测试，再用 GPU 逐步实践下面的训练路线：
+miniDeepSeek 的目标正是解决这个前沿模型技术与初学者之间的鸿沟，让初学者在自己的第一个项目中就应用上前沿技术。
 
-```text
-从零预训练 → 通用 / 代码 / 工具调用三个领域模型的 SFT
-           → 各领域模型的 GRPO 强化学习 → 多教师 OPD 蒸馏为统一模型
-```
+miniDeepSeek 目前采用DeepSeek-V4 技术栈的前沿技术，涵盖了
+DeepSeekMoE、Hash Routing、无辅助损失负载均衡、MLA、CSA/HCA、mHC、MTP、SwiGLU Clamp、Muon + AdamW 等技术。
+训练方法也采用同款分阶段预训练（2K → 4K → 8K）、领域 SFT、GRPO、多教师 OPD。
 
-这里的三个领域模型都是从同一个预训练模型出发、分别训练的完整模型。项目的目标是让你亲手理解这些方法如何协同工作，并通过训练曲线与评估检查效果。
+miniDeepSeek 是一个 145M-A60M 参数的语言模型。仅用一张 RTX 4090 就可以开始训练，也支持多卡比如 2 * RTX 4090D（这是我的配置）。
 
 ---
 
 # 🎯 完成这个项目你将会得到
 
-## 1. 一个融合 DeepSeek 核心技术的 145M 模型
+## 1. 一个融合 DeepSeek 核心技术的 145M 的 MoE模型
 
 你将从零搭建并训练一个 **145.84M 总参数、60.91M 激活参数**的语言模型，在可控的规模下理解这些技术的实现与作用。
 
@@ -69,8 +68,8 @@
 
 OPD 使用**学生自己生成的同一批轨迹**：三个冻结教师分别提供全词表概率分布，各自计算学生到教师的反向 KL，汇总后只更新学生。
 
-## 📊 训练报告
-
+## 3. 详细的训练报告 📊
+训练过程中会在 log 和 checkpiont 目录下记录详细的各项指标。
 下面是我自己训练模型时生成的报告，用于效果展示（报告保存在 `reports/` 目录下）。
 
 ### 预训练：2K → 4K → 8K
@@ -153,11 +152,11 @@ print(torch.cuda.is_available())
 .venv/bin/pip install -U modelscope
 
 # 预训练 tokenization 压缩包（约 3.4 GB）
-.venv/bin/modelscope download --dataset Alita0429/mini-deepseek packs.tar.zst \
+modelscope download --dataset Alita0429/mini-deepseek packs.tar.zst \
   --local_dir data
 
 # SFT / GRPO / OPD 等阶段使用的 JSONL
-.venv/bin/modelscope download --dataset Alita0429/mini-deepseek \
+modelscope download --dataset Alita0429/mini-deepseek \
   --include '*.jsonl' --local_dir data
 
 # 压缩包内已包含 data/tokenization/ 路径，在仓库根目录解压
@@ -246,7 +245,7 @@ bash scripts/train_opd.sh configs/opd/three_teacher.yaml
 ## Ⅰ Tokenizer
 
 沿用 MiniMind 的 **6,400** 词表 BPE tokenizer（[`tokenizer/`](tokenizer/)），含 ChatML 模板。
-6,400 词表让 tied embedding 只占约 4.9M 参数，也是 OPD 做全词表 reverse KL、
+6,400 词表让 tied embedding 只占约 4.9M 参数，为模型本体省下更多参数，也是 OPD 做全词表 reverse KL、
 GRPO 算全词表 logprob 的前提。**不要换词表**——换一次就要重训全部权重，并同步改所有 pack。
 
 ## Ⅱ Pretrain 数据
@@ -349,8 +348,8 @@ SHA256SUMS         # 下载后校验
 
 | 项目 | 数值 | 条件 |
 |---|---:|---|
-| 预训练吞吐 | **19.1–19.6k tok/s** / 13.4 s/step | 2×4090D，DDP，8K stage，262,144 token/step |
-| 预训练吞吐（2K） | 29,580 tok/s / 8.86 s/step | 2×4090D，DDP，2K stage，12.8 GiB / 卡 |
+| 预训练吞吐 | **30k tok/s** / 10.4 s/step | 2×4090D，DDP，262,144 token/step |
+ |
 | SFT 吞吐 | 18–20k tok/s | 2×4090D，DDP，4K，micro 8192×2，grad_accum 16，7.5 GiB |
 | GRPO step | 18.6 s | 1×4090，16 prompt × group 6 × 512 token，9.0 GiB |
 | KV-cache decode | 5.4 ms/step ≈ 12k tok/s | 1×4090，batch 64，CUDA graph |
